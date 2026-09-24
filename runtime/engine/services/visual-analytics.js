@@ -1,0 +1,77 @@
+// Read existing daily/hourly cache only. No inferred request times or cache migration.
+const value = v => Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0;
+function modelsFor(bucket, { model, provider }) {
+  const result = new Map();
+  const add = (id, row) => {
+    if (model && id !== model) return;
+    const old = result.get(id) || { totalTokens: 0, count: 0 };
+    old.totalTokens += value(row.totalTokens); old.count += value(row.assistantCount);
+    result.set(id, old);
+  };
+  if (provider) {
+    for (const [key, row] of Object.entries(bucket.providerTotals || {})) {
+      const sep = key.indexOf('/');
+      if (key.slice(0, sep) === provider) add(key.slice(sep + 1), row);
+    }
+  } else {
+    for (const [id, row] of Object.entries(bucket.models || {})) add(id, row);
+    if (!model) {
+      const gap = value(bucket.totalTokens) - [...result.values()].reduce((sum, row) => sum + row.totalTokens, 0);
+      if (gap > 0) result.set('未归属', { totalTokens: gap, count: 0 });
+    }
+  }
+  return result;
+}
+
+export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
+  const days = new Map(), agents = new Map(), hours = new Map();
+  let sessionCount = 0;
+  for (const session of sessions) {
+    if (filters.agent && session.agent !== filters.agent) continue;
+    if (filters.type && session.type !== filters.type) continue;
+    let active = false;
+    for (const [date, bucket] of Object.entries(session.dailyBreakdown || {})) {
+      if (dateFilter && !dateFilter(date)) continue;
+      const models = modelsFor(bucket, filters);
+      const total = [...models.values()].reduce((sum, m) => sum + m.totalTokens, 0);
+      if (!total) continue;
+      active = true;
+      if (!days.has(date)) days.set(date, { date, totalTokens: 0, models: {} });
+      const day = days.get(date); day.totalTokens += total;
+      for (const [id, data] of models) day.models[id] = (day.models[id] || 0) + data.totalTokens;
+      if (!agents.has(session.agent)) agents.set(session.agent, { id: session.agent, totalTokens: 0, days: {} });
+      const agent = agents.get(session.agent); agent.totalTokens += total;
+      agent.days[date] = (agent.days[date] || 0) + total;
+    }
+    if (active) sessionCount++;
+    for (const [date, buckets] of Object.entries(session.hourlyBreakdown || {})) {
+      if (dateFilter && !dateFilter(date)) continue;
+      for (const [hour, bucket] of Object.entries(buckets)) {
+        const h = Number(hour); if (!Number.isInteger(h) || h < 0 || h > 23) continue;
+        const key = `${date}/${h}`;
+        if (!hours.has(key)) hours.set(key, { date, hour: h, totalTokens: 0, models: {} });
+        const cell = hours.get(key);
+        for (const [id, data] of modelsFor(bucket, filters)) {
+          cell.totalTokens += data.totalTokens;
+          cell.models[id] = (cell.models[id] || 0) + data.totalTokens;
+        }
+      }
+    }
+  }
+  const daily = [...days.values()].sort((a, b) => a.date.localeCompare(b.date));
+  const heatmap = [...hours.values()].sort((a, b) => a.date.localeCompare(b.date) || a.hour - b.hour);
+  const modelHours = new Map();
+  for (const cell of heatmap) for (const [id, total] of Object.entries(cell.models)) {
+    if (!modelHours.has(id)) modelHours.set(id, { id, totalTokens: 0, hours: Array(24).fill(0) });
+    const model = modelHours.get(id); model.hours[cell.hour] += total; model.totalTokens += total;
+  }
+  return {
+    granularity: 'hour', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    sessionCount, daily, heatmap,
+    agents: [...agents.values()].sort((a, b) => b.totalTokens - a.totalTokens),
+    modelHours: [...modelHours.values()].sort((a, b) => b.totalTokens - a.totalTokens),
+    hourlyTotal: heatmap.reduce((sum, row) => sum + row.totalTokens, 0),
+    dailyTotal: daily.reduce((sum, row) => sum + row.totalTokens, 0),
+    conversationRetentionDays: 5,
+  };
+}

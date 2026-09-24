@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Token 多功能卡</title>
+<link rel="stylesheet" href="./token-tracker.css">
+<link rel="stylesheet" href="./card.css">
+</head>
+<body>
+<div id="app-root"></div>
+<script type="module">
+  import { bootCard } from './card.mjs';
+  bootCard({ slot: 'card' }).catch(error => {
+    const message = document.createElement('p');
+    message.style.padding = '16px';
+    message.textContent = `卡片加载失败：${error.message || error}`;
+    document.getElementById('app-root').replaceChildren(message);
+  });
+</script>
+</body>
+</html>

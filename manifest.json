@@ -1,0 +1,68 @@
+{
+  "manifestVersion": 2,
+  "id": "token-tracker-app",
+  "name": "Token 用量",
+  "description": "独立 Token 用量应用：内置会话扫描、历史归档、余额查询与原生看板；无需配套插件，支持接续旧版数据。",
+  "version": "8.1.0",
+  "minAppVersion": "0.978.0",
+  "entry": "index.js",
+  "capabilities": [
+    "app/runtime.execute",
+    "app/runtime.local-machine",
+    "app/runtime.network",
+    "app/usage.read"
+  ],
+  "contributes": {
+    "settings": {
+      "title": "Token 用量",
+      "ui": {
+        "route": "/settings.html"
+      }
+    },
+    "cards": [
+      {
+        "id": "workspace",
+        "title": "Token 用量",
+        "description": "Agent Token、余额和实时消耗工作台",
+        "route": "/workspace.html",
+        "realization": "page",
+        "siteNavEntry": false,
+        "functionPanel": {
+          "id": "navigation",
+          "label": "Token 用量",
+          "route": "/navigation.html"
+        },
+        "fpFullPanel": true,
+        "closable": false,
+        "detached": {
+          "route": "/standalone.html"
+        },
+        "cardForm": "flush",
+        "titlebar": "translucent",
+        "face": {
+          "image": "assets/token-tracker-cover.svg"
+        }
+      },
+      {
+        "id": "multi",
+        "title": "Token 多功能卡",
+        "description": "一张卡切换用量、余额、明细、实时监控与五种分析图表；三点菜单选择最多四个选项卡。",
+        "route": "/card.html",
+        "realization": "card",
+        "cardForm": "flush",
+        "titlebar": "solid",
+        "detached": {
+          "route": "/card.html"
+        },
+        "detachedDefaultSize": {
+          "width": 520,
+          "height": 680
+        },
+        "face": {
+          "image": "assets/token-card-cover.svg"
+        }
+      }
+    ]
+  },
+  "icon": "assets/icon.svg"
+}

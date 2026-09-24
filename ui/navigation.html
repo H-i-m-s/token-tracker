@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="token-tracker-app-role" content="navigation">
+<title>Token 用量</title>
+<link rel="stylesheet" href="./token-tracker.css">
+</head>
+<body>
+<div id="app-root"></div>
+<script type="module">
+  import { bootNavigation } from "./navigation.mjs";
+  bootNavigation({ slot: "functionPanel" }).catch((err) => {
+    console.error("[token-tracker-app] navigation boot failed:", err);
+    document.body.innerHTML = `<div style="padding:24px;color:var(--tt-red,#d64545)">导航面板启动失败：${String(err.message || err).replace(/</g, "&lt;")}</div>`;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,12 @@
+<svg viewBox="0 0 320 480" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Token 用量</title>
+  <desc>紧凑纸面风格的令牌用量趋势封面</desc>
+  <rect width="320" height="480" fill="#fafaf9"/>
+  <polyline points="24,340 68,296 112,308 156,248 200,272 244,196 288,220 296,188" fill="none" stroke="#5f8cb6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+  <polyline points="24,380 68,356 112,368 156,328 200,344 244,288 288,300 296,272" fill="none" stroke="#5f8cb6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.45"/>
+  <circle cx="244" cy="196" r="7" fill="#d64545"/>
+  <circle cx="156" cy="248" r="5" fill="#d64545" opacity="0.85"/>
+  <circle cx="68" cy="296" r="5" fill="#d64545" opacity="0.6"/>
+  <rect x="36" y="52" width="96" height="3" fill="#1f2328" opacity="0.5"/>
+  <rect x="36" y="64" width="60" height="2" fill="#1f2328" opacity="0.3"/>
+</svg>

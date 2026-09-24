@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="token-tracker-app-role" content="standalone">
+<title>Token 用量</title>
+<link rel="stylesheet" href="./token-tracker.css">
+</head>
+<body>
+<div id="app-root"></div>
+<script type="module">
+  import { bootWorkspace } from "./workspace.mjs";
+  bootWorkspace({ slot: "standalone" }).catch((err) => {
+    console.error("[token-tracker-app] standalone boot failed:", err);
+    document.body.innerHTML = `<div style="padding:24px;color:var(--tt-red,#d64545)">独立窗口启动失败：${String(err.message || err).replace(/</g, "&lt;")}</div>`;
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,10 @@
+{
+  "name": "token-tracker-app",
+  "version": "8.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Token 用量 v2 原生 App：workspace + function panel + detached window + settings。",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
+}

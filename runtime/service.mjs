@@ -1,0 +1,108 @@
+import fs from 'node:fs';
+import path from 'node:path';
+import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
+import { migrateLegacy } from './migration.mjs';
+
+const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
+if (!path.isAbsolute(config.homeDir) || !path.isAbsolute(config.dataDir) || !/^[a-f0-9]{64}$/.test(config.secret)) throw new Error('Invalid runtime configuration');
+process.env.HANA_HOME = config.homeDir;
+process.env.TOKEN_TRACKER_DATA_DIR = config.dataDir;
+const migration = migrateLegacy(config.homeDir, config.dataDir);
+// Import after setting the runtime's own paths. No dependency on an installed plugin.
+const { default: Engine } = await import('./engine/index.js');
+const { default: registerDashboard } = await import('./engine/routes/dashboard.js');
+const { shapeDashboard } = await import('../lib/snapshot-service.mjs');
+const handlers = new Map(), subscribers = new Set(), disposers = [];
+let revision = 0;
+const bus = {
+  handle(name, fn) { handlers.set(name, fn); return () => handlers.delete(name); },
+  subscribe(fn) { subscribers.add(fn); return () => subscribers.delete(fn); },
+  emit() { revision++; },
+  async request(name) {
+    if (name !== 'agent:list') throw new Error('Unsupported internal request');
+    const root = path.join(config.homeDir, 'agents');
+    let entries; try { entries = fs.readdirSync(root, { withFileTypes: true }); } catch (e) { if (e.code === 'ENOENT') return { agents: [] }; throw e; }
+    return { agents: entries.filter(e => e.isDirectory()).map(e => {
+      let name = e.name;
+      try { const match = fs.readFileSync(path.join(root, e.name, 'identity.md'), 'utf8').replace(/^\uFEFF/, '').match(/^#\s+(.+)/m); if (match && !match[1].includes('{{')) name = match[1].trim(); } catch {}
+      return { id: e.name, name };
+    }) };
+  },
+};
+const engine = new Engine();
+engine.ctx = { dataDir: config.dataDir, config: { get: () => undefined }, log: { info() {}, warn: (...args) => console.warn(...args), error: (...args) => console.error(...args) }, bus };
+engine.register = fn => disposers.push(fn);
+let initializationError = null;
+
+async function request(method, payload = {}) {
+  if (initializationError) throw initializationError;
+  if (!engine.ctx._tokenCache?.ready || !handlers.has('token-tracker.snapshot')) {
+    if (method === 'snapshot') return { ready: false, realtime: null, balances: [], agentNames: {}, revision };
+    throw Object.assign(new Error('数据扫描中，请稍后刷新'), { code: 'NOT_READY' });
+  }
+  if (method === 'dashboard') {
+    const raw = await engine.ctx._buildDashboardData(payload, { skipBalances: true, ...(Number.isFinite(config.fxRate) ? { fxRate: config.fxRate } : {}) });
+    if (raw.error || raw.notReady) throw Object.assign(new Error(raw.error || '数据扫描中，请稍后刷新'), { code: 'NOT_READY' });
+    // Strip message bodies, paths and provider configuration before the HTTP bridge.
+    const view = shapeDashboard(raw);
+    view.summary.highUsageThreshold = handlers.get('token-tracker.settings.read')().highUsageThreshold;
+    return view;
+  }
+  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
+  if (!name) throw Object.assign(new Error('Unknown method'), { status: 404 });
+  const value = await handlers.get('token-tracker.' + name)(payload);
+  if (method === 'snapshot') { value.revision = revision; if (value.realtime) delete value.realtime.sessionPath; }
+  if (value?.error) throw new Error(value.error);
+  return value;
+}
+
+const seenUsage = new Set();
+function acceptUsage(entry) {
+  if (!entry?.requestId || !entry.usage) return;
+  if (seenUsage.has(entry.requestId)) return;
+  seenUsage.add(entry.requestId);
+  if (seenUsage.size > 5000) seenUsage.delete(seenUsage.values().next().value);
+  const u = entry.usage;
+  const total = v => typeof v === 'number' ? v : Number(v?.totalTokens) || 0;
+  const id = entry.attribution?.agentId || 'unknown';
+  const session = entry.attribution?.sessionId || entry.requestId;
+  const event = { type: 'token_usage', modelId: entry.model?.modelId, modelProvider: entry.model?.provider,
+    usage: { input: total(u.input), output: total(u.output), totalTokens: u.totalTokens || total(u.input) + total(u.output), cacheRead: u.cache?.readTokens || 0, reasoningTokens: u.output?.reasoningTokens || 0, cost: u.costTotal ?? u.cost?.total ?? 0 } };
+  for (const fn of subscribers) fn(event, path.join(config.homeDir, 'agents', id, 'sessions', session));
+  // Pick up the newly persisted usage promptly; scanner still deduplicates by mtime/requestId.
+  engine.ctx._tokenCache?.scan(false).catch(() => {});
+}
+
+const server = http.createServer(async (req, res) => {
+  const reply = (body, status = 200) => { res.writeHead(status, { 'Content-Type': 'application/json', 'Cache-Control': 'no-store' }); res.end(JSON.stringify(body)); };
+  const auth = Buffer.from(req.headers.authorization || ''), expected = Buffer.from('Bearer ' + config.secret);
+  if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) { reply({ error: { code: 'UNAUTHORIZED', message: 'Unauthorized' } }, 401); return; }
+  try {
+    if (req.method !== 'POST' || req.url !== '/rpc') { reply({ error: { message: 'Not found' } }, 404); return; }
+    let size = 0; const chunks = [];
+    for await (const chunk of req) { size += chunk.length; if (size > 1024 * 1024) { reply({ error: { message: 'Body too large' } }, 413); return; } chunks.push(chunk); }
+    let input;
+    try { input = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { reply({ error: { code: 'INVALID_JSON', message: 'Invalid JSON' } }, 400); return; }
+    if (input.method === 'usage') { acceptUsage(input.payload); reply({ value: { accepted: true } }); return; }
+    if (input.method === 'context') {
+      const payload = input.payload || {};
+      for (const fn of subscribers) fn({ type: 'context_usage', tokens: payload.tokens, contextWindow: payload.contextWindow }, payload.sessionPath);
+      reply({ value: { accepted: true } }); return;
+    }
+    if (input.method === 'status') { reply({ value: { ready: !!engine.ctx._tokenCache?.ready, migration, revision } }); return; }
+    reply({ value: await request(input.method, input.payload) });
+  } catch (e) { reply({ error: { code: e.code || 'SERVICE_ERROR', message: e.message } }, e.code === 'INVALID_SETTINGS' ? 400 : e.status || 503); }
+});
+server.requestTimeout = 30000;
+await new Promise((resolve, reject) => { server.once('error', reject); server.listen(config.port, '127.0.0.1', resolve); });
+console.log('TOKEN_TRACKER_READY');
+// Let the host mark the HTTP service ready before the initial history scan.
+// Large histories must not be mistaken for a failed runtime startup.
+setImmediate(async () => {
+  try { await engine.onload(); registerDashboard({ get() {}, post() {} }, engine.ctx); }
+  catch (error) { initializationError = error; console.error('Token scanner initialization failed:', error.code || error.message); }
+});
+function stop() { for (const fn of disposers.reverse()) { try { fn(); } catch {} } server.close(); server.closeAllConnections(); }
+process.once('SIGTERM', () => { stop(); process.exit(0); });
+process.once('SIGINT', () => { stop(); process.exit(0); });
