@@ -73,17 +73,21 @@ export function createSqliteCacheStore({ DatabaseSync, file, log = () => {} }) {
     const d = open();
     const sessions = data.sessions || {};
     const touched = new Set(forced || []);
-    if (all || rows.size === 0) {
+    const writeAll = !!(all || rows.size === 0);
+    const why = { forced: touched.size, stale: 0, gone: 0 };
+    if (writeAll) {
+      const before = touched.size;
       for (const key of Object.keys(sessions)) touched.add(key);
+      why.stale = touched.size - before;
     } else {
       for (const key of Object.keys(sessions)) {
         const prev = rows.get(key);
         const cur = sessions[key];
-        if (!prev || prev.mtime !== cur.mtime || prev.size !== cur.size) touched.add(key);
+        if (!prev || prev.mtime !== cur.mtime || prev.size !== cur.size) { touched.add(key); why.stale += 1; }
       }
     }
     // 已经不在缓存里的行要删掉（账本按天分键，旧的那天会被移除）
-    for (const key of rows.keys()) if (!(key in sessions)) touched.add(key);
+    for (const key of rows.keys()) if (!(key in sessions)) { touched.add(key); why.gone += 1; }
 
     const upsert = d.prepare(`INSERT INTO ${TABLE} (key, mtime, size, record) VALUES (?,?,?,?) ON CONFLICT(key) DO UPDATE SET mtime=excluded.mtime, size=excluded.size, record=excluded.record`);
     const remove = d.prepare(`DELETE FROM ${TABLE} WHERE key = ?`);
@@ -117,7 +121,7 @@ export function createSqliteCacheStore({ DatabaseSync, file, log = () => {} }) {
       try { d.exec("ROLLBACK"); } catch {}
       throw e;
     }
-    return { rows: count, bytes };
+    return { rows: count, bytes, scope: writeAll ? "全量" : "增量", why };
   }
 
   // meta（除 sessions 以外的状态）单独写：调度器要先把这一轮的真实计数更新完再写它。

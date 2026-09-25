@@ -90,6 +90,10 @@ export default class TokenTrackerPlugin {
       }
     }
 
+    // 把缓存放进 shared.data，作为下一轮扫描的增量基准。
+    // 少了这一步，第一轮扫描又是从空白开始（文件全量重解析 + 账本重建 + 裁剪重跑）。
+    if (old && old.sessions && Object.keys(old.sessions).length) shared.data = old;
+
     // 落盘调度：变化只标脏（见 createPersistScheduler），退出时再刷一次。
     // 计数从上一份缓存里续上，“今日累计”跟重启前的接得起。
     const persist = createPersistScheduler({ cachePath, log, getData: () => shared.data, store, initial: old?.persist });
@@ -267,41 +271,65 @@ export default class TokenTrackerPlugin {
       };
     });
 
-    // 单会话最近一次生成速度（输入栏状态位用）。
-    // 会话采样按文件名匹配：调用方给的是稳定 sessionId 对应的真实会话文件路径。
-    // 注意口径：桌面会话的 tok/s 由「本条消息时间 − 上一条消息时间」估出，含网络与排队，是下限；
-    // 只有官方 ledger 自带 durationMs 的那条才是精确值，而 ledger 条目按天聚合、不对应单个会话，
-    // 所以这里回给调用方的任何时候都是估算值 —— 由调用方决定怎么标注。
+    // 单会话最近一次生成速度（输入栏状态位用）。会话采样按文件名匹配：调用方给的是稳定 sessionId
+    // 对应的真实会话文件路径。
+    //
+    // 口径（三件事同时成立，回给调用方的才是这个数）：
+    //   1) 分母 = 本条回复落笔 − 上一条记录落笔。上一条只可能是「用户发出的消息」或「工具结果」，
+    //      所以工具执行时间不进分母；用户发送之前的阅读与思考也不进分母（消息是发送那一刻才落笔的）。
+    //   2) 每次请求在开始吐字之前还有一段固定开销：排队 + 预填充 + 首字等待 + 网络。这段不用单独估，
+    //      它就是拟合直线的截距——一次最小二乘同时给出斜率（速度）和截距（开销）。
+    //   3) 只取这个会话、当前模型、窗口够长的采样，从新到旧最多 8 条；换了模型就只用新模型那段。
+    //      样本少或拟合站不住时，按 1 秒固定起跑开销直接除，保证有数可看。
     regHandler("token-tracker.speed", async (payload) => {
       const cacheData = shared.data;
       const wantFile = payload?.sessionPath ? path.basename(String(payload.sessionPath)) : "";
-      const pickLatest = (list) => {
-        let out = null;
-        for (const sample of (list || [])) {
-          if (sample && (!out || Number(sample.ts) > Number(out.ts))) out = sample;
-        }
-        return out;
-      };
-      let best = null;
+      const samples = [];
       if (wantFile && cacheData?.sessions) {
         for (const session of Object.values(cacheData.sessions)) {
           if (!session || session.type === "ledger") continue;
           if (session.fileName !== wantFile) continue;
-          let sample = null;
+          // 对话级与会话级是同一批采样的两份存法，取其一，避免重复计入校正样本。
+          let got = 0;
           for (const conv of (session.conversations || [])) {
-            const candidate = pickLatest(conv.speeds);
-            if (candidate && (!sample || Number(candidate.ts) > Number(sample.ts))) sample = candidate;
+            for (const s of (conv.speeds || [])) if (s) { samples.push(s); got++; }
           }
-          if (!sample) sample = pickLatest(session.speeds);
-          if (sample && (!best || Number(sample.ts) > Number(best.ts))) best = sample;
+          if (!got) for (const s of (session.speeds || [])) if (s) samples.push(s);
         }
       }
-      if (best) return { scope: "session", ...shapeSample(best) };
-      // 兜底：会话还没采到（例如应用重载后当前会话不会重发 session_created），
-      // 给全机最近的一条采样，并把 scope 说清，由调用方自己标注。
-      const last = cacheData?._speedStats?.last;
-      if (!last || !last.tps) return null;
-      return { scope: "global", ...shapeSample(last) };
+      if (!samples.length) {
+        // 兜底：会话还没采到（例如应用重载后当前会话不会重发 session_created），给全机最近的一条采样，
+        // 并把 scope 说清。兜底值不做校正，由调用方标的。
+        const last = cacheData?._speedStats?.last;
+        if (!last || !last.tps) return null;
+        return { scope: "global", ...shapeSample(last) };
+      }
+
+      // 当前模型 = 最近一条采样的模型：换了模型就从新模型重新起算。
+      const newest = samples.reduce((a, s) => (!a || tsNum(s.ts) > tsNum(a.ts) ? s : a));
+      const modelKey = speedModelKey(newest);
+
+      // 取样：本会话、当前模型、窗口够长，从新到旧最多 8 条。
+      const picked = samples
+        .filter((s) => speedModelKey(s) === modelKey
+          && tsNum(s.durMs) >= SPEED_MIN_DUR_MS
+          && tsNum(s.durMs) < SPEED_MAX_DUR_MS
+          && (s.out || 0) >= SPEED_MIN_OUT)
+        .sort((a, b) => tsNum(b.ts) - tsNum(a.ts))
+        .slice(0, SPEED_SAMPLE_LIMIT);
+      // 一条窗口够长的采样都没有：连 1 秒起跑都扣不动，没有数可给。
+      if (!picked.length) return null;
+
+      const est = estimateSpeed(picked);
+      if (!est || !(est.tps > 0)) return null;
+
+      return {
+        scope: "session",
+        ...shapeSample(newest),
+        tps: Math.round(est.tps),
+        mode: est.mode,
+        n: picked.length,
+      };
     });
 
     // 聚合统计：入参 { range, from, to, agent, model, provider, type }，与 /dashboard/data 同口径
@@ -392,7 +420,12 @@ function realtimeSnapshot(rt, agentNames) {
 
 
 async function scanAll(shared, log, force) {
-  const old = loadCache(shared.cachePath, log);
+  // 旧缓存：优先用上一轮的扫描结果（它来自 SQLite 缓存，启动时已由 store.load() 播下）。
+  // 以前这里只读 token-cache.json —— 那份文件在迁移到 SQLite 之后已经不存在，于是每一轮都
+  // 从空白开始：文件全量重解析、账本每轮重建、5 天裁剪每轮重跑，一次落盘要写上千行。
+  const old = (shared.data && shared.data.sessions && Object.keys(shared.data.sessions).length)
+    ? shared.data
+    : loadCache(shared.cachePath, log);
   const cache = old || { version: CACHE_VERSION, lastScan: null, sessions: {}, agentNames: {} };
   // 版本不匹配 或 外部强制 → 全量重扫（忽略旧 mtime）
   const full = force || cache.version !== CACHE_VERSION;
@@ -970,6 +1003,74 @@ function buildDailyGlobal(cache) {
 
 // ─── 生成速度汇总：所有会话 speeds 合并，加权平均（Σ输出 / Σ耗时）───
 // provider 字段：新采集记录自带；旧缓存记录无 provider，用会话级 providers 映射反查（多供应商取 token 量最大的归属）
+// 采样里的时间戳是 ISO 字符串，直接 Number() 会得到 NaN，比较全都为 false。
+// 必须统一走这里，否则「取最新一条」会变成「取第一条」。
+function tsNum(v) {
+  if (typeof v === "number") return Number.isFinite(v) ? v : 0;
+  const n = Date.parse(String(v || ""));
+  return Number.isFinite(n) ? n : 0;
+}
+
+// ─── 生成速度：取样与估计 ───
+// 口径见 token-tracker.speed：本会话、当前模型、窗口够长的采样，从新到旧最多 8 条，拟合一次。
+// 拟合站不住（样本少、输出量太接近、结果飞出合理区间）时，按 1 秒固定起跑开销直接除，总有数。
+const SPEED_SAMPLE_LIMIT = 8;
+const SPEED_MIN_DUR_MS = 6000;        // 窗口下限：再短的话起跑开销占比太大，估不出速度
+const SPEED_MAX_DUR_MS = 120000;      // 上限：超过两分钟的采样多半混进了空转
+const SPEED_MIN_OUT = 200;            // 输出下限：太小的话分母几乎全是开销
+const SPEED_FIXED_OVERHEAD_MS = 1000; // 估不出起跑开销时的固定值
+const SPEED_MIN_TPS = 20;             // 合理区间：本机各模型实测约 20~550，明显失真的不端出来
+const SPEED_MAX_TPS = 1500;
+
+// 采样属于哪个模型。新记录自带 provider；没有 provider 的旧记录只按 model 归。
+function speedModelKey(sample) {
+  const model = String(sample?.model || "?");
+  const provider = String(sample?.provider || "");
+  return provider ? provider + "/" + model : model;
+}
+
+// 对最多 8 条采样做一次最小二乘：Δt ≈ t0 + 输出/v —— 速度 = 1/斜率，截距就是起跑开销。
+// 拟合不成立时退回「按固定起跑开销直接除」的口径；两条路都不成立才没有数。
+function estimateSpeed(picked) {
+  const byFixedOverhead = () => {
+    const out = picked.reduce((a, s) => a + (s.out || 0), 0);
+    const dur = picked.reduce((a, s) => a + tsNum(s.durMs) - SPEED_FIXED_OVERHEAD_MS, 0);
+    if (!(dur > 0)) return null;
+    const tps = out / (dur / 1000);
+    return tps >= SPEED_MIN_TPS && tps <= SPEED_MAX_TPS ? { tps, mode: "fixed" } : null;
+  };
+  if (picked.length < 2) return byFixedOverhead();
+  const n = picked.length;
+  let sx = 0, sy = 0, sxx = 0, sxy = 0;
+  for (const s of picked) {
+    const x = s.out || 0, y = tsNum(s.durMs) / 1000;
+    sx += x; sy += y; sxx += x * x; sxy += x * y;
+  }
+  const den = n * sxx - sx * sx;
+  if (den === 0) return byFixedOverhead();
+  // 输出量彼此太接近时斜率没有信息量（截距会变负、速度会飞），先看样本本身的跨度。
+  const outs = picked.map((s) => s.out || 0);
+  const omax = Math.max(...outs), omin = Math.min(...outs);
+  if (!(omin > 0) || omax / omin < 2) return byFixedOverhead();
+  const b = (n * sxy - sx * sy) / den;
+  const a = (sy - b * sx) / n;
+  if (!(b > 0) || !(a >= 0)) return byFixedOverhead();
+  // 拟合得有一半以上的变化被这条线解释（R² ≥ 0.5），否则斜率就是噪声，直接飞的那种。
+  // 不过关不算“没数”，只是换用固定开销口径：数照样有，只是稳。
+  let ss = 0, rr = 0;
+  const my = sy / n;
+  for (const s of picked) {
+    const x = s.out || 0, y = tsNum(s.durMs) / 1000;
+    ss += (y - my) ** 2;
+    rr += (y - (a + b * x)) ** 2;
+  }
+  const r2 = ss > 0 ? 1 - rr / ss : 0;
+  if (r2 < 0.5) return byFixedOverhead();
+  const tps = 1 / b;
+  if (!(tps >= SPEED_MIN_TPS && tps <= SPEED_MAX_TPS)) return byFixedOverhead();
+  return { tps, mode: "fit", t0: a * 1000, r2 };
+}
+
 function provOfSession(s, model) {
   if (!s || !s.providers || !model) return "";
   let best = "", bestTk = 0;
@@ -999,7 +1100,7 @@ function buildSpeedStats(cache) {
     }
   }
   if (!all.length) return null;
-  all.sort((a, b) => (a.sp.ts < b.sp.ts ? 1 : a.sp.ts > b.sp.ts ? -1 : 0));
+  all.sort((a, b) => tsNum(b.sp.ts) - tsNum(a.sp.ts));
   const recent = all.slice(0, 50);
   const wAvg = (arr) => {
     const out = arr.reduce((a, x) => a + (x.sp.out || 0), 0);
@@ -1198,7 +1299,8 @@ const PERSIST_FLUSH_MS = 5 * 60 * 1000;
 export function createPersistScheduler({ cachePath, log, getData, store = null, flushMs = PERSIST_FLUSH_MS, initial = null }) {
   const stats = {
     writes: 0, bytes: 0, lastAt: null, lastReason: null,
-    lastMs: 0, lastBytes: 0, day: null, dayBytes: 0,
+    lastMs: 0, lastBytes: 0, day: null, dayBytes: 0, dayWrites: 0,
+    lastRows: 0, lastScope: null, lastDetail: null,
   };
   // 上一次运行写进缓存里的计数：续上它，避免“今日累计”被一次重载清零。
   if (initial && typeof initial === "object") {
@@ -1231,11 +1333,13 @@ export function createPersistScheduler({ cachePath, log, getData, store = null, 
     try {
       const _now = new Date();
       const day = _now.getFullYear() + "-" + String(_now.getMonth() + 1).padStart(2, "0") + "-" + String(_now.getDate()).padStart(2, "0");
-      if (stats.day !== day) { stats.day = day; stats.dayBytes = 0; }
+      if (stats.day !== day) { stats.day = day; stats.dayBytes = 0; stats.dayWrites = 0; }
       const snapshot = () => ({
         writes: stats.writes, bytes: stats.bytes, lastAt: stats.lastAt,
         lastReason: stats.lastReason, lastMs: stats.lastMs,
         lastBytes: stats.lastBytes, day: stats.day, dayBytes: stats.dayBytes,
+        dayWrites: stats.dayWrites,
+        lastRows: stats.lastRows, lastScope: stats.lastScope, lastDetail: stats.lastDetail,
       });
       let saved;
       if (store) {
@@ -1261,20 +1365,19 @@ export function createPersistScheduler({ cachePath, log, getData, store = null, 
       stats.lastMs = Date.now() - started;
       stats.lastBytes = bytes;
       stats.dayBytes += bytes;
+      stats.dayWrites += 1;
+      stats.lastRows = saved.rows || 0;
+      stats.lastScope = saved.scope || "JSON";
+      stats.lastDetail = saved.why
+        ? saved.why.stale + " 行因文件变动 · " + saved.why.forced + " 行补报 · " + saved.why.gone + " 行移除"
+        : null;
       data.persist = snapshot();
       // meta 里写的是“这次写完之后”的真实计数，所以重启读回来不会慢一拍。
       if (store) store.saveMeta(data);
       forced.clear();
       allDirty = false;
-      stats.bytes += bytes;
-      stats.lastAt = new Date(started).toISOString();
-      stats.lastReason = reason;
-      stats.lastMs = Date.now() - started;
-      stats.lastBytes = bytes;
-      stats.dayBytes += bytes;
-      data.persist = { ...stats };
       dirty = false;
-      log.info("[token-tracker] cache flushed (" + reason + "): " + (store ? saved.rows + " 行 / " : "") + (bytes / 1024).toFixed(0) + " KiB in " + stats.lastMs + " ms, writes=" + stats.writes + ", today=" + (stats.dayBytes / 1048576).toFixed(2) + " MiB");
+      log.info("[token-tracker] cache flushed (" + reason + "): " + (store ? saved.rows + " 行 [" + stats.lastScope + "] / " : "") + (bytes / 1024).toFixed(0) + " KiB in " + stats.lastMs + " ms, writes=" + stats.writes + ", today=" + stats.dayWrites + " 次 / " + (stats.dayBytes / 1048576).toFixed(2) + " MiB");
       return true;
     } catch (e) {
       // 写失败不清 dirty，等下一次触发重试；但必须留痕，不能默默吞掉。

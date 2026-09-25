@@ -614,8 +614,9 @@ export class WorkspaceApp {
       return [
         timeAgo(new Date(p.lastAt).getTime()),
         p.lastBytes ? bytes(p.lastBytes) : null,
+        p.lastRows != null ? String(p.lastRows) + " 行" + (p.lastScope ? "（" + p.lastScope + "）" : "") : null,
         p.lastReason || null,
-        p.dayBytes ? "今日 " + bytes(p.dayBytes) : null,
+        p.dayBytes ? "今日 " + (p.dayWrites != null ? p.dayWrites + " 次 · " : "") + bytes(p.dayBytes) : null,
       ].filter(Boolean).join(" · ");
     })();
 
