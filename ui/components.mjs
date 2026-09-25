@@ -89,7 +89,10 @@ export function selectOptions(items, selected = "", placeholder = "") {
   const opts = [];
   if (placeholder) opts.push(h("option", { value: "" }, placeholder));
   for (const item of items) {
-    const value = typeof item === "string" ? item : item.value || item.id;
+    // 这里不能写成 `item.value || item.id`：空串是“全部”这个合法取值，会被 || 折叠掉，
+    // 生成的 <option> 就没了 value 属性，浏览器改用它的文案当值（于是“全部 Agent”成了筛选值，
+    // 界面上看着是“全部”，后端却在按一个不存在的 agent 过滤）。
+    const value = typeof item === "string" ? item : item.value !== undefined ? item.value : item.id;
     const label = typeof item === "string" ? item : item.label || item.name || value;
     opts.push(h("option", { value, selected: value === selected ? "" : undefined }, label));
   }

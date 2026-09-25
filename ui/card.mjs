@@ -3,6 +3,8 @@ import { bootstrap } from './bootstrap.mjs';
 import { applyAppearance } from './appearance.mjs';
 import { renderAnalytics } from './analytics.mjs';
 import { h, RANGES, selectOptions } from './components.mjs';
+import { enhanceSelects } from './custom-select.mjs';
+import { closeAllPickers } from './custom-pickers.mjs';
 import { cardIcon } from './card-icons.mjs';
 import { CARD_VIEWS, MAX_CARD_TABS, cardSelection, toggleCardTab } from './card-tabs.mjs';
 
@@ -48,6 +50,8 @@ export class CardApp extends WorkspaceApp {
   }
 
   renderBoardControls() {
+    // 本函数会重建 .tt-card-filters / .tt-card-options，自绘下拉随之被替换：先把已打开的浮层摘干净。
+    closeAllPickers();
     if (!this.tabBar) return;
     const state = this.state.get(), { tabs, active } = cardSelection(state);
     const appearance = applyAppearance(state.appearance || 'system');
@@ -85,6 +89,8 @@ export class CardApp extends WorkspaceApp {
       h('button', { type: 'button', className: 'tt-card-more', title: '刷新', 'aria-label': '刷新', onClick: () => this.onRefresh() }, cardIcon('refresh')),
       h('button', { type: 'button', className: 'tt-card-more', title: '打开完整看板', 'aria-label': '打开完整看板', onClick: async () => { try { await this.hana.cards.open('workspace'); } catch (e) { this.setError(`打开看板失败：${e.message}`); } } }, cardIcon('expand')),
     ].filter(Boolean));
+    // 卡片配色 / 时间范围下拉换成自绘控件（原生 select 仍是状态源）。
+    enhanceSelects(this.container);
     this.renderOverview();
   }
 

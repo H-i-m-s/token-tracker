@@ -1,5 +1,6 @@
 import { bootstrap } from "./bootstrap.mjs";
 import { h } from "./components.mjs";
+import { enhanceSelects } from "./custom-select.mjs";
 
 const PROVIDER_ORDER = [
   { key: "deepseek", label: "DeepSeek" },
@@ -84,6 +85,8 @@ export class SettingsApp {
         h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.onReset() }, "重置"),
       ),
     );
+    // 显示偏好下拉换成自绘控件（原生 select 仍是状态源，collectSettings 照旧读 .value）。
+    enhanceSelects(this.formEl);
   }
 
   providerRow(provider, cfg = {}) {

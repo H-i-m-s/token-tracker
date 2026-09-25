@@ -1,15 +1,27 @@
 import { applyAppearance } from "./appearance.mjs";
 import { applyBoardLayout } from "./board-layout.mjs";
 import { renderAnalytics, BOARD_RANGES } from "./analytics.mjs";
+import { renderFilterStatus as renderFilterChips } from "./filter-chips.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { AppApi } from "./app-api.mjs";
 import { h, RANGES, fmt, fmtPct, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
+import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
+import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { drawSparkline, drawRing } from "./charts.mjs";
 
 const PAGE_SIZE = 10;
 const POLL_INTERVAL_MS = 5000;
 const MAX_SPARK_POINTS = 40;
+
+// 选项里的占位文案曾被当成真实筛选值存进 state（见 components.mjs selectOptions 的注释）。
+// 这种值只能来自那个 bug，不可能是真实的 agent / 模型 / 供应商 id，见到即清。
+const PLACEHOLDER_VALUES = new Set(["全部 Agent", "全部模型", "全部 Provider", "全部类型"]);
+
+// 名册按显示名排序，且中文按拼音排；只比 id 的话中文名会全部排到英文后面去。
+function byLabel(a, b) {
+  return String(a.label || a).localeCompare(String(b.label || b), "zh-Hans-CN");
+}
 
 export class WorkspaceApp {
   constructor({ hana, api, state, container, mock = false }) {
@@ -241,6 +253,9 @@ export class WorkspaceApp {
       const dashboard = await this.api.getDashboard(this.state.get(), { mock: this.mock });
       if (request !== this.dashboardRequest || this.disposed) return;
       this.dashboard = dashboard;
+      // Agent 名单以宿主名册为准（dashboard.agentNames 由后端的 agent:list 覆盖），
+      // 账本里有用量但名册里已经没有的（被删掉的 agent）只补名字，不能作为唯一来源。
+      for (const [id, name] of Object.entries(dashboard.agentNames || {})) this.agentNames.set(id, name || id);
       for (const agent of dashboard.agents || []) this.agentNames.set(agent.id, agent.name || agent.id);
       this.renderFilterStatus();
       // A background refresh must not send the reader back to page one.
@@ -298,6 +313,9 @@ export class WorkspaceApp {
   // ---------- overview module ----------
 
   renderBoardControls() {
+    // 本函数会重建 .tt-board-controls，日期字段随之被替换：先把已打开的浮层摘干净。
+    closeOpenSelect();
+    closeOpenDate();
     if (!this.boardControls) return;
     const state = this.state.get();
     const appearance = applyAppearance(state.appearance);
@@ -308,8 +326,9 @@ export class WorkspaceApp {
           h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label))));
     this.appearanceControls?.replaceChildren(
       h("button", { type: "button", className: "tt-theme-toggle", "aria-label": isDark ? "切换浅色主题" : "切换深黑主题", onClick: () => this.state.patch({ appearance: isDark ? "light" : "dark" }) }, isDark ? "浅色" : "深黑"), settings);
-    const from = h("input", { type: "date", value: state.from, "aria-label": "开始日期" });
-    const to = h("input", { type: "date", value: state.to, "aria-label": "结束日期" });
+    // 自绘日期字段：返回元素带 .value（YYYY-MM-DD，空串=未选），取值语义与原生日期输入一致。
+    const from = createDateField({ value: state.from, ariaLabel: "开始日期" });
+    const to = createDateField({ value: state.to, ariaLabel: "结束日期" });
     const apply = h("button", { className: "tt-pill", onClick: () => {
       if (!from.value || !to.value || from.value > to.value) { this.setError("请选择有效日期，结束日期不能早于开始日期。"); return; }
       const days = (new Date(to.value) - new Date(from.value)) / 86400000;
@@ -324,34 +343,68 @@ export class WorkspaceApp {
     this.renderFilterStatus();
   }
 
+  // 选项列表里的占位文案曾被当成真实筛选值存进 state（见 components.mjs selectOptions 的注释）。
+  // 这种值只可能来自那个 bug，不可能是真实的 agent / 模型 / 供应商 id，见到即清。
+  stripPlaceholderFilters(state) {
+    const dirty = {};
+    for (const key of ["agent", "model", "provider", "type"]) {
+      if (PLACEHOLDER_VALUES.has(state[key])) dirty[key] = "";
+    }
+    if (Object.keys(dirty).length) this.state.patch(dirty);
+  }
+
+  // Agent 选项以宿主名册为准：dashboard.agentNames（后端用 agent:list 覆盖，含所有现存 agent，
+  // 包括一次都没用过的）；账本里还有用量、名册里已消失的（删过的 agent）补在后面，历史才筛得到。
+  // 插件里不写死任何 agent 名，换台机器、分享给别人都是对方自己的名册。
+  agentOptions() {
+    const roster = this.dashboard?.agentNames || {};
+    const items = Object.keys(roster).map(id => ({ value: id, label: roster[id] || id }));
+    const known = new Set(items.map(item => item.value));
+    for (const a of this.dashboard?.agents || []) {
+      if (known.has(a.id)) continue;
+      items.push({ value: a.id, label: a.name || a.id });
+    }
+    items.sort(byLabel);
+    return [{ value: "", label: "全部 Agent" }, ...items];
+  }
+
+  // 模型选项用后端的 modelOptions：它取的是「模型筛选之前」的池子，选中一个之后仍能换別的；
+  // 而 models 是按当前筛选算出来的结果集，拿来当下拉源会自我坍缩成一个（选中项）。
+  // 没这个字段时（例如 mock 数据）退回 models，行为与之前一致。
+  modelOptions() {
+    const list = this.dashboard?.modelOptions?.length ? this.dashboard.modelOptions : (this.dashboard?.models || []);
+    return [{ value: "", label: "全部模型" }, ...list.map(m => ({ value: m, label: m }))];
+  }
+
+  // 供应商选项：后端的 providers 已经是「不受筛选影响的去重供应商名」，直接当下拉源。
+  providerOptions() {
+    const items = (this.dashboard?.providers || []).map(p => (typeof p === "string" ? p : p?.provider)).filter(Boolean);
+    return [{ value: "", label: "全部供应商" }, ...items.map(p => ({ value: p, label: p }))];
+  }
+
   renderFilterStatus() {
     if (!this.filterStatus) return;
+    // 自绘下拉 / 日历浮层挂在 body 上，而 loadDashboard() 会直接调用这里（不经过
+    // renderBoardControls）：模块内部重建前也会 closeOpen*，这里再兜一道，双保险。
+    closeOpenSelect();
+    closeOpenDate();
     const state = this.state.get();
-    const range = state.from || state.to
+    this.stripPlaceholderFilters(state);
+    const rangeLabel = state.from || state.to
       ? `${state.from || "不限"} — ${state.to || "不限"}`
       : RANGES.find(item => item.key === state.range)?.label || (state.range === "all" ? "全部历史" : state.range);
-    const filters = [
-      ["agent", "Agent", this.agentNames.get(state.agent) || state.agent],
-      ["model", "模型", state.model],
-      ["provider", "供应商", state.provider],
-      ["type", "类型", state.type],
-    ].filter(([key]) => state[key]);
-    const clear = (patch, key) => {
-      // State notifications replace the chips synchronously; keep keyboard focus nearby.
-      this.state.patch(patch);
-      (this.filterStatus.querySelector(`[data-filter="${key}"]`) || this.filterStatus.querySelector("button") || this.filterStatus.querySelector(".tt-filter-summary"))?.focus();
-    };
-    const chip = (key, label, value, patch) => h("span", { className: `tt-filter-chip${patch ? " active" : ""}`, title: `${label}：${value}` },
-      h("span", { className: "tt-filter-chip-text" }, `${label}：${value}`),
-      patch ? h("button", { type: "button", "data-filter": key, "aria-label": `清除${label}筛选`, title: `清除${label}筛选`, onClick: () => clear(patch, key) }, h("span", { "aria-hidden": "true" }, "×")) : null);
-    this.filterStatus.replaceChildren(...[
-      h("span", { className: "tt-filter-summary", role: "status", "aria-live": "polite", tabIndex: "-1" }, filters.length ? `已筛选 · ${filters.length} 项` : "当前范围"),
-      h("div", { className: "tt-filter-chips" },
-        chip("range", "时间", range, state.range !== "all" || state.from || state.to ? { range: "all", from: "", to: "" } : null),
-        ...filters.map(([key, label, value]) => chip(key, label, value, { [key]: "" })),
-        !filters.length ? h("span", { className: "tt-filter-unrestricted" }, "全部 Agent · 全部模型") : null),
-      filters.length ? h("button", { type: "button", className: "tt-filter-clear", title: "清除 Agent、模型、供应商和类型筛选，保留时间范围", onClick: () => clear({ agent: "", model: "", provider: "", type: "" }, "range") }, "清除筛选") : null,
-    ].filter(Boolean));
+    const next = renderFilterChips({
+      state,
+      rangeLabel,
+      agentLabel: this.agentNames.get(state.agent) || state.agent,
+      agentOptions: this.agentOptions(),
+      providerOptions: this.providerOptions(),
+      modelOptions: this.modelOptions(),
+      onPatch: (patch) => this.state.patch(patch),
+      onError: (message) => this.setError(message),
+    });
+    this.filterStatus.replaceWith(next);
+    this.filterStatus = next;
   }
 
   renderOverview({ preserveScroll = false } = {}) {
@@ -456,6 +509,9 @@ export class WorkspaceApp {
   // ---------- details module ----------
 
   renderDetails({ preserveScroll = false } = {}) {
+    // 本函数会重建 .tt-module-bd，明细筛选的下拉随之被替换：先把已打开的浮层摘干净。
+    closeOpenSelect();
+    closeOpenDate();
     let el = this.container.querySelector("#details-module");
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
@@ -487,9 +543,9 @@ export class WorkspaceApp {
   }
 
   renderDetailsFilters(s) {
-    const agents = [{ value: "", label: "全部 Agent" }, ...(this.dashboard?.agents || []).map((a) => ({ value: a.id, label: a.name || a.id }))];
-    const models = [{ value: "", label: "全部模型" }, ...(this.dashboard?.models || []).map((m) => ({ value: m, label: m }))];
-    const providers = [{ value: "", label: "全部 Provider" }, ...(this.dashboard?.providers || []).map((p) => ({ value: p, label: p }))];
+    const agents = this.agentOptions();
+    const models = this.modelOptions();
+    const providers = this.providerOptions();
 
     return h("div", { className: "tt-pills" },
       renderPills(RANGES, s.range, (v) => this.state.patch({ range: v, from: "", to: "" })),
@@ -561,6 +617,8 @@ export class WorkspaceApp {
   }
 
   bindDetailsFilters() {
+    // 原生 select 保留为状态源，这里把它们换成自绘下拉（幂等，重复调用无副作用）。
+    enhanceSelects(this.container);
     this.container.querySelector("#details-agent")?.addEventListener("change", (e) => this.state.patch({ agent: e.target.value }));
     this.container.querySelector("#details-model")?.addEventListener("change", (e) => this.state.patch({ model: e.target.value }));
     this.container.querySelector("#details-provider")?.addEventListener("change", (e) => this.state.patch({ provider: e.target.value }));

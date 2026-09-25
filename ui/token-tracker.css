@@ -701,7 +701,6 @@ body {
 .tt-form-row input[type="text"],
 .tt-form-row input[type="number"],
 .tt-form-row input[type="password"],
-.tt-form-row select,
 .tt-form-row textarea {
   font: inherit;
   font-size: 12px;
@@ -712,9 +711,25 @@ body {
   color: var(--tt-t1);
 }
 
+/* 自绘下拉触发器在表单里沿用输入框的外观；原生 select 已视觉隐藏。 */
+.tt-form-row .tt-select {
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 9px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-inner);
+  background: var(--tt-card);
+  color: var(--tt-t1);
+}
+
 .tt-form-row input:focus,
-.tt-form-row select:focus,
 .tt-form-row textarea:focus {
+  outline: none;
+  border-color: var(--tt-select-b);
+}
+
+.tt-form-row .tt-select:focus-visible,
+.tt-form-row .tt-select[aria-expanded="true"] {
   outline: none;
   border-color: var(--tt-select-b);
 }
@@ -790,8 +805,11 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-filter-chip { display: inline-flex; align-items: center; flex: 0 0 auto; max-width: 290px; min-height: 26px; padding: 0 9px; gap: 4px; border: 1px solid var(--tt-b2); border-radius: 999px; color: var(--tt-t2); background: var(--tt-card); }
 .tt-filter-chip.active { background: var(--tt-select-bg); color: var(--tt-select-fg); border-color: var(--tt-select-b); }
 .tt-filter-chip-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.tt-filter-chip button { flex: 0 0 24px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; font: 16px/1 var(--font-sans); cursor: pointer; }
-.tt-filter-chip button:hover { background: var(--tt-row-hover); }
+/* 只作用于 chip 的直接子按钮（即供应商 / 类型 chip 的 ×）：
+   写成 `.tt-filter-chip button` 会连时间面板里的 pill 和日期按钮一起命中，
+   给它们套上 flex: 0 0 24px / width: 24px，文字被挤成竖排。 */
+.tt-filter-chip > button { flex: 0 0 24px; width: 24px; height: 24px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; font: 16px/1 var(--font-sans); cursor: pointer; }
+.tt-filter-chip > button:hover { background: var(--tt-row-hover); }
 .tt-filter-unrestricted { color: var(--tt-t2); white-space: nowrap; }
 .tt-filter-clear { flex: 0 0 auto; margin-left: auto; border: 1px solid var(--tt-b2); border-radius: 999px; background: var(--tt-card); color: var(--tt-t2); font: inherit; padding: 5px 10px; cursor: pointer; }
 .tt-filter-clear:hover { color: var(--tt-t1); border-color: var(--tt-select-b); }
@@ -801,7 +819,7 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-date-picker > summary::-webkit-details-marker, .tt-display-settings > summary::-webkit-details-marker { display: none; }
 .tt-date-picker[open] > summary, .tt-display-settings[open] > summary { border-color: var(--tt-blue); color: var(--tt-t1); }
 .tt-board-dates, .tt-display-menu { position: absolute; top: calc(100% + 7px); right: 0; z-index: 5; padding: 12px; border: 1px solid var(--tt-b2); border-radius: 10px; background: var(--tt-card); display: flex; gap: 8px; align-items: center; white-space: nowrap; }
-.tt-board-dates input { color: var(--tt-t1); background: var(--tt-bg); border: 1px solid var(--tt-b2); border-radius: 5px; padding: 6px; font: 11px var(--font-sans); max-width: 124px; }
+.tt-board-dates .tt-date-field { background: var(--tt-bg); max-width: 128px; }
 .tt-board-dates > span { color: var(--tt-t2); font-size: 10px; }
 .tt-display-menu { min-width: 135px; flex-direction: column; align-items: stretch; }
 .tt-display-menu button { text-align: left; border: 1px solid transparent; background: transparent; color: var(--tt-t2); font: 12px var(--font-sans); padding: 7px 9px; border-radius: 5px; cursor: pointer; }
@@ -955,8 +973,334 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
   padding-top: max(0px, calc(var(--titlebar-h, 44px) + 8px - var(--tt-page-inset, 18px)));
   -webkit-app-region: no-drag;
 }
-.tt-dashboard-app :is(button, input, select, summary) { -webkit-app-region: no-drag; }
+.tt-dashboard-app :is(button, input, select, summary, .tt-select, .tt-date-field) { -webkit-app-region: no-drag; }
 @media (max-width: 650px) {
   /* The heading already puts the wrapped controls below the drag strip. */
   .tt-dashboard-app .tt-board-controls { padding-top: 0; }
+}
+
+/* ══════════════════════════════════════════════════════════════════
+   自绘下拉 / 日期（视觉全走 --tt-* 变量，深色/浅色/宿主三态都自然）
+   原生 select 与 input[type=date] 已视觉隐藏，仅作状态源。
+   ══════════════════════════════════════════════════════════════ */
+.tt-select {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 5px 9px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-inner);
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  font: 11px var(--font-sans);
+  line-height: 1.2;
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+  -webkit-app-region: no-drag;
+}
+.tt-select:hover { border-color: var(--tt-select-b); background: var(--tt-row-hover); }
+.tt-select:focus-visible {
+  outline: none;
+  border-color: var(--tt-blue);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--tt-blue) 26%, transparent);
+}
+.tt-select.open,
+.tt-select[aria-expanded="true"] { border-color: var(--tt-blue); }
+.tt-select.empty .tt-select-label { color: var(--tt-t3); }
+.tt-select-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tt-select::after {
+  content: "";
+  flex: 0 0 7px;
+  width: 7px;
+  height: 7px;
+  margin-left: 2px;
+  background: currentColor;
+  opacity: .5;
+  -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l5 5 5-5'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 8' fill='none' stroke='%23000' stroke-width='1.6' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='M1 1l5 5 5-5'/%3E%3C/svg%3E") center/contain no-repeat;
+  transition: transform .15s ease;
+}
+.tt-select.open::after,
+.tt-select[aria-expanded="true"]::after { transform: rotate(180deg); }
+
+/* 明细筛选处原为 .tt-pill，触发器沿用同一视觉（与相邻 pill 按钮一致）。 */
+.tt-dashboard-app .tt-select.tt-pill {
+  border-radius: 6px;
+  padding: 5px 9px;
+  font-size: 10px;
+  border: 1px solid transparent;
+  color: var(--tt-t2);
+  background: transparent;
+}
+.tt-dashboard-app .tt-select.tt-pill:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tt-dashboard-app .tt-select.tt-pill.open,
+.tt-dashboard-app .tt-select.tt-pill[aria-expanded="true"] {
+  border-color: var(--tt-select-b);
+  background: var(--tt-select-bg);
+  color: var(--tt-select-fg);
+}
+
+.tt-select-panel {
+  position: fixed;
+  z-index: 2600;
+  box-sizing: border-box;
+  min-width: 120px;
+  max-height: 240px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 4px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-card);
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  box-shadow: 0 10px 26px color-mix(in srgb, #000 20%, transparent), 0 2px 8px color-mix(in srgb, #000 10%, transparent);
+  opacity: 0;
+  transform: scale(.97) translateY(-4px);
+  transform-origin: top left;
+  transition: opacity .12s ease, transform .12s ease;
+  pointer-events: none;
+  scrollbar-width: thin;
+  scrollbar-color: var(--tt-b2) transparent;
+  -webkit-app-region: no-drag;
+}
+.tt-select-panel.flip { transform-origin: bottom left; }
+.tt-select-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
+.tt-select-panel::-webkit-scrollbar { width: 8px; }
+.tt-select-panel::-webkit-scrollbar-track { background: transparent; }
+.tt-select-panel::-webkit-scrollbar-thumb {
+  background: var(--tt-b2);
+  border-radius: 4px;
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.tt-select-panel::-webkit-scrollbar-thumb:hover {
+  background: var(--tt-t3);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+.tt-select-option {
+  position: relative;
+  padding: 7px 12px 7px 24px;
+  border-radius: var(--tt-radius-inner);
+  font: 11px var(--font-sans);
+  color: var(--tt-t1);
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: background .12s ease;
+}
+.tt-select-option:hover,
+.tt-select-option.active { background: var(--tt-row-hover); }
+.tt-select-option[aria-selected="true"] { color: var(--tt-select-fg); background: var(--tt-select-bg); }
+.tt-select-option[aria-selected="true"]::before {
+  content: "\2713";
+  position: absolute;
+  left: 9px;
+  color: var(--tt-select-fg);
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+/* ── 自绘日期字段与日历 ── */
+.tt-date-field {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 104px;
+  padding: 5px 9px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-inner);
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  font: 11px var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  user-select: none;
+  transition: border-color .15s ease, background .15s ease, box-shadow .15s ease;
+  -webkit-app-region: no-drag;
+}
+.tt-date-field:hover { border-color: var(--tt-select-b); }
+.tt-date-field:focus-visible {
+  outline: none;
+  border-color: var(--tt-blue);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--tt-blue) 26%, transparent);
+}
+.tt-date-field.open { border-color: var(--tt-blue); }
+.tt-date-field.empty .tt-date-field-label { color: var(--tt-t3); }
+.tt-date-field-label { flex: 1 1 auto; white-space: nowrap; }
+.tt-date-field::after {
+  content: "";
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  background: currentColor;
+  opacity: .5;
+  -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='12' height='11' rx='2'/%3E%3Cpath d='M2 6.5h12M5.5 1.5v3M10.5 1.5v3'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='3' width='12' height='11' rx='2'/%3E%3Cpath d='M2 6.5h12M5.5 1.5v3M10.5 1.5v3'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+
+.tt-date-popup {
+  position: fixed;
+  z-index: 2600;
+  box-sizing: border-box;
+  width: 226px;
+  padding: 10px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-card);
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  box-shadow: 0 12px 30px color-mix(in srgb, #000 22%, transparent), 0 2px 8px color-mix(in srgb, #000 10%, transparent);
+  opacity: 0;
+  transform: scale(.97) translateY(-4px);
+  transform-origin: top left;
+  transition: opacity .12s ease, transform .12s ease;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+.tt-date-popup.flip { transform-origin: bottom left; }
+.tt-date-popup.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
+.tt-date-popup-hd { display: flex; align-items: center; justify-content: space-between; gap: 6px; margin-bottom: 8px; }
+.tt-date-month { font: 600 12px var(--font-sans); color: var(--tt-t1); }
+.tt-date-nav {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--tt-radius-inner);
+  background: transparent;
+  color: var(--tt-t2);
+  font: 14px/1 var(--font-sans);
+  cursor: pointer;
+}
+.tt-date-nav:hover { background: var(--tt-row-hover); color: var(--tt-t1); border-color: var(--tt-b2); }
+.tt-date-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 2px; }
+.tt-date-weekday {
+  display: grid;
+  place-items: center;
+  height: 20px;
+  font: 10px var(--font-sans);
+  color: var(--tt-t3);
+}
+.tt-date-day {
+  display: grid;
+  place-items: center;
+  height: 26px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--tt-radius-inner);
+  background: transparent;
+  color: var(--tt-t1);
+  font: 11px var(--font-sans);
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.tt-date-day.blank { pointer-events: none; }
+.tt-date-day:hover { background: var(--tt-row-hover); }
+.tt-date-day.today { border-color: var(--tt-select-b); color: var(--tt-select-fg); }
+.tt-date-day.selected {
+  background: var(--tt-select-bg);
+  border-color: var(--tt-select-b);
+  color: var(--tt-select-fg);
+  font-weight: 600;
+}
+.tt-date-popup button:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; }
+
+/* ── 「当前范围」里的三个常驻 chip：时间 / Agent / 模型 ── */
+.tt-filter-status .tt-select.tt-filter-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid var(--tt-b2);
+  border-radius: 999px;
+  background: var(--tt-card);
+  color: var(--tt-t2);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.tt-filter-status .tt-select.tt-filter-chip:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tt-filter-status .tt-select.tt-filter-chip:not(.empty) {
+  background: var(--tt-select-bg);
+  color: var(--tt-select-fg);
+  border-color: var(--tt-select-b);
+}
+.tt-filter-status .tt-select.tt-filter-chip.empty .tt-select-label { color: inherit; }
+.tt-filter-status .tt-select.tt-filter-chip::after { flex: 0 0 6px; width: 6px; height: 6px; margin-left: 1px; }
+.tt-filter-status .tt-select.tt-filter-chip:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; color: var(--tt-t1); }
+
+/* 自绘下拉触发器里的 ×（clearable）：与标签、箭头同一个框，排在箭头之后。
+   选择器要写得比 `.tt-filter-chip > button` 更具体，否则会被它套成 24px 圆按钮。 */
+.tt-select .tt-select-clear { order: 1; flex: 0 0 16px; width: 16px; height: 16px; margin-left: 1px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; font: 13px/1 var(--font-sans); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.tt-select .tt-select-clear[hidden] { display: none; }
+.tt-select .tt-select-clear:hover { background: var(--tt-row-hover); }
+
+/* 时间 chip：<details> 只做定位壳，chip 外观落在 <summary> 上。 */
+.tt-filter-status .tt-filter-chip.tt-filter-time { border: 0; padding: 0; background: transparent; gap: 0; max-width: none; }
+.tt-filter-time > summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-height: 26px;
+  padding: 4px 10px;
+  border: 1px solid var(--tt-b2);
+  border-radius: 999px;
+  background: var(--tt-card);
+  color: var(--tt-t2);
+  font-size: 11px;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  list-style: none;
+  transition: border-color .15s ease, background .15s ease, color .15s ease;
+}
+.tt-filter-time > summary::-webkit-details-marker { display: none; }
+.tt-filter-time > summary:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tt-filter-time > summary:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; }
+.tt-filter-time.is-set > summary,
+.tt-filter-time[open] > summary { background: var(--tt-select-bg); color: var(--tt-select-fg); border-color: var(--tt-select-b); }
+
+/* 时间面板：fixed 逃出 .tt-filter-chips 的 overflow-x 裁剪，随 details 一起被移除。 */
+.tt-filter-time-panel {
+  position: fixed;
+  z-index: 2600;
+  box-sizing: border-box;
+  width: 260px;
+  max-width: calc(100vw - 24px);
+  padding: 10px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-card);
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  box-shadow: 0 12px 30px color-mix(in srgb, #000 22%, transparent), 0 2px 8px color-mix(in srgb, #000 10%, transparent);
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  opacity: 0;
+  transform: scale(.97) translateY(-4px);
+  transform-origin: top left;
+  transition: opacity .12s ease, transform .12s ease;
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+}
+.tt-filter-time-panel.flip { transform-origin: bottom left; }
+.tt-filter-time-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
+.tt-filter-time-panel .tt-pills { display: flex; flex-wrap: wrap; gap: 4px; }
+.tt-filter-time-sep { height: 1px; background: var(--tt-b3); }
+.tt-filter-time-dates { display: flex; align-items: center; gap: 6px; }
+.tt-filter-time-dates > span { color: var(--tt-t2); font-size: 10px; }
+.tt-filter-time-dates .tt-date-field { flex: 1 1 0; min-width: 0; }
+.tt-filter-time-actions { display: flex; justify-content: flex-end; }
+@media (max-width: 650px) {
+  .tt-filter-time-panel { width: auto; min-width: 210px; }
 }
