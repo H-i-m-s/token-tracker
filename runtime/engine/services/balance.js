@@ -1,4 +1,5 @@
 import { resolveHanaHome, readTextFile } from "./platform.js";
+import { writeFileAtomic } from "./jsonl-log.js";
 // ── 余额/余量统一适配层（P0-1 / P1）──
 // 从 routes/dashboard.js 收拢：通用 fetchBalance（自动格式判断）、MiniMax TokenPlan、
 // 商汤 Sensenova（IAM 登录/刷新 + TokenPlan 积分池 + coding-plan 回退）、火山方舟 Coding Plan。
@@ -438,17 +439,56 @@ async function fetchSensenovaQuota(dataDir, apiConfig) {
   }
 }
 
-// 持久化 sensenova 令牌回 balance-apis.json（登录/刷新后更新，避免每次都走 OAuth2）
-async function persistSensenovaToken(dataDir, apiConfig) {
-  try {
+// 判断入参 access_token 是否比已存的更新：以 JWT 的 exp 比较；
+// 同值不覆盖；任一侧解析不出过期时间时不覆盖（宁可保守，也不让旧副本写回）。
+function sensenovaTokenIsNewer(savedToken, incomingToken) {
+  if (!incomingToken) return false;
+  if (!savedToken) return true;
+  if (savedToken === incomingToken) return false;
+  const se = sensenovaTokenExp(savedToken);
+  const ie = sensenovaTokenExp(incomingToken);
+  if (se && ie) return ie > se;
+  return false;
+}
+
+// 持久化 sensenova 令牌回 balance-apis.json（登录/刷新后更新，避免每次都走 OAuth2）。
+// 原子写 + 串行化：多个余额查询可能同时登录/刷新，若各自 read-modify-write 会互相覆盖。
+// 用一个进程内写入队列把「读最新文件 → 合并 → 原子替换」整体串起来，后一次基于前一次的结果，
+// 且只有确实更新的令牌才会写回——旧调用方副本不能覆盖新令牌（按 exp 选新），任一次失败也不
+// 会破坏旧文件（读不出旧文件就放弃写入，写走 tmp + rename）。
+let sensenovaTokenWriteQueue = Promise.resolve();
+
+function persistSensenovaToken(dataDir, apiConfig) {
+  const run = () => {
     const p = path.join(dataDir, "balance-apis.json");
-    let saved = {};
-    if (fs.existsSync(p)) saved = JSON.parse(readTextFile(p));
-    if (!saved.sensenova) saved.sensenova = {};
-    if (apiConfig.token) saved.sensenova.token = apiConfig.token;
-    if (apiConfig.refreshToken) saved.sensenova.refreshToken = apiConfig.refreshToken;
-    fs.writeFileSync(p, JSON.stringify(saved, null, 2));
-  } catch {}
+    let saved;
+    if (fs.existsSync(p)) {
+      // 读不出来就放弃这次写入，绝不覆盖一份读不懂的旧文件。
+      saved = JSON.parse(readTextFile(p));
+      if (!saved || typeof saved !== "object") throw new Error("balance-apis.json 内容不是对象");
+    } else {
+      saved = {};
+    }
+    if (!saved.sensenova || typeof saved.sensenova !== "object") saved.sensenova = {};
+    let changed = false;
+    // 只在入参令牌确实比已存的“新”时才覆盖 token。
+    const acceptToken = sensenovaTokenIsNewer(saved.sensenova.token, apiConfig.token);
+    if (acceptToken) { saved.sensenova.token = apiConfig.token; changed = true; }
+    // refresh_token 只在本次确实接受了新 token、或原本没有时写入，
+    // 避免一次较旧的登录把新登录轮换出来的刷新令牌覆盖回去。
+    if (apiConfig.refreshToken && apiConfig.refreshToken !== saved.sensenova.refreshToken
+      && (acceptToken || !saved.sensenova.refreshToken)) {
+      saved.sensenova.refreshToken = apiConfig.refreshToken;
+      changed = true;
+    }
+    if (!changed) return false;
+    writeFileAtomic(p, JSON.stringify(saved, null, 2));
+    return true;
+  };
+  const next = sensenovaTokenWriteQueue.then(run, run);
+  // 队列不能因为一次失败而卡死后续写入（失败由调用方的 .catch 处理）。
+  sensenovaTokenWriteQueue = next.catch(() => {});
+  return next;
 }
 
 // ── 订阅余量查询（Sensenova 等 per-model-quota 类型） ──

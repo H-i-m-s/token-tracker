@@ -4,6 +4,9 @@ import path from "node:path";
 import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
+import { createJsonJournalStore } from "./services/json-journal-store.js";
+import { openArchiveStore } from "./services/archive-store.js";
+import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
@@ -64,26 +67,34 @@ export default class TokenTrackerPlugin {
     shared.fullScan = () => shared.scan(true);
 
     // 缓存有效时走增量扫描，仅首次/版本升级时全量（后台执行，不阻塞启动）
-    // 介质优先按行存进 SQLite（一次只写变化的行）；拿不到驱动就退回 JSON 快照。
+    // 介质优先按行存进 SQLite（一次只写变化的行）；拿不到驱动就用追加式 JSON 日志，
+    // 主文件仍是 token-cache.json，同样只追加变化会话，不再每次整库重写。
     const DatabaseSync = loadSqliteDriver();
     let store = null;
+    let usingSqlite = false;
     if (DatabaseSync) {
       try {
         store = createSqliteCacheStore({ DatabaseSync, file: path.join(path.dirname(cachePath), "cache.sqlite"), log });
+        usingSqlite = true;
       } catch (e) {
-        log.warn("[token-tracker] sqlite 缓存不可用，退回 JSON 快照：", e.message);
+        log.warn("[token-tracker] sqlite 缓存不可用，退回 JSON 追加日志：", e.message);
         store = null;
       }
     }
-    let old = store ? store.load() : null;
-    if (!old) {
+    if (!store) store = createJsonJournalStore({ file: cachePath, log });
+    let old = store.load();
+    if (!old && usingSqlite) {
       old = loadCache(cachePath, log);
-      if (old && store) {
-        // 首次把旧 JSON 快照搬进 SQLite：旧文件改名留底，随时能退回去。
+      if (old) {
+        // 首次把旧 JSON 快照搬进 SQLite：先写一份自洽的整份快照（含从追加日志/meta 合并回来的
+        // 最新态）再改名留底，随后清理 .journal / .meta 边车，避免日后降级复活 stale 数据。
+        // 备份命名走 renameToBackup：已存在 token-cache.json.imported 时绝不删除，改用带时间戳的新名。
         try {
-          fs.rmSync(cachePath + ".imported", { force: true });
-          fs.renameSync(cachePath, cachePath + ".imported");
-          log.info("[token-tracker] 旧 JSON 快照已改名留底：token-cache.json.imported");
+          writeFileAtomic(cachePath, JSON.stringify(old));
+          const dest = renameToBackup(cachePath, ".imported");
+          fs.rmSync(cachePath + ".journal", { force: true });
+          fs.rmSync(cachePath + ".meta", { force: true });
+          log.info("[token-tracker] 旧 JSON 快照已改名留底：" + path.basename(dest));
         } catch (e) {
           log.warn("[token-tracker] 旧 JSON 快照改名失败：", e.message);
         }
@@ -96,7 +107,11 @@ export default class TokenTrackerPlugin {
 
     // 落盘调度：变化只标脏（见 createPersistScheduler），退出时再刷一次。
     // 计数从上一份缓存里续上，“今日累计”跟重启前的接得起。
-    const persist = createPersistScheduler({ cachePath, log, getData: () => shared.data, store, initial: old?.persist });
+    // 即使会话为空（load 返回 null），meta 仍可通过 readMeta() 读回，不让计数被静默清零。
+    const initialPersist = (old && old.persist)
+      || (typeof store.readMeta === "function" ? store.readMeta()?.persist : null)
+      || null;
+    const persist = createPersistScheduler({ cachePath, log, getData: () => shared.data, store, initial: initialPersist });
     shared.persist = persist;
     this.register(() => { try { persist.stop(); } catch (e) { log.warn("[token-tracker] final flush failed:", e.message); } });
 
@@ -1219,25 +1234,36 @@ function computePrediction(cache, dailyGlobal) {
 // ─── 独立历史归档（usage-archive.json）───
 // 核心 usage-ledger 是 5000 条环形缓冲，满了会挤掉最旧记录；
 // 插件把账本记录按 requestId 去重归档到这里，统计从归档构建，账本丢数据不影响历史。
-// 内部数据文件，紧凑存储（不带缩进）；原子写（tmp + rename）防半截写入。
+// 内部数据文件；条目紧凑存储（不带缩进）。历史只追加：新增条目写进 usage-archive.jsonl，
+// 只有一次性迁移用 tmp + rename 原子落地，之后不再整份重写历史。
+// 读：以追加日志（usage-archive.jsonl）为准，旧版单文件首次读取时一次性安全迁移。
+// 返回对象仍是 { version, updatedAt, entries } 形状；内部句柄挂在不可枚举的 _store 上，
+// 供 saveArchive 做增量追加。
 function loadArchive(p, log) {
-  let raw;
-  try { raw = readTextFile(p); }
-  catch (e) {
-    if (e && e.code === "ENOENT") return null;
-    if (log) log.warn("[token-tracker] archive read failed:", e.code || "", e.message);
-    return null;
-  }
-  try { return JSON.parse(raw); }
-  catch (e) {
-    if (log) log.warn("[token-tracker] archive parse failed:", p, e.message);
-    // 保留损坏文件供人工恢复，下次扫描重新播种
-    try { fs.renameSync(p, p + ".corrupt-" + Date.now()); } catch {}
-    return null;
-  }
+  const store = openArchiveStore(p, log);
+  const data = { version: ARCHIVE_VERSION, entries: store.entries };
+  Object.defineProperty(data, "_store", { value: store, enumerable: false, configurable: true });
+  Object.defineProperty(data, "updatedAt", {
+    get: () => store.updatedAt,
+    set: (v) => { store.updatedAt = v; },
+    enumerable: true, configurable: true,
+  });
+  return data;
 }
 
+// 写：只追加新增条目（按 requestId 去重），不再整份重写历史。
 function saveArchive(p, data, log) {
+  const store = data && data._store;
+  if (store) {
+    try {
+      store.appendPending();
+      return true;
+    } catch (e) {
+      if (log) log.warn("[token-tracker] saveArchive failed:", p, e.message);
+      return false;
+    }
+  }
+  // 兜底：没有日志句柄时按老办法整写一份（正常启动路径不会走到）。
   try {
     const dir = path.dirname(p);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
@@ -1404,32 +1430,22 @@ export function createPersistScheduler({ cachePath, log, getData, store = null, 
   };
 }
 
+// 读整份缓存（基线快照 + 追加日志重放）。调用方语义不变：返回完整缓存对象或 null。
 function loadCache(p, log) {
-  let raw;
-  try { raw = readTextFile(p); }
-  catch (e) {
-    if (e && e.code === "ENOENT") return null;
+  try {
+    return createJsonJournalStore({ file: p, log }).load();
+  } catch (e) {
     if (log) log.warn("[token-tracker] cache read failed:", e.code || "", e.message);
-    return null;
-  }
-  try { return JSON.parse(raw); }
-  catch (e) {
-    if (log) log.warn("[token-tracker] cache parse failed (corrupted file?):", p, e.message);
     return null;
   }
 }
 
+// 显式整份落盘：把当前态压成自洽基线并清空日志（原子写）。调用方语义不变。
 function saveCache(p, data, log) {
   try {
-    const dir = path.dirname(p);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    // 紧凑 + 原子替换：与调度器同一条磁盘路径，避免出现两种格式或半截文件。
-    const tmp = p + ".tmp";
-    fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
-    fs.renameSync(tmp, p);
-    return true;
+    return createJsonJournalStore({ file: p, log }).compact(data);
   } catch (e) {
-    if (log) log.warn("[token-tracker] saveCache failed:", p, e.message);
+    if (log) log.warn("[token-tracker] saveCache failed:", e.code || "", e.message);
     return false;
   }
 }
