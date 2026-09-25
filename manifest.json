@@ -3,7 +3,7 @@
   "id": "token-tracker-app",
   "name": "Token 用量",
   "description": "独立 Token 用量应用：内置会话扫描、历史归档、余额查询与原生看板；无需配套插件，支持接续旧版数据。",
-  "version": "8.1.0",
+  "version": "8.2.0",
   "minAppVersion": "0.978.0",
   "entry": "index.js",
   "capabilities": [
