@@ -4,7 +4,7 @@ import { renderAnalytics, BOARD_RANGES } from "./analytics.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, fmt, fmtCost, fmtPct, formatTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
+import { h, RANGES, fmt, fmtPct, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
 import { drawSparkline, drawRing } from "./charts.mjs";
 
 const PAGE_SIZE = 10;
@@ -507,12 +507,11 @@ export class WorkspaceApp {
 
     const thead = h("thead", {},
       h("tr", {},
-        h("th", { style: "width:12%" }, "时间"),
-        h("th", { style: "width:14%" }, "Agent"),
-        h("th", { style: "width:14%" }, "Provider"),
-        h("th", { style: "width:18%" }, "模型"),
-        h("th", { style: "width:28%;text-align:right" }, "Token"),
-        h("th", { style: "width:14%;text-align:right" }, "成本"),
+        h("th", { style: "width:17%" }, "时间"),
+        h("th", { style: "width:13%" }, "Agent"),
+        h("th", { style: "width:13%" }, "Provider"),
+        h("th", { style: "width:15%" }, "模型"),
+        h("th", { style: "width:42%;text-align:right" }, "Token"),
       ),
     );
 
@@ -520,13 +519,17 @@ export class WorkspaceApp {
       ...pageRows.map((r) => {
         const ratio = maxTokens > 0 ? Math.min(100, ((r.totalTokens || 0) / maxTokens) * 100) : 0;
         return h("tr", { className: this.dashboard?.summary?.highUsageThreshold > 0 && r.totalTokens >= this.dashboard.summary.highUsageThreshold ? "tt-high-usage" : "" },
-          h("td", {}, formatTime(r.time)),
+          h("td", {}, formatDateTime(r.time)),
           h("td", { title: r.agent }, r.agentName || r.agent || "—"),
           h("td", { title: r.provider }, r.provider || "—"),
           h("td", { title: r.model }, r.model || "—"),
           h("td", { className: "dual" },
             h("div", { style: "display:flex;align-items:baseline;justify-content:flex-end;gap:4px" },
-              h("span", { className: "tt-table-unit", style: "margin-right:auto" }, "— /"),
+              h("span", { className: "tt-table-unit", style: "margin-right:auto" },
+                r.inputTokens != null || r.outputTokens != null
+                  ? "输入 " + fmt(r.inputTokens || 0) + " · 输出 " + fmt(r.outputTokens || 0)
+                  : "输入 / 输出 —",
+              ),
               h("span", { className: "out" }, fmt(r.totalTokens || 0)),
               h("span", { className: "tt-table-unit" }, "tok"),
             ),
@@ -534,7 +537,6 @@ export class WorkspaceApp {
               h("i", { style: `width:${ratio.toFixed(1)}%` }),
             ),
           ),
-          h("td", { className: "num" }, fmtCost(r.cost)),
         );
       }),
     );
@@ -602,6 +604,21 @@ export class WorkspaceApp {
     const rt = this.snapshot?.realtime || { connected: false, tps: 0, contextPercent: 0, model: "—", agentName: "—", contextTokens: 0, contextWindow: 0, updatedAt: null };
     const cpShow = rt.contextPercent > 100 ? "99+" : Math.round(rt.contextPercent).toString();
 
+    // 扫描结果写入统计：这份文件是派生数据，写入量该跟“变化量”走而不是“数据量”（见引擎里的落盘调度器）。
+    // 叫“扫描结果”而不是“缓存”：界面里其他地方的“缓存”都指模型侧的提示缓存，不要撞名。
+    const persistLine = (() => {
+      const p = this.snapshot?.persist;
+      if (!p) return null; // 旧引擎没这个字段 → 整行不显示
+      const bytes = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MiB" : n >= 1024 ? Math.round(n / 1024) + " KiB" : n + " B";
+      if (!p.lastAt) return "还没写（攒批中）";
+      return [
+        timeAgo(new Date(p.lastAt).getTime()),
+        p.lastBytes ? bytes(p.lastBytes) : null,
+        p.lastReason || null,
+        p.dayBytes ? "今日 " + bytes(p.dayBytes) : null,
+      ].filter(Boolean).join(" · ");
+    })();
+
     el.innerHTML = "";
     el.append(
       h("div", { className: "tt-module-hd" },
@@ -633,6 +650,10 @@ export class WorkspaceApp {
         h("div", { className: "tt-spark-labels" },
           h("span", {}, "tps 趋势"),
           h("span", {}, `峰值 ${fmt(Math.max(...this.sparkHistory, 0))}`),
+        ),
+        persistLine && h("div", { className: "tt-rt-cache" },
+          h("span", { title: "应用把会话扫描结果写进本地文件；与模型侧的缓存命中无关" }, "扫描结果写入"),
+          h("span", {}, persistLine),
         ),
       ),
     );

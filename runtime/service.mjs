@@ -6,6 +6,9 @@ import { migrateLegacy } from './migration.mjs';
 
 const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (!path.isAbsolute(config.homeDir) || !path.isAbsolute(config.dataDir) || !/^[a-f0-9]{64}$/.test(config.secret)) throw new Error('Invalid runtime configuration');
+// 配置里装的是本机访问密钥，已读进内存就没用了：立刻删掉，不给硬盘留垃圾。
+// （父进程收尾时也会删一次，那是兜底；被硬杀留下的残留由下次启动清扫。）
+try { fs.rmSync(process.argv[2], { force: true }); } catch {}
 process.env.HANA_HOME = config.homeDir;
 process.env.TOKEN_TRACKER_DATA_DIR = config.dataDir;
 const migration = migrateLegacy(config.homeDir, config.dataDir);
@@ -31,7 +34,7 @@ const bus = {
   },
 };
 const engine = new Engine();
-engine.ctx = { dataDir: config.dataDir, config: { get: () => undefined }, log: { info() {}, warn: (...args) => console.warn(...args), error: (...args) => console.error(...args) }, bus };
+engine.ctx = { dataDir: config.dataDir, config: { get: () => undefined }, log: { info: (...args) => console.log(...args), warn: (...args) => console.warn(...args), error: (...args) => console.error(...args) }, bus };
 engine.register = fn => disposers.push(fn);
 let initializationError = null;
 
@@ -49,7 +52,7 @@ async function request(method, payload = {}) {
     view.summary.highUsageThreshold = handlers.get('token-tracker.settings.read')().highUsageThreshold;
     return view;
   }
-  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
+  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
   if (!name) throw Object.assign(new Error('Unknown method'), { status: 404 });
   const value = await handlers.get('token-tracker.' + name)(payload);
   if (method === 'snapshot') { value.revision = revision; if (value.realtime) delete value.realtime.sessionPath; }
@@ -100,6 +103,9 @@ console.log('TOKEN_TRACKER_READY');
 // Let the host mark the HTTP service ready before the initial history scan.
 // Large histories must not be mistaken for a failed runtime startup.
 setImmediate(async () => {
+  // 注意：这里传的是一个空壳 router（get/post 都不干活）。routes/dashboard.js 里的 app.get/app.post
+  // 全部注册在这个空壳上，等于不生效——那是引擎自带旧看板的残留（页面资产已删）。
+  // 真正在用的是它的另一件事：把 ctx._buildDashboardData 挂到引擎上下文上（下面几行的总线处理器要它）。
   try { await engine.onload(); registerDashboard({ get() {}, post() {} }, engine.ctx); }
   catch (error) { initializationError = error; console.error('Token scanner initialization failed:', error.code || error.message); }
 });

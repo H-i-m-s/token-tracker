@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { createEventStreams } from "./lib/event-stream.mjs";
 import { EventEmitter } from "node:events";
 import { LocalClient } from "./lib/local-client.mjs";
+import { SessionCacheStatus } from "./lib/session-cache.mjs";
 import { shapeSnapshot, shapeBalances } from "./lib/snapshot-service.mjs";
 import { okResponse, errResponse } from "./lib/api-errors.mjs";
 
@@ -44,6 +45,27 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
 
   const defaultMock = process.env.TOKEN_TRACKER_MOCK === "1";
   const busClient = clientFactory({ ctx, log, defaultMock });
+  // 输入栏状态位：本会话缓存命中率 + 本会话最近一次生成速度（见 lib/session-cache.mjs）。
+  // 速度走内置服务按真实会话文件路径取，拿不到就返回 null，界面显示“—”。
+  const speedQuery = (sessionPath) => busClient.request("token-tracker.speed", { sessionPath })
+    .then(sample => sample || null)
+    .catch(() => null);
+  // 会话 id → 真实会话文件路径：向宿主一次性要对照表（scope:"all"，需 app/sessions.read）。
+  // 只取 sessionId 与 path 两个字段做身份对齐，不读会话正文；失败时安静退化到全机兜底。
+  const listSessions = async () => {
+    try {
+      const result = await ctx.bus.request("session:list", { scope: "all", lifecycle: "active" });
+      const list = Array.isArray(result?.sessions) ? result.sessions : [];
+      return list
+        .map(s => ({ sessionId: s?.sessionId, path: s?.path }))
+        .filter(s => typeof s.sessionId === "string" && s.sessionId && typeof s.path === "string" && s.path);
+    } catch (e) {
+      log("warn", `会话对照表获取失败（session:list）：${e?.message || e}`);
+      return [];
+    }
+  };
+  const sessionCache = new SessionCacheStatus({ bus: ctx.bus, inputStatus: ctx.inputStatus, log, speedQuery, listSessions });
+  const unsubSessionCache = sessionCache.start();
 
   const updateEmitter = new EventEmitter();
   updateEmitter.setMaxListeners(25);
@@ -154,6 +176,8 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     });
   } catch (err) {
     unsubscribeUpdates?.();
+    try { unsubSessionCache?.(); } catch {}
+    sessionCache.dispose();
     streams.dispose();
     busClient.dispose?.();
     log("error", "ctx.routes.register 失败:", err?.message || err);
@@ -166,6 +190,8 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
   return async () => {
     if (disposed) return;
     disposed = true;
+    try { unsubSessionCache?.(); } catch {}
+    sessionCache.dispose();
     try { unsubscribeUpdates(); } catch {}
     streams.dispose();
     updateEmitter.removeAllListeners();

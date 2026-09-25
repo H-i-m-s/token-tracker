@@ -190,9 +190,12 @@ const HOME = resolveHanaHome();
 const ENGINE_DATA = process.env.TOKEN_TRACKER_DATA_DIR;
 if (!ENGINE_DATA) throw new Error("TOKEN_TRACKER_DATA_DIR is required");
 const APP = path.join(path.dirname(fileURLToPath(import.meta.url)), "../app");
-const JS = readTextFile(path.join(APP, "dashboard-app.js"));
-const BASE = readTextFile(path.join(APP, "base.css"));
-const THEME = readTextFile(path.join(APP, "theme.css"));
+// 下面三个文件是引擎自带那个旧看板页面的资产；该页面已不再挂载（见 service.mjs），文件已删。
+// 读不到就当作空：别让模块导入失败——本模块里还住着 dashboard 的数据构建逻辑（ctx._buildDashboardData）。
+const readIfExists = (f) => { try { return readTextFile(f); } catch { return ""; } };
+const JS = readIfExists(path.join(APP, "dashboard-app.js"));
+const BASE = readIfExists(path.join(APP, "base.css"));
+const THEME = readIfExists(path.join(APP, "theme.css"));
 
 // ── 实时监控 SSE 流创建（P0-2 修复，模块级导出供路由与 test 共用）──
 export const REALTIME_CLIENT_LIMIT = 20;
@@ -888,7 +891,7 @@ export default function (app, ctx) {
 // 依赖本模块已有的：fs, path, fileURLToPath, esc, ctx, app
 
 const CARDS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../assets/cards");
-const CARD_BASE_CSS = readTextFile(path.join(CARDS_DIR, "card-base.css"));
+const CARD_BASE_CSS = readIfExists(path.join(CARDS_DIR, "card-base.css"));
 
 // P0-3 修复：直连卡片 URL（?token=xxx 无会话 cookie）时，卡片脚本内的 fetch/EventSource
 // 只透传 pluginSurfaceSession 不透传 token → forbidden/missing_credential。
@@ -1304,7 +1307,8 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     if (filterModel && c.model !== filterModel) continue;
     if (filterProvider && c.provider !== filterProvider) continue;
     rows.push({ time: c.time || null, agent: s.agent, agentName: cache.agentNames?.[s.agent] || s.agent,
-      provider: c.provider || "", model: c.model || "", totalTokens: c.totalTokens || 0 });
+      provider: c.provider || "", model: c.model || "", totalTokens: c.totalTokens || 0,
+      inputTokens: c.inTokens ?? null, outputTokens: c.outTokens ?? null });
   }
   rows.sort((a, b) => String(b.time).localeCompare(String(a.time)));
   var today = cnToday();

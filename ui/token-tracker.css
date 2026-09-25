@@ -275,6 +275,14 @@ body {
   color: var(--tt-t4);
 }
 
+/* 实时监控底部的缓存写入统计：与 .tt-spark-labels 同一套安静标注风格 */
+.tt-rt-cache {
+  display: flex;
+  justify-content: space-between;
+  font-size: 9px;
+  color: var(--tt-t4);
+}
+
 /* ── balance rows ── */
 .tt-bal-list {
   display: flex;

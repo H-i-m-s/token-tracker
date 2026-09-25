@@ -58,6 +58,16 @@ export function formatTime(iso) {
   return d.toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 }
 
+// 明细表用：带上年月日，否则只看 HH:mm 分不清是哪天的
+// 列窄时会在空格处自动折成两行（日期一行、时间一行）
+export function formatDateTime(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+}
+
 export function timeAgo(ts) {
   if (!ts) return "";
   const s = Math.floor((Date.now() - ts) / 1000);

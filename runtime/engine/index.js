@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
+import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
 
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
@@ -63,7 +64,38 @@ export default class TokenTrackerPlugin {
     shared.fullScan = () => shared.scan(true);
 
     // 缓存有效时走增量扫描，仅首次/版本升级时全量（后台执行，不阻塞启动）
-    const old = loadCache(cachePath, log);
+    // 介质优先按行存进 SQLite（一次只写变化的行）；拿不到驱动就退回 JSON 快照。
+    const DatabaseSync = loadSqliteDriver();
+    let store = null;
+    if (DatabaseSync) {
+      try {
+        store = createSqliteCacheStore({ DatabaseSync, file: path.join(path.dirname(cachePath), "cache.sqlite"), log });
+      } catch (e) {
+        log.warn("[token-tracker] sqlite 缓存不可用，退回 JSON 快照：", e.message);
+        store = null;
+      }
+    }
+    let old = store ? store.load() : null;
+    if (!old) {
+      old = loadCache(cachePath, log);
+      if (old && store) {
+        // 首次把旧 JSON 快照搬进 SQLite：旧文件改名留底，随时能退回去。
+        try {
+          fs.rmSync(cachePath + ".imported", { force: true });
+          fs.renameSync(cachePath, cachePath + ".imported");
+          log.info("[token-tracker] 旧 JSON 快照已改名留底：token-cache.json.imported");
+        } catch (e) {
+          log.warn("[token-tracker] 旧 JSON 快照改名失败：", e.message);
+        }
+      }
+    }
+
+    // 落盘调度：变化只标脏（见 createPersistScheduler），退出时再刷一次。
+    // 计数从上一份缓存里续上，“今日累计”跟重启前的接得起。
+    const persist = createPersistScheduler({ cachePath, log, getData: () => shared.data, store, initial: old?.persist });
+    shared.persist = persist;
+    this.register(() => { try { persist.stop(); } catch (e) { log.warn("[token-tracker] final flush failed:", e.message); } });
+
     if (old && old.version === CACHE_VERSION) {
       shared.scan(false);
     } else {
@@ -229,8 +261,47 @@ export default class TokenTrackerPlugin {
         balanceUpdatedAt: shared.balanceSnapshot?.updatedAt || null,
         agentNames: shared.agentNames || cacheData?.agentNames || {},
         lastScan: cacheData?.lastScan || null,
+        // 落盘统计（第 0 步的可观测性）：写入次数、累计字节、上次原因与耗时、今日累计
+        persist: shared.persist?.stats || cacheData?.persist || null,
         ready: !!shared.ready
       };
+    });
+
+    // 单会话最近一次生成速度（输入栏状态位用）。
+    // 会话采样按文件名匹配：调用方给的是稳定 sessionId 对应的真实会话文件路径。
+    // 注意口径：桌面会话的 tok/s 由「本条消息时间 − 上一条消息时间」估出，含网络与排队，是下限；
+    // 只有官方 ledger 自带 durationMs 的那条才是精确值，而 ledger 条目按天聚合、不对应单个会话，
+    // 所以这里回给调用方的任何时候都是估算值 —— 由调用方决定怎么标注。
+    regHandler("token-tracker.speed", async (payload) => {
+      const cacheData = shared.data;
+      const wantFile = payload?.sessionPath ? path.basename(String(payload.sessionPath)) : "";
+      const pickLatest = (list) => {
+        let out = null;
+        for (const sample of (list || [])) {
+          if (sample && (!out || Number(sample.ts) > Number(out.ts))) out = sample;
+        }
+        return out;
+      };
+      let best = null;
+      if (wantFile && cacheData?.sessions) {
+        for (const session of Object.values(cacheData.sessions)) {
+          if (!session || session.type === "ledger") continue;
+          if (session.fileName !== wantFile) continue;
+          let sample = null;
+          for (const conv of (session.conversations || [])) {
+            const candidate = pickLatest(conv.speeds);
+            if (candidate && (!sample || Number(candidate.ts) > Number(sample.ts))) sample = candidate;
+          }
+          if (!sample) sample = pickLatest(session.speeds);
+          if (sample && (!best || Number(sample.ts) > Number(best.ts))) best = sample;
+        }
+      }
+      if (best) return { scope: "session", ...shapeSample(best) };
+      // 兜底：会话还没采到（例如应用重载后当前会话不会重发 session_created），
+      // 给全机最近的一条采样，并把 scope 说清，由调用方自己标注。
+      const last = cacheData?._speedStats?.last;
+      if (!last || !last.tps) return null;
+      return { scope: "global", ...shapeSample(last) };
     });
 
     // 聚合统计：入参 { range, from, to, agent, model, provider, type }，与 /dashboard/data 同口径
@@ -282,6 +353,19 @@ export default class TokenTrackerPlugin {
 
     log.info("token-tracker loaded (interval " + interval + "ms)");
   }
+}
+
+// 速度采样统一成回包形状（会话采样与全机兜底采样字段名略有差别）。
+function shapeSample(sample) {
+  return {
+    tps: Number(sample?.tps) || 0,
+    textTps: sample?.textTps ?? null,
+    out: sample?.out ?? null,
+    durMs: sample?.durMs ?? null,
+    model: sample?.model ?? null,
+    at: sample?.ts ?? null,
+    estimated: true
+  };
 }
 
 function realtimeSnapshot(rt, agentNames) {
@@ -388,16 +472,23 @@ async function scanAll(shared, log, force) {
     }
   }
   // usage-ledger.json 中无 sessionPath 的条目（memory + utility 子系统）
-  changed = scanLedger(cache, log, full, shared) || changed;
+  const _ledgerChanged = scanLedger(cache, log, full, shared);
+  changed = _ledgerChanged || changed;
+  // 按行落盘时要显式补报“变了但 mtime/size 看不出来”的键。
+  // 账本会话的 mtime/size 恒为 0，所以账本一重建就整批补报。
+  const _forcedKeys = [];
+  if (_ledgerChanged) {
+    for (const _key of Object.keys(cache.sessions)) if (_key.startsWith("__ledger__")) _forcedKeys.push(_key);
+  }
 
-  // 保留最近5天的对话
+  // 保留最近5天的对话（同样就地改记录、不动 mtime/size → 补报被裁的键）
   var cutoff5d = Date.now() - 5 * 86400000;
   for (const _key of Object.keys(cache.sessions)) {
     const _s = cache.sessions[_key];
     if (_s.conversations && _s.conversations.length) {
       var _before = _s.conversations.length;
       _s.conversations = _s.conversations.filter(function(c){ return new Date(c.time).getTime() >= cutoff5d; });
-      if (_s.conversations.length !== _before) changed = true;
+      if (_s.conversations.length !== _before) { changed = true; _forcedKeys.push(_key); }
     }
   }
 
@@ -406,7 +497,9 @@ async function scanAll(shared, log, force) {
     const dailyGlobal = buildDailyGlobal(cache);
     cache.prediction = computePrediction(cache, dailyGlobal);
     cache._speedStats = buildSpeedStats(cache);
-    saveCache(shared.cachePath, cache, log);
+    // 标脏而不是立刻写：攒批由调度器决定（没有调度器时才直接落盘）
+    if (shared.persist) shared.persist.markDirty(_forcedKeys);
+    else saveCache(shared.cachePath, cache, log);
   }
   shared.data = cache;
   shared.ready = true;
@@ -481,24 +574,28 @@ function scanDir(dir, agent, type, channel, cache, old) {
         // 对话拆分
         if (m.role === "user") {
           if (conv) data.conversations.push(conv);
-          var _txt = typeof m.content === "string" ? m.content : (Array.isArray(m.content) ? m.content[0]?.text||"" : "");
-          conv = { time: ts, userContent: _txt, userSnippet: _txt.slice(0,50), model: null, provider: null, totalTokens: 0, msgCount: 0, toolCalls: [], steps: [] };
+          // 不存对话正文与工具参数：用量统计只需要下面这几个数字（正文本来就在会话文件里，
+          // 且界面上没有任何地方读它）。
+          conv = { time: ts, model: null, provider: null, totalTokens: 0, msgCount: 0, inTokens: 0, outTokens: 0 };
         }
         if (m.role === "assistant" && conv) {
           const _f = m.stopReason === "error" || m.isError === true || !!m.errorMessage;
           if (!_f) {
             conv.msgCount++;
             if (!conv.model) { conv.model = m.model; conv.provider = m.provider; }
-            if (m.usage) { var _tot = m.usage.totalTokens || ((m.usage.input||0)+(m.usage.output||0)); conv.totalTokens += _tot; }
+            if (m.usage) {
+              var _tot = m.usage.totalTokens || ((m.usage.input||0)+(m.usage.output||0));
+              conv.totalTokens += _tot;
+              // 输入 = 未命中缓存的输入 + 命中缓存的输入；加上输出正好等于总数（逐条实测成立）
+              conv.inTokens += tokVal(m.usage.input) + tokVal(m.usage.cacheRead);
+              conv.outTokens += tokVal(m.usage.output);
+            }
           }
           if (Array.isArray(m.content)) {
             for (var _i=0; _i<m.content.length; _i++) {
               var _it = m.content[_i];
               if (!_it) continue;
               if (_it.type === "toolCall") {
-                conv.toolCalls.push({ name: _it.name, args: _it.arguments });
-                var _isFile = ["edit","write"].includes(_it.name);
-                conv.steps.push({ t: _isFile ? "fm" : "tc", name: _it.name, args: _it.arguments });
                 if (_it.name === "image-gen_generate-image" || _it.name === "image-gen_generate-video") {
                   var _mKind = _it.name === "image-gen_generate-video" ? "video" : "image";
                   var _mModel = _it.arguments?.model || "";
@@ -510,14 +607,8 @@ function scanDir(dir, agent, type, channel, cache, old) {
                   data.mediaGen[_mKey].callCount++;
                   if (_it.id) data.mediaGen[_mKey]._callIds[_it.id] = true;
                 }
-              } else if (_it.type === "thinking") {
-                conv.steps.push({ t: "th", c: _it.thinking || "" });
-              } else if (_it.type === "text") {
-                conv.steps.push({ t: "tx", c: _it.text || "" });
               }
             }
-          } else if (typeof m.content === "string" && m.content) {
-            conv.steps.push({ t: "tx", c: m.content });
           }
         }
         if (m.role === "toolResult" && m.toolName && m.toolName.startsWith("image-gen_") && m.details?.mediaGeneration) {
@@ -1097,6 +1188,119 @@ function archiveToEntry(r) {
   };
 }
 
+// ─── 落盘调度：这份缓存是“派生数据” ───
+// 它唯一的用途是让下次启动少扫一遍（全量重扫实测约 8 秒），所以“新”没有任何价值；
+// 而每次模型调用都整块重写一遍六十多 MiB 是纯浪费（实测一次重写里真正的变化只有 6 KB）。
+// 于是：变化只标脏，攒到触发条件才原子写一次；崩溃最多丢掉一个攒批窗口的增量，
+// 代价只是那个窗口里动过的文件下次重新解析（增量扫描按 mtime，不是全量 8 秒）。
+const PERSIST_FLUSH_MS = 5 * 60 * 1000;
+
+export function createPersistScheduler({ cachePath, log, getData, store = null, flushMs = PERSIST_FLUSH_MS, initial = null }) {
+  const stats = {
+    writes: 0, bytes: 0, lastAt: null, lastReason: null,
+    lastMs: 0, lastBytes: 0, day: null, dayBytes: 0,
+  };
+  // 上一次运行写进缓存里的计数：续上它，避免“今日累计”被一次重载清零。
+  if (initial && typeof initial === "object") {
+    for (const key of Object.keys(stats)) {
+      if (initial[key] !== undefined && initial[key] !== null) stats[key] = initial[key];
+    }
+  }
+  let dirty = false;
+  let timer = null;
+  let flushing = false;
+  let stopped = false;
+  const forced = new Set(); // 调用方明确知道变了、但 mtime/size 看不出来的键
+  let allDirty = false;      // 整库重写（首次导入、全量重扫）
+
+  const clearTimer = () => { if (timer) { clearTimeout(timer); timer = null; } };
+
+  function arm(reason) {
+    if (stopped || timer) return;
+    timer = setTimeout(() => flush(reason), flushMs);
+    timer.unref?.();
+  }
+
+  function flush(reason) {
+    if (flushing) return false;
+    const data = getData?.();
+    if (!data || typeof data !== "object") return false;
+    if (!dirty) return false; // 没变化就不写盘：空转零写入
+    flushing = true;
+    const started = Date.now();
+    try {
+      const _now = new Date();
+      const day = _now.getFullYear() + "-" + String(_now.getMonth() + 1).padStart(2, "0") + "-" + String(_now.getDate()).padStart(2, "0");
+      if (stats.day !== day) { stats.day = day; stats.dayBytes = 0; }
+      const snapshot = () => ({
+        writes: stats.writes, bytes: stats.bytes, lastAt: stats.lastAt,
+        lastReason: stats.lastReason, lastMs: stats.lastMs,
+        lastBytes: stats.lastBytes, day: stats.day, dayBytes: stats.dayBytes,
+      });
+      let saved;
+      if (store) {
+        // 按行存：只写这一轮真的变过的会话，外加调用方补报的键。
+        saved = store.save(data, [...forced], allDirty);
+      } else {
+        // JSON 退路：计数和正文在同一份文件里，只能先写后更新，计数会慢一拍
+        //（界面上显示的计数读的是内存态，不受这一拍影响）。
+        data.persist = snapshot();
+        const text = JSON.stringify(data); // 紧凑：两个空格缩进会白吃约 22% 的体积
+        const dir = path.dirname(cachePath);
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const tmp = cachePath + ".tmp";
+        fs.writeFileSync(tmp, text, { mode: 0o600 });
+        fs.renameSync(tmp, cachePath); // 原子替换：崩了也不会留半截文件
+        saved = { rows: 0, bytes: Buffer.byteLength(text) };
+      }
+      const bytes = saved.bytes;
+      stats.writes += 1;
+      stats.bytes += bytes;
+      stats.lastAt = new Date(started).toISOString();
+      stats.lastReason = reason;
+      stats.lastMs = Date.now() - started;
+      stats.lastBytes = bytes;
+      stats.dayBytes += bytes;
+      data.persist = snapshot();
+      // meta 里写的是“这次写完之后”的真实计数，所以重启读回来不会慢一拍。
+      if (store) store.saveMeta(data);
+      forced.clear();
+      allDirty = false;
+      stats.bytes += bytes;
+      stats.lastAt = new Date(started).toISOString();
+      stats.lastReason = reason;
+      stats.lastMs = Date.now() - started;
+      stats.lastBytes = bytes;
+      stats.dayBytes += bytes;
+      data.persist = { ...stats };
+      dirty = false;
+      log.info("[token-tracker] cache flushed (" + reason + "): " + (store ? saved.rows + " 行 / " : "") + (bytes / 1024).toFixed(0) + " KiB in " + stats.lastMs + " ms, writes=" + stats.writes + ", today=" + (stats.dayBytes / 1048576).toFixed(2) + " MiB");
+      return true;
+    } catch (e) {
+      // 写失败不清 dirty，等下一次触发重试；但必须留痕，不能默默吞掉。
+      log.warn("[token-tracker] cache flush failed:", e.code || "", e.message);
+      return false;
+    } finally {
+      flushing = false;
+      clearTimer();
+      // 写失败时 dirty 还在，重新起一个重试窗口；成功后 dirty 已清，不会重排。
+      if (dirty) arm("重试");
+    }
+  }
+
+  return {
+    stats,
+    markDirty(keys) {
+      dirty = true;
+      if (keys) for (const key of keys) forced.add(key);
+      arm("定时");
+    },
+    markAllDirty() { dirty = true; allDirty = true; arm("定时"); },
+    flushNow(reason) { clearTimer(); return flush(reason); },
+    stop() { stopped = true; clearTimer(); const ok = flush("退出"); return ok; },
+  };
+}
+
 function loadCache(p, log) {
   let raw;
   try { raw = readTextFile(p); }
@@ -1116,7 +1320,10 @@ function saveCache(p, data, log) {
   try {
     const dir = path.dirname(p);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(p, JSON.stringify(data, null, 2));
+    // 紧凑 + 原子替换：与调度器同一条磁盘路径，避免出现两种格式或半截文件。
+    const tmp = p + ".tmp";
+    fs.writeFileSync(tmp, JSON.stringify(data), { mode: 0o600 });
+    fs.renameSync(tmp, p);
     return true;
   } catch (e) {
     if (log) log.warn("[token-tracker] saveCache failed:", p, e.message);

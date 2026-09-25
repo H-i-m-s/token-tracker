@@ -10,7 +10,9 @@
     "app/runtime.execute",
     "app/runtime.local-machine",
     "app/runtime.network",
-    "app/usage.read"
+    "app/usage.read",
+    "app/sessions.read",
+    "app/input.status"
   ],
   "contributes": {
     "settings": {
@@ -18,6 +20,15 @@
       "ui": {
         "route": "/settings.html"
       }
+    },
+    "ui": {
+      "inputStatus": [
+        {
+          "id": "session-cache",
+          "title": "本会话缓存与生成速度",
+          "text": "缓存：—　速度：—"
+        }
+      ]
     },
     "cards": [
       {
