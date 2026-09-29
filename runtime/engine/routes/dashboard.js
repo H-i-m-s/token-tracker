@@ -160,30 +160,88 @@ function loadPriceTable(dataDir) {
   return merged;
 }
 
-// ── USD→CNY 汇率（免费 API：open.er-api.com，无 key，每日更新；本地缓存 6 小时） ──
+// ── USD→CNY 汇率（免费 API：open.er-api.com，无 key，每日更新；本地缓存 6 小时）──
+// 关键：缓存必须落到磁盘。内存缓存随进程消失，而这个 App 的 runtime 每次打开都可能重启，
+// 于是每次进去都要重新请求一次汇率。接口不可达时默认超时 5 秒——界面就得干等 5 秒。
+const FX_TTL_MS = 6 * 3600 * 1000;
+const FX_FALLBACK = 7.1;      // 既无缓存又拉不到时的垫底值，避免凭空造出 0 汇率
+const FX_TIMEOUT_MS = 400;    // 首屏只给它这么点时间：拉不到就先用已知值，后台再试
 let _fxCache = { rate: null, ts: 0 };
-async function fetchFxRate() {
-  const now = Date.now();
-  if (_fxCache.rate && now - _fxCache.ts < 6 * 3600 * 1000) return _fxCache.rate;
+let _fxRefreshing = null;
+
+function fxCacheFile() {
+  return path.join(ENGINE_DATA || "", "fx-rate.json");
+}
+
+function readFxFromDisk() {
   try {
-    const r = await new Promise((resolve) => {
-      const req = https.get("https://open.er-api.com/v6/latest/USD", { timeout: 5000 }, (res) => {
+    const p = fxCacheFile();
+    if (!ENGINE_DATA || !fs.existsSync(p)) return null;
+    const saved = JSON.parse(readTextFile(p));
+    if (saved && Number(saved.rate) > 0) return { rate: Number(saved.rate), ts: Number(saved.ts) || 0 };
+  } catch {}
+  return null;
+}
+
+function writeFxToDisk(rate, ts) {
+  try {
+    if (!ENGINE_DATA) return;
+    fs.writeFileSync(fxCacheFile(), JSON.stringify({ rate, ts }));
+  } catch {}
+}
+
+// 单次请求；失败/超时返回 null，不抛。
+// 用 AbortSignal.timeout 而不是 https 的 timeout 选项：后者只管 socket 空闲，
+// 管不住 DNS 解析——域名不可达时照样能把首屏拖住好几秒。
+function requestFxRate(timeoutMs = FX_TIMEOUT_MS) {
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
+    let req;
+    try {
+      req = https.get("https://open.er-api.com/v6/latest/USD", { signal: AbortSignal.timeout(timeoutMs) }, (res) => {
         let buf = "";
         res.on("data", (d) => (buf += d));
-        res.on("end", () => resolve(buf));
+        res.on("end", () => {
+          try {
+            const cny = JSON.parse(buf)?.rates?.CNY;
+            finish(cny > 0 ? cny : null);
+          } catch { finish(null); }
+        });
       });
-      req.on("error", () => resolve(null));
-      req.on("timeout", () => { req.destroy(); resolve(null); });
-    });
-    if (!r) return _fxCache.rate;
-    const j = JSON.parse(r);
-    const cny = j?.rates?.CNY;
-    if (cny > 0) {
-      _fxCache = { rate: cny, ts: now };
-      return cny;
-    }
-  } catch {}
-  return _fxCache.rate;
+    } catch { finish(null); return; }
+    req.on("error", () => finish(null));
+  });
+}
+
+// 后台刷新：只在已经拿得到值时用，绝不让请求等它。
+function refreshFxInBackground() {
+  if (_fxRefreshing) return;
+  _fxRefreshing = requestFxRate(3000)
+    .then((rate) => { if (rate) { _fxCache = { rate, ts: Date.now() }; writeFxToDisk(rate, _fxCache.ts); } })
+    .catch(() => {})
+    .finally(() => { _fxRefreshing = null; });
+}
+
+async function fetchFxRate() {
+  const now = Date.now();
+  if (_fxCache.rate && now - _fxCache.ts < FX_TTL_MS) return _fxCache.rate;
+  // 内存没有就翻磁盘：上次跑过的汇率足够先用，不必为了它卡住首屏
+  const disk = readFxFromDisk();
+  if (disk) _fxCache = disk;
+  if (_fxCache.rate) {
+    if (now - _fxCache.ts >= FX_TTL_MS) refreshFxInBackground();
+    return _fxCache.rate;
+  }
+  // 一个值都没有（全新安装）：只等一次，限时；拿不到就用垫底值，并丢到后台继续试
+  const fresh = await requestFxRate();
+  if (fresh) {
+    _fxCache = { rate: fresh, ts: now };
+    writeFxToDisk(fresh, now);
+    return fresh;
+  }
+  refreshFxInBackground();
+  return FX_FALLBACK;
 }
 
 const HOME = resolveHanaHome();
@@ -267,7 +325,9 @@ export default function (app, ctx) {
   ctx._buildDashboardData = async (params = {}, opts = {}) => {
     try {
       const cache = ctx._tokenCache;
-      if (!cache?.ready || !cache.data) return { notReady: true, error: "数据未就绪" };
+      // 只要求“有数据”，不要求“本轮扫描已完成”：启动时缓存已从 SQLite 播下，
+      // 直接拿它先渲染，扫描完成后 SSE 会把最新状态推上去。
+      if (!cache?.data || !cache.data.sessions) return { notReady: true, error: "数据未就绪" };
       const range = params.range || "all";
       const agent = params.agent || "";
       const model = params.model || "";

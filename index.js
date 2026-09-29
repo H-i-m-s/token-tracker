@@ -123,12 +123,13 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
   }
 
   async function handleDsUsage(c) {
-    const count = Number(c.req.query("count")) || 1;
-    const monthsParam = c.req.query("months");
     const payload = {
-      count,
-      months: monthsParam ? String(monthsParam).split(",").map(s => s.trim()).filter(Boolean) : undefined,
+      days: Number(c.req.query("days")) || undefined,
+      // from 可能是 0（“全部历史”不设下限），用 0 兜底会把它当成没传，所以按 undefined 判断。
+      from: c.req.query("from") !== undefined ? Number(c.req.query("from")) : undefined,
+      to: c.req.query("to") !== undefined ? Number(c.req.query("to")) : undefined,
       force: c.req.query("force") === "1",
+      withHistory: c.req.query("history") !== "0",
     };
     try {
       const raw = await busClient.request("token-tracker.ds-usage", payload, { mock: isMock(c) });

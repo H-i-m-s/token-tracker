@@ -4,29 +4,29 @@
 // 放大成整文件写；一天下来就是几十 GB 的擦写。按行 upsert 之后，写入量只跟「这一轮真的
 // 变过的行」成正比。
 //
-// 三张表：
-//   ds_daily       按 天×模型×口径×类型 存一行用量或金额；
-//   ds_month       每个月的新鲜度（当月会变，历史月冻结）与币种；
+// 四张表：
+//   ds_point       一个时间桶一行（桶长由 bucket 区分：86400 天 / 3600 小时）；
+//   ds_meta        覆盖范围、探测边界这类状态，以及诊断槽；
 //   ds_token_hint  上次在哪找到 token（只有路径和时间，绝不含 token 本身）。
 import fs from "node:fs";
 import path from "node:path";
 import { loadSqliteDriver } from "./cache-store.js";
 
 const SCHEMA = [
-  `CREATE TABLE IF NOT EXISTS ds_daily (
-     date TEXT NOT NULL,
-     model TEXT NOT NULL,
+  `CREATE TABLE IF NOT EXISTS ds_point (
+     t INTEGER NOT NULL,
+     bucket INTEGER NOT NULL,
      kind TEXT NOT NULL,
+     model TEXT NOT NULL,
      type TEXT NOT NULL,
      amount REAL NOT NULL,
-     PRIMARY KEY (date, model, kind, type)
+     PRIMARY KEY (t, bucket, kind, model, type)
    )`,
-  `CREATE TABLE IF NOT EXISTS ds_month (
-     ym TEXT PRIMARY KEY,
-     fetched_at INTEGER NOT NULL,
-     amount_ok INTEGER NOT NULL DEFAULT 0,
-     cost_ok INTEGER NOT NULL DEFAULT 0,
-     currency TEXT
+  `CREATE INDEX IF NOT EXISTS ds_point_by_t ON ds_point (bucket, kind, t)`,
+  `CREATE TABLE IF NOT EXISTS ds_meta (
+     key TEXT PRIMARY KEY,
+     value TEXT NOT NULL,
+     updated_at INTEGER
    )`,
   `CREATE TABLE IF NOT EXISTS ds_token_hint (
      id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -51,51 +51,76 @@ export function createDsUsageStore({ DatabaseSync, file, log = () => {} }) {
     return db;
   }
 
-  // 一个月的数据一次性覆盖式写入：先删该月旧行，再插入新行，同一个事务里完成。
-  // 官网的当月数据会持续变动，与其逐行比对，不如把「这个月的 1800 行」整体换掉——
-  // 量级很小，且只在真去拉取时发生。
-  function saveMonth(ym, { usageRows = [], costRows = [], currency = null, amountOk = true, costOk = true } = {}) {
+  // 写入一批点：一个事务，按 (t,bucket,kind,model,type) upsert。
+  // 覆盖式更新（同键改值）由 ON CONFLICT 处理；不删旧行，历史因此只增不减。
+  function savePoints(kind, bucket, points) {
     const d = open();
+    const ins = d.prepare(
+      "INSERT INTO ds_point (t, bucket, kind, model, type, amount) VALUES (?,?,?,?,?,?) " +
+      "ON CONFLICT(t,bucket,kind,model,type) DO UPDATE SET amount=excluded.amount"
+    );
+    let n = 0;
     d.exec("BEGIN");
     try {
-      d.prepare("DELETE FROM ds_daily WHERE substr(date,1,7) = ?").run(ym);
-      const ins = d.prepare("INSERT INTO ds_daily (date, model, kind, type, amount) VALUES (?,?,?,?,?) ON CONFLICT(date,model,kind,type) DO UPDATE SET amount=excluded.amount");
-      let n = 0;
-      for (const r of usageRows) { ins.run(r.date, r.model, "usage", r.type, Number(r.amount) || 0); n += 1; }
-      for (const r of costRows) { ins.run(r.date, r.model, "cost", r.type, Number(r.amount) || 0); n += 1; }
-      d.prepare("INSERT INTO ds_month (ym, fetched_at, amount_ok, cost_ok, currency) VALUES (?,?,?,?,?) ON CONFLICT(ym) DO UPDATE SET fetched_at=excluded.fetched_at, amount_ok=excluded.amount_ok, cost_ok=excluded.cost_ok, currency=excluded.currency")
-        .run(ym, Date.now(), amountOk ? 1 : 0, costOk ? 1 : 0, currency);
+      for (const p of points || []) {
+        for (const [model, byType] of Object.entries(p.byModel || {})) {
+          for (const [type, amount] of Object.entries(byType)) {
+            ins.run(Number(p.t), Number(bucket), kind, model, type, Number(amount) || 0);
+            n += 1;
+          }
+        }
+      }
       d.exec("COMMIT");
-      // 每次整月替换都是约 1800 行，WAL 会跟着长；写得多就回收一次，别让它无限堆积。
       if (n > 200) {
         try { d.exec("PRAGMA wal_checkpoint(TRUNCATE)"); } catch (e) { log.warn("[token-tracker] ds 库 WAL 回收失败（下次检查点会处理）：", e.message); }
       }
-      return n;
     } catch (e) {
       try { d.exec("ROLLBACK"); } catch {}
       throw e;
     }
+    return n;
   }
 
-  function getMonth(ym) {
-    const d = open();
-    const meta = d.prepare("SELECT ym, fetched_at, amount_ok, cost_ok, currency FROM ds_month WHERE ym = ?").get(ym);
-    if (!meta) return null;
-    const rows = d.prepare("SELECT date, model, kind, type, amount FROM ds_daily WHERE substr(date,1,7) = ? ORDER BY date").all(ym);
-    return {
-      ym,
-      fetchedAt: meta.fetched_at,
-      amountOk: !!meta.amount_ok,
-      costOk: !!meta.cost_ok,
-      currency: meta.currency,
-      usageRows: rows.filter(r => r.kind === "usage"),
-      costRows: rows.filter(r => r.kind === "cost"),
-    };
+  // 读某粒度 / 某口径下 [fromT, toT) 的行。
+  function rangePoints(kind, bucket, fromT, toT) {
+    return open().prepare(
+      "SELECT t, model, type, amount FROM ds_point WHERE kind = ? AND bucket = ? AND t >= ? AND t < ? ORDER BY t"
+    ).all(kind, bucket, Math.floor(fromT), Math.floor(toT));
   }
 
-  function listMonths() {
-    const d = open();
-    return d.prepare("SELECT ym, fetched_at, amount_ok, cost_ok, currency FROM ds_month ORDER BY ym DESC").all();
+  // [fromT, toT) 内实际存在的桶时间戳（用于判断缺口）。
+  function bucketTimes(bucket, fromT, toT) {
+    return open().prepare(
+      "SELECT DISTINCT t FROM ds_point WHERE bucket = ? AND t >= ? AND t < ? ORDER BY t"
+    ).all(bucket, Math.floor(fromT), Math.floor(toT)).map(r => r.t);
+  }
+
+  // 某粒度下的全局范围：最早/最晚桶。
+  function extent(bucket) {
+    const row = open().prepare("SELECT MIN(t) AS lo, MAX(t) AS hi, COUNT(*) AS n FROM ds_point WHERE bucket = ?").get(bucket);
+    return { lo: row?.lo ?? null, hi: row?.hi ?? null, rows: row?.n ?? 0 };
+  }
+
+  function totalRows() {
+    const row = open().prepare("SELECT COUNT(*) AS n FROM ds_point").get();
+    return row?.n ?? 0;
+  }
+
+  // ── meta：覆盖范围 / 探测边界 / 诊断槽 ──
+  function setMeta(key, value) {
+    try {
+      open().prepare("INSERT INTO ds_meta (key, value, updated_at) VALUES (?,?,?) ON CONFLICT(key) DO UPDATE SET value=excluded.value, updated_at=excluded.updated_at")
+        .run(key, JSON.stringify(value ?? null), Date.now());
+    } catch (e) { log.warn("[token-tracker] ds meta 写入失败：", key, e.message); }
+  }
+
+  function getMeta(key) {
+    try {
+      const row = open().prepare("SELECT value, updated_at FROM ds_meta WHERE key = ?").get(key);
+      if (!row) return null;
+      let value; try { value = JSON.parse(row.value); } catch { value = row.value; }
+      return { value, updatedAt: row.updated_at };
+    } catch { return null; }
   }
 
   // ── token 线索：只有「哪个文件、什么时候改的」，token 本身永远不进这里 ──
@@ -103,9 +128,7 @@ export function createDsUsageStore({ DatabaseSync, file, log = () => {} }) {
     try {
       const row = open().prepare("SELECT partition, file, mtime FROM ds_token_hint WHERE id = 1").get();
       return row && row.file ? { partition: row.partition, file: row.file, mtime: row.mtime } : null;
-    } catch {
-      return null;
-    }
+    } catch { return null; }
   }
 
   function writeHint(source) {
@@ -123,7 +146,7 @@ export function createDsUsageStore({ DatabaseSync, file, log = () => {} }) {
     db = null;
   }
 
-  return { saveMonth, getMonth, listMonths, readHint, writeHint, close };
+  return { savePoints, rangePoints, bucketTimes, extent, totalRows, setMeta, getMeta, readHint, writeHint, close };
 }
 
 // 驱动拿不到时返回 null，调用方退化到「不缓存、每次现拉」，功能不受影响。

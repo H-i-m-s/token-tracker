@@ -362,6 +362,105 @@ body {
   margin-left: 5px;
 }
 
+/* ── DeepSeek 官网账单面板（余额视图下半）── */
+.tt-ds-panel {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid var(--tt-row);
+}
+
+.tt-ds-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.tt-ds-title {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--tt-t2);
+}
+
+.tt-ds-total {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+}
+
+.tt-ds-total-label {
+  font-size: 10px;
+  color: var(--tt-t3);
+}
+
+.tt-ds-total-value {
+  font-size: 15px;
+  font-weight: 700;
+  color: var(--tt-num);
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-ds-legend {
+  display: flex;
+  gap: 14px;
+  align-items: center;
+  margin-bottom: 4px;
+  font-size: 10px;
+  color: var(--tt-t3);
+}
+
+.tt-ds-grain {
+  margin-left: auto;
+  padding: 1px 6px;
+  border: 1px solid var(--tt-b2);
+  border-radius: var(--tt-radius-pill);
+  font-size: 9.5px;
+  color: var(--tt-t4);
+}
+
+.tt-ds-leg {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.tt-ds-leg::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 3px;
+  border-radius: 2px;
+}
+
+.tt-ds-leg-area::before { background: var(--tt-blue); }
+
+.tt-ds-leg-rate::before {
+  background: repeating-linear-gradient(to right, var(--tt-green) 0 4px, transparent 4px 7px);
+}
+
+.tt-ds-chart {
+  width: 100%;
+  height: 190px;
+  min-height: 150px;
+}
+
+.tt-ds-foot {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--tt-t3);
+  font-variant-numeric: tabular-nums;
+}
+
+.tt-ds-note {
+  margin-top: 6px;
+  font-size: 10px;
+  color: var(--tt-orange);
+}
+
 /* ── table ── */
 .tt-table-wrap {
   flex: 1 1 auto;

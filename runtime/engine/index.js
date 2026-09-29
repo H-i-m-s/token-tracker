@@ -5,7 +5,8 @@ import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
 import { openDsUsageStore } from "./services/ds-usage-store.js";
-import { createDsUsageService, recentMonths } from "./services/ds-usage-service.js";
+import { createDsUsageService } from "./services/ds-usage-service.js";
+import { diagnosePartitions } from "./services/ds-token-source.js";
 import { createJsonJournalStore } from "./services/json-journal-store.js";
 import { openArchiveStore } from "./services/archive-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
@@ -402,24 +403,65 @@ export default class TokenTrackerPlugin {
 
     // 官网用量：默认最近 1 个月，可传 count（最多 36）或显式 months 列表。
     // force=1 忽略缓存强制重拉；否则历史月冻结、当月有存活期。
+    // 官网用量：按时间区间取数。
+    //   { from, to, force }  unix 秒；不传 from 则取 to 前 days 天（默认 30）。
+    //   区间窄（≤ 36 小时）时官网给小时粒度，宽时给天粒度，bucket 字段如实透出。
+    //   withHistory=true 时额外补一次全历史累计（用于「总消费」）。
     regHandler("token-tracker.ds-usage", async (payload) => {
       const p = payload || {};
-      const count = Number(p.count) > 0 ? Math.min(36, Math.floor(Number(p.count))) : 1;
-      const months = Array.isArray(p.months) && p.months.length ? p.months : recentMonths(count);
-      const r = await dsUsage.getUsage({ months, force: !!p.force });
+      const nowT = Math.floor(Date.now() / 1000);
+      const days = Number(p.days) > 0 ? Math.min(3650, Math.floor(Number(p.days))) : 30;
+      // from=0 是合法值，意思是“不设下限”（全部历史），所以要用 null 判断而不是 >0，
+      // 否则会被当成“没传”，退成默认的 30 天——“全部历史”就只剩一个月。
+      const hasFrom = p.from != null && Number.isFinite(Number(p.from));
+      const hasTo = p.to != null && Number.isFinite(Number(p.to));
+      const to = hasTo ? Math.floor(Number(p.to)) : nowT;
+      const from = hasFrom ? Math.floor(Number(p.from)) : to - days * 86400;
+      const r = await dsUsage.getRange({ from, to, force: !!p.force });
+
+      let diagnostics = null;
+      if (!r.hasToken) {
+        diagnostics = diagnosePartitions();
+        dsStore?.writeDiag?.("last-token-diagnosis", { ...diagnostics, at: new Date().toISOString() });
+      }
+
+      // 全历史累计：直接把库里的覆盖范围翻出来，不再重复打官网。
+      let history = null;
+      if (p.withHistory !== false && dsStore) {
+        const ext = dsStore.extent(86400);
+        if (ext.lo != null && ext.hi != null) {
+          const usageRows = dsStore.rangePoints("usage", 86400, ext.lo, ext.hi + 86400);
+          const costRows = dsStore.rangePoints("cost", 86400, ext.lo, ext.hi + 86400);
+          let tokens = 0, cost = 0, requests = 0;
+          const byDayTokens = new Map();
+          for (const row of usageRows) {
+            const a = Number(row.amount) || 0;
+            if (row.type === "RESPONSE_TOKEN" || row.type === "PROMPT_CACHE_HIT_TOKEN" || row.type === "PROMPT_CACHE_MISS_TOKEN" || row.type === "PROMPT_TOKEN") {
+              tokens += a;
+              byDayTokens.set(row.t, (byDayTokens.get(row.t) || 0) + a);
+            } else if (row.type === "REQUEST") requests += a;
+          }
+          for (const row of costRows) cost += Number(row.amount) || 0;
+          history = { from: ext.lo, to: ext.hi, tokens, cost, requests, days: byDayTokens.size };
+        }
+      }
+
       // 出网前只留聚合所需字段：token 与磁盘路径都不外泄。
       return {
         hasToken: r.hasToken,
         tokenError: r.tokenError,
-        updatedAt: r.updatedAt,
-        months: r.months.map((m) => ({
-          ym: m.ym,
-          fromCache: m.fromCache,
-          currency: m.currency,
-          error: m.error,
-          usageRows: m.usageRows,
-          costRows: m.costRows,
-        })),
+        diagnostics,
+        source: r.source ? { partition: r.source.partition } : null,
+        updatedAt: Date.now(),
+        range: {
+          from: r.from,
+          to: r.to,
+          bucket: r.bucket,
+          live: !!r.live,
+          points: r.points,
+          totals: r.totals,
+        },
+        history,
       };
     });
 
@@ -506,7 +548,11 @@ async function scanAll(shared, log, force) {
       } catch { cache.agentNames[id] = id; }
     }
   }
+  // 扫描是同步 IO 密集的（readdirSync/statSync/readTextFile）。整段跑下来会占住事件循环，
+  // 界面打开时的第一批请求只能排队。每个 agent 之间让出一拍，请求就能插进来。
+  const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
   for (const agent of dirs) {
+    await yieldToLoop();
     changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old) || changed;
     const arch = path.join(AGENTS, agent, "sessions", "archived");
     if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old) || changed;

@@ -21,12 +21,32 @@ const FOOTER_SIZE = 48;
 const LDB_MAGIC = Buffer.from([0x57, 0xfb, 0x80, 0x8b, 0x24, 0x75, 0x47, 0xdb]); // 0xdb4775248b80fb57 小端
 
 // ── 定位 partition 根目录 ──
-// Electron 的 userData 默认就在 %APPDATA%\<appName>，内置浏览器把数据放在其 Partitions/ 下。
-export function defaultPartitionsDir({ env = process.env, platform = process.platform } = {}) {
-  const appdata = env.APPDATA
-    || (env.USERPROFILE ? path.join(env.USERPROFILE, "AppData", "Roaming") : "");
-  if (!appdata) return "";
-  return path.join(appdata, "hanako", "Partitions");
+// 常规情况下 Electron 的 userData 就是 %APPDATA%\hanako，内置浏览器把数据放在其 Partitions/ 下。
+// 但内嵌 runtime 跑在受限环境里（hana-win-sandbox），环境变量可能被清空，所以这里多路探测，
+// 不把 APPDATA 当成唯一事实。
+export function candidatePartitionsDirs({ env = process.env } = {}) {
+  const out = [];
+  if (env.APPDATA) out.push(path.join(env.APPDATA, "hanako", "Partitions"));
+  const home = env.USERPROFILE || env.HOME;
+  if (home) out.push(path.join(home, "AppData", "Roaming", "hanako", "Partitions"));
+  // HANA_HOME 默认就是 <home>/.hanako，它的父目录即家目录
+  if (env.HANA_HOME) {
+    const parent = path.dirname(env.HANA_HOME);
+    out.push(path.join(parent, "AppData", "Roaming", "hanako", "Partitions"));
+  }
+  return [...new Set(out.filter(Boolean))];
+}
+
+export function defaultPartitionsDir(opts = {}) {
+  const dirs = candidatePartitionsDirs(opts);
+  for (const d of dirs) {
+    try {
+      if (fs.statSync(d).isDirectory()) return d;
+    } catch {
+      // 这条路不通，试下一条
+    }
+  }
+  return dirs[0] || "";
 }
 
 // ── 从字节里抠出本文件「最后一次写入」的 userToken ──
@@ -173,6 +193,49 @@ export function scanTokenCandidates({ partitionsDir = defaultPartitionsDir() } =
   return hits;
 }
 
+// 诊断：把「为什么没拿到 token」拆成能分辨的几种情况，避免静默失败。
+// 区分：目录不存在 / 目录不可读（权限）/ 读得到但没有 token / 只有登出态。
+export function diagnosePartitions({ partitionsDir, env = process.env } = {}) {
+  const candidates = candidatePartitionsDirs({ env });
+  const dir = partitionsDir || defaultPartitionsDir({ env });
+  const info = {
+    partitionsDir: dir || null,
+    candidates,
+    env: { APPDATA: env.APPDATA || null, USERPROFILE: env.USERPROFILE || null, HANA_HOME: env.HANA_HOME || null },
+    exists: false,
+    readable: false,
+    entries: 0,
+    error: null,
+    filesWithTokenKey: 0,
+    filesWithValue: 0,
+  };
+  if (!dir) {
+    info.error = "NO_PATH";
+    return info;
+  }
+  try {
+    info.exists = fs.statSync(dir).isDirectory();
+  } catch (e) {
+    info.error = e.code || String(e.message);
+    return info;
+  }
+  try {
+    info.entries = fs.readdirSync(dir).length;
+    info.readable = true;
+  } catch (e) {
+    info.error = e.code || String(e.message);
+    return info;
+  }
+  try {
+    const hits = scanTokenCandidates({ partitionsDir: dir });
+    info.filesWithTokenKey = hits.length;
+    info.filesWithValue = hits.filter(h => h.token).length;
+  } catch (e) {
+    info.error = e.code || String(e.message);
+  }
+  return info;
+}
+
 // 对外入口：拿最新的一把有效 token。
 // hint：上次命中的 { file, mtime }，文件没变就直接用，省一次全盘扫描。
 // 返回 { token, source } 或 null。token 为 null 表示最近一次是登出态（仍带 source 供诊断）。
@@ -194,4 +257,4 @@ export function findUserToken({ partitionsDir = defaultPartitionsDir(), hint = n
   return { token: best.token, source: { partition: best.partition, file: best.file, mtime: best.mtime } };
 }
 
-export default { findUserToken, scanTokenCandidates, defaultPartitionsDir, readLdbText };
+export default { findUserToken, scanTokenCandidates, defaultPartitionsDir, candidatePartitionsDirs, diagnosePartitions, readLdbText };

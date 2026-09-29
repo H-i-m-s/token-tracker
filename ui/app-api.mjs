@@ -71,6 +71,21 @@ export class AppApi {
     return data.balances;
   }
 
+  // DeepSeek 官网用量（platform.deepseek.com 官方账单）。
+  // days：往回看多少天（默认 30）；也可用 from/to（unix 秒）显式指定区间，from=0 表示“不设下限”。
+  // 区间窄到一天左右时官网会给小时粒度，返回值里的 range.bucket 说明粒度（86400 天 / 3600 小时）。
+  async getDsUsage({ days = 30, from = null, to = null, force = false, history = true, mock = false } = {}) {
+    const qs = new URLSearchParams();
+    if (from != null) qs.set("from", String(Math.floor(from)));
+    if (to != null) qs.set("to", String(Math.floor(to)));
+    if (from == null && days) qs.set("days", String(days));
+    if (force) qs.set("force", "1");
+    if (!history) qs.set("history", "0");
+    if (mock) qs.set("mock", "1");
+    const data = await this.fetchJson(`/ds-usage?${qs}`);
+    return data.dsUsage;
+  }
+
   async refresh({ force = false, mock = false } = {}) {
     const qs = [];
     if (force) qs.push("force=1");

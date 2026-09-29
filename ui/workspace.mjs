@@ -4,11 +4,12 @@ import { renderAnalytics, BOARD_RANGES } from "./analytics.mjs";
 import { renderFilterStatus as renderFilterChips } from "./filter-chips.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
+import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
 import { h, RANGES, fmt, fmtPct, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
-import { drawSparkline, drawRing } from "./charts.mjs";
+import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
 
 const PAGE_SIZE = 10;
 const POLL_INTERVAL_MS = 5000;
@@ -23,6 +24,14 @@ function byLabel(a, b) {
   return String(a.label || a).localeCompare(String(b.label || b), "zh-Hans-CN");
 }
 
+// 账单图的窗口起止：写到分钟，跟着图的粒度走。
+function dsClock(ts) {
+  if (!Number.isFinite(ts)) return "";
+  const d = new Date(ts * 1000);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
 export class WorkspaceApp {
   constructor({ hana, api, state, container, mock = false }) {
     this.hana = hana;
@@ -31,15 +40,18 @@ export class WorkspaceApp {
     this.container = container;
     this.mock = mock;
 
+    this.dsSeq = 0;
     this.snapshot = null;
     this.dashboard = null;
     this.balances = [];
+    this.dsUsage = null;
     this.sparkHistory = [];
     this.loading = 0;
     this.foregroundLoads = 0;
     this.busyTimer = null;
     this.busyVisible = false;
     this.error = "";
+    this.notReady = false;
     this.dashboardRequest = 0;
     this.disposed = false;
     this.visible = true;
@@ -60,7 +72,7 @@ export class WorkspaceApp {
       this.state.subscribe((s) => this.onStateChange(s)),
       this.subscribeLifecycle(),
     );
-    await this.loadAll();
+    await this.initialLoad();
     this.startPolling();
   }
 
@@ -185,7 +197,9 @@ export class WorkspaceApp {
       h("div", { className: "tt-board-heading" }, h("h1", {}, "Token 消耗看板"), h("p", {}, "本地日志汇总 · Agent 归属 · 会话轮次口径")),
       this.boardControls,
     );
-    this.view = "overview";
+    // 上次停在哪个界面，这次就回到哪个界面（跨实例记住，存在固定 key 里）
+    const rememberedView = this.state.get().view;
+    this.view = VALID_VIEWS.includes(rememberedView) ? rememberedView : "overview";
     this.viewTabs = h("div", { className: "tt-view-tabs", role: "tablist", "aria-label": "用量视图" },
       ...[["overview", "数据大屏"], ["balance", "余额与额度"], ["details", "消费明细"], ["realtime", "实时监控"]].map(([key,label]) =>
         h("button", { type: "button", role: "tab", id: `tab-${key}`, "data-view": key, "aria-controls": `${key}-module`, "aria-selected": String(key === this.view), onClick: () => this.selectView(key) }, label)),
@@ -208,7 +222,8 @@ export class WorkspaceApp {
     this.selectView(this.view);
   }
 
-  selectView(view) {
+  selectView(view, { persist = true } = {}) {
+    if (!VALID_VIEWS.includes(view)) view = "overview";
     this.view = view;
     this.mainEl.dataset.view = view;
     for (const section of this.mainEl.children) section.hidden = section.id !== `${view}-module`;
@@ -216,30 +231,47 @@ export class WorkspaceApp {
       tab.setAttribute("aria-selected", String(tab.dataset.view === view));
       tab.tabIndex = tab.dataset.view === view ? 0 : -1;
     }
+    // 只有用户自己切的才回写；否则 onStateChange 同步过来的会再写一次，绕成环
+    if (persist && this.state.get().view !== view) this.state.patch({ view });
   }
 
   // ---------- data loading ----------
 
   async loadAll(force = false, { silent = false } = {}) {
     this.clearError();
+    this.notReady = false;
     await Promise.all([
       this.loadSnapshot(force, { silent }),
       this.loadDashboard(force, { silent }),
       this.loadBalances(force, { silent }),
+      this.loadDsUsage(force, { silent }),
     ]);
+  }
+
+  // 首屏加载。runtime 的 HTTP 服务故意比数据扫描先就绪（免得大历史被当成启动失败），
+  // 于是打开瞬间的第一波请求经常撞上“数据扫描中”。干等 5 秒轮询周期太久，这里用短间隔顶上去。
+  async initialLoad() {
+    for (let attempt = 0; attempt < 60; attempt++) {
+      await this.loadAll(false, { silent: attempt > 0 });
+      if (!this.notReady) return;
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
   }
 
   async loadSnapshot(force = false, { silent = false } = {}) {
     this.setLoading(1, { silent });
     try {
       this.snapshot = await this.api.getSnapshot({ mock: this.mock });
+      // 扫描未完成时后端会回 ready:false（不算错误），记下来让 initialLoad 继续重试
+      if (this.snapshot && this.snapshot.ready === false) this.notReady = true;
       if (this.snapshot?.realtime) {
         this.sparkHistory.push(Number(this.snapshot.realtime.tps) || 0);
         if (this.sparkHistory.length > MAX_SPARK_POINTS) this.sparkHistory.shift();
       }
       this.renderRealtime();
     } catch (err) {
-      this.setError(`实时数据加载失败：${err.message}`);
+      if (err?.code === "NOT_READY") this.notReady = true;
+      else this.setError(`实时数据加载失败：${err.message}`);
     } finally {
       this.setLoading(-1, { silent });
     }
@@ -263,7 +295,10 @@ export class WorkspaceApp {
       this.renderOverview({ preserveScroll: silent });
       this.renderDetails({ preserveScroll: silent });
     } catch (err) {
-      if (request === this.dashboardRequest && !this.disposed) this.setError(`明细加载失败：${err.message}`);
+      if (request === this.dashboardRequest && !this.disposed) {
+        if (err?.code === "NOT_READY") this.notReady = true;
+        else this.setError(`明细加载失败：${err.message}`);
+      }
     } finally {
       this.setLoading(-1, { silent });
     }
@@ -277,10 +312,88 @@ export class WorkspaceApp {
       this.balanceFetchedAt = Date.now();
       this.renderBalance();
     } catch (err) {
-      this.setError(`余额加载失败：${err.message}`);
+      if (err?.code === "NOT_READY") this.notReady = true;
+      else this.setError(`余额加载失败：${err.message}`);
     } finally {
       this.setLoading(-1, { silent });
     }
+  }
+
+  // 账单图的时间窗直接跟着顶部那排范围走，不另设一套选择器。
+  // today → 今天（逐小时）；last3/7/30 → 近 N 天；自定义日期 → 用选定起止。
+  dsWindowFromState(state = this.state.get()) {
+    const day = 86400;
+    const todayStart = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
+    switch (state.range) {
+      case "today": return { from: todayStart, to: todayStart + day };
+      case "last3": return { from: todayStart - 2 * day, to: todayStart + day };
+      case "last7": return { from: todayStart - 6 * day, to: todayStart + day };
+      case "last30": return { from: todayStart - 29 * day, to: todayStart + day };
+      case "week": return { from: todayStart - 6 * day, to: todayStart + day };
+      case "month": return { from: todayStart - 29 * day, to: todayStart + day };
+      default: {
+        if (state.from && state.to) {
+          const f = Math.floor(new Date(state.from + "T00:00:00").getTime() / 1000);
+          const t = Math.floor(new Date(state.to + "T00:00:00").getTime() / 1000) + day;
+          if (Number.isFinite(f) && Number.isFinite(t) && t > f) return { from: f, to: t };
+        }
+        // 「全部历史」：不设下限（from=0），由后端交出库里最早到现在的整段。
+        // 这里曾经默认成 30 天，于是选了“全部历史”却只看得到一个月。
+        return { from: 0, to: todayStart + day };
+      }
+    }
+  }
+
+  async loadDsUsage(force = false, { silent = false, window: win = null } = {}) {
+    const w = win || this.dsWindowFromState();
+    const key = `${w.from}:${w.to}`;
+    // 短窗口（≤ 3 天）每次重新取，别让缓存挡住“你看的这一刻”；长窗口给 2 分钟。
+    const ttl = (w.to - w.from) <= 3 * 86400 ? 0 : 120000;
+    if (!force && this.dsUsage && this.dsKey === key && Date.now() - (this.dsFetchedAt || 0) < ttl) return;
+    // 连续切范围时几个请求会同时飞出去，回来顺序不定；只认最后一次，旧响应直接丢。
+    const seq = ++this.dsSeq;
+    this.setLoading(1, { silent });
+    try {
+      const res = await this.api.getDsUsage({ from: w.from, to: w.to, force, mock: this.mock });
+      if (seq !== this.dsSeq) return;
+      this.dsUsage = res;
+      this.dsFetchedAt = Date.now();
+      this.dsKey = key;
+      this.dsError = "";
+      this.renderBalance();
+    } catch (err) {
+      if (seq !== this.dsSeq) return;
+      if (err?.code === "NOT_READY") {
+        // 扫描还没完成，别把“稍后再来”当成取数失败落到面板上
+        this.notReady = true;
+      } else {
+        this.dsUsage = this.dsUsage || null;
+        this.dsError = err.message || "官网用量加载失败";
+        this.renderBalance();
+      }
+    } finally {
+      this.setLoading(-1, { silent });
+    }
+  }
+
+  // 图表要的序列：服务端已经算好每一点的 tokens / hitRate，这里只挑出所需的几个字段。
+  // 粒度（天/小时）原样从后端透传，不自己猜。
+  dsSeries() {
+    const range = this.dsUsage?.range || null;
+    const points = (range?.points || []).map((p) => ({ t: p.t, tokens: Number(p.tokens) || 0, hitRate: p.hitRate == null ? null : p.hitRate }));
+    // 窗口行展示“实际有数据的范围”，而不是请求范围：
+    // “全部历史”的请求 from 是 0（无下限），直接格式化会变成 1970 年。
+    return {
+      points,
+      bucket: range?.bucket || 86400,
+      live: !!range?.live,
+      totals: range?.totals || null,
+      history: this.dsUsage?.history || null,
+      rangeFrom: points.length ? points[0].t : (range?.from ?? null),
+      rangeTo: points.length ? points[points.length - 1].t : (range?.to ?? null),
+      requestedFrom: range?.from ?? null,
+      requestedTo: range?.to ?? null,
+    };
   }
 
   async onRefresh() {
@@ -299,6 +412,11 @@ export class WorkspaceApp {
     this.renderBoardControls();
     this.startPolling();
     applyBoardLayout(this.container, state);
+    // 界面选择可能来自别处（比如另一张卡改了共享偏好）：跟着切，但不再回写。
+    if (state.view && state.view !== this.view) this.selectView(state.view, { persist: false });
+    // 顶部范围变了，账单图也跟着换时间窗
+    const w = this.dsWindowFromState(state);
+    if (`${w.from}:${w.to}` !== this.dsKey) this.loadDsUsage(false, { silent: true, window: w });
     const key = JSON.stringify([state.range, state.from, state.to, state.agent, state.model, state.provider, state.type]);
     if (key === this.filterKey) return;
     this.filterKey = key;
@@ -470,6 +588,7 @@ export class WorkspaceApp {
 
     const rows = this.balances || [];
     const body = h("div", { className: "tt-module-bd dense" });
+    const ds = this.dsSeries();
 
     if (!rows.length) {
       body.appendChild(h("div", { className: "tt-empty" }, "未配置余额/余量 API"));
@@ -504,6 +623,65 @@ export class WorkspaceApp {
       h("div", { className: "tt-module-hd" }, h("span", { className: "tt-module-title" }, "余额与额度")),
       body,
     );
+
+    // ── DeepSeek 官网账单：余额旁的「总消费」 + 一张按打开时间算的趋势图 ──
+    const dsPanel = h("div", { className: "tt-ds-panel" });
+    const hist = ds.history;
+    const dsHead = h("div", { className: "tt-ds-head" },
+      h("div", { className: "tt-ds-title" }, "DeepSeek 官网账单"),
+      hist && hist.cost > 0
+        ? h("div", { className: "tt-ds-total" },
+            h("span", { className: "tt-ds-total-label" }, "累计消费"),
+            h("span", { className: "tt-ds-total-value" }, "¥" + hist.cost.toFixed(2)),
+          )
+        : null,
+    );
+    dsPanel.appendChild(dsHead);
+
+    // 时间窗跟着顶部那排范围走（顶部已有选择器，这里不再重复一套）
+    if (!this.dsUsage) {
+      dsPanel.appendChild(h("div", { className: "tt-empty" }, this.dsError || "未取到官网用量"));
+    } else if (!ds.points.length) {
+      // 一无所获（没缓存也没拉到）：把原因说清楚，而不是一句笼统的「没登录态」。
+      const diag = this.dsUsage.diagnostics;
+      let why = "磁盘上没有可用的 DeepSeek 登录态，请先用内置浏览器登录一次";
+      if (diag) {
+        if (!diag.partitionsDir) why = "找不到浏览器数据目录（环境变量缺失），插件无法自行定位登录态";
+        else if (!diag.exists || !diag.readable) why = "浏览器数据目录读不到（" + (diag.error || "未知") + "），可能是这个 App 的运行沙箱没放行";
+        else if (!diag.filesWithTokenKey) why = "浏览器数据目录里没有 DeepSeek 登录记录（共 " + diag.entries + " 个存储区）";
+      } else if (this.dsUsage.tokenError) {
+        why = "取数失败：" + this.dsUsage.tokenError;
+      }
+      dsPanel.appendChild(h("div", { className: "tt-empty" }, why));
+    } else {
+      const isHour = ds.bucket === 3600;
+      const legend = h("div", { className: "tt-ds-legend" },
+        h("span", { className: "tt-ds-leg tt-ds-leg-area" }, "总 token（左轴）"),
+        h("span", { className: "tt-ds-leg tt-ds-leg-rate" }, "缓存命中率（右轴）"),
+        h("span", { className: "tt-ds-grain" }, isHour ? "按小时" : "按天"),
+      );
+      const chartBox = h("div", { className: "tt-ds-chart" });
+      dsPanel.appendChild(legend);
+      dsPanel.appendChild(chartBox);
+      drawUsageChart(chartBox, ds.points, { width: 680, height: 190, bucket: ds.bucket, areaColor: "var(--tt-blue)", rateColor: "var(--tt-green)" });
+
+      const tot = ds.totals || {};
+      const foot = h("div", { className: "tt-ds-foot" },
+        // 把窗口起止写在图上，免得“这到底是几天”只能靠猜
+        h("span", { className: "tt-ds-window" }, `${dsClock(ds.rangeFrom)} → ${dsClock(ds.rangeTo)} · ${ds.points.length} 点`),
+        h("span", {}, `${fmtTokensShort(tot.tokens || 0)} tokens · ${(tot.request || 0).toLocaleString()} 次请求`),
+        h("span", {}, `¥${(tot.cost || 0).toFixed(2)}`),
+        tot.hitRate != null ? h("span", {}, `命中率 ${tot.hitRate.toFixed(1)}%`) : null,
+      );
+      dsPanel.appendChild(foot);
+      if (!this.dsUsage.hasToken) {
+        dsPanel.appendChild(h("div", { className: "tt-ds-note" }, "显示的是已缓存数据，当前取不到登录态"));
+      }
+    }
+    if (this.dsError && this.dsUsage) {
+      dsPanel.appendChild(h("div", { className: "tt-ds-note" }, "上次刷新失败：" + this.dsError));
+    }
+    body.appendChild(dsPanel);
   }
 
   // ---------- details module ----------

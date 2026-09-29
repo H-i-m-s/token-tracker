@@ -40,7 +40,14 @@ let initializationError = null;
 
 async function request(method, payload = {}) {
   if (initializationError) throw initializationError;
-  if (!engine.ctx._tokenCache?.ready || !handlers.has('token-tracker.snapshot')) {
+  const cache = engine.ctx._tokenCache;
+  const cached = cache?.data;
+  // 上一轮扫描的结果（启动时已从 SQLite 播下）是完整的，先用它顶住首屏。
+  const hasCached = !!(cached && cached.sessions && Object.keys(cached.sessions).length);
+  const handlersReady = handlers.has('token-tracker.snapshot');
+  // 与扫描无关的方法（余额打外网、官网用量读自己的库）不该被“扫描中”拦住。
+  const scanIndependent = method === 'balance' || method === 'ds-usage';
+  if (!handlersReady || (!cache?.ready && !(scanIndependent || hasCached))) {
     if (method === 'snapshot') return { ready: false, realtime: null, balances: [], agentNames: {}, revision };
     throw Object.assign(new Error('数据扫描中，请稍后刷新'), { code: 'NOT_READY' });
   }
