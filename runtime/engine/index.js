@@ -4,6 +4,8 @@ import path from "node:path";
 import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
+import { openDsUsageStore } from "./services/ds-usage-store.js";
+import { createDsUsageService, recentMonths } from "./services/ds-usage-service.js";
 import { createJsonJournalStore } from "./services/json-journal-store.js";
 import { openArchiveStore } from "./services/archive-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
@@ -29,6 +31,12 @@ export default class TokenTrackerPlugin {
     const archivePath = path.join(dataDir, ARCHIVE);
     const archive = loadArchive(archivePath, log) || { version: ARCHIVE_VERSION, updatedAt: null, entries: {} };
     const settings = createSettingsService({ dataDir, config });
+    // ── DeepSeek 官网用量（platform.deepseek.com 官方账单）──
+    // token 由 ds-token-source 去内置浏览器的磁盘存储里找，只留在内存、不落盘；
+    // 拉回来的按天用量与消费按行落进 SQLite，避免整文件反复擦写（这个 App 的老毛病）。
+    const dsStore = openDsUsageStore({ file: path.join(dataDir, "ds-usage.sqlite"), log });
+    const dsUsage = createDsUsageService({ store: dsStore, log });
+    this.register(() => { try { dsStore?.close?.(); } catch {} });
     let interval = settings.read().scanInterval * 1000;
     const shared = { data: null, ready: false, cachePath, dataDir, archivePath, archive, realtimeSnapshot };
     this.ctx._tokenCache = shared;
@@ -390,6 +398,29 @@ export default class TokenTrackerPlugin {
       timer.unref?.();
       shared.emitUpdated?.();
       return result;
+    });
+
+    // 官网用量：默认最近 1 个月，可传 count（最多 36）或显式 months 列表。
+    // force=1 忽略缓存强制重拉；否则历史月冻结、当月有存活期。
+    regHandler("token-tracker.ds-usage", async (payload) => {
+      const p = payload || {};
+      const count = Number(p.count) > 0 ? Math.min(36, Math.floor(Number(p.count))) : 1;
+      const months = Array.isArray(p.months) && p.months.length ? p.months : recentMonths(count);
+      const r = await dsUsage.getUsage({ months, force: !!p.force });
+      // 出网前只留聚合所需字段：token 与磁盘路径都不外泄。
+      return {
+        hasToken: r.hasToken,
+        tokenError: r.tokenError,
+        updatedAt: r.updatedAt,
+        months: r.months.map((m) => ({
+          ym: m.ym,
+          fromCache: m.fromCache,
+          currency: m.currency,
+          error: m.error,
+          usageRows: m.usageRows,
+          costRows: m.costRows,
+        })),
+      };
     });
 
     this.register(() => { for (const un of busUnsubs) { try { un(); } catch {} } });

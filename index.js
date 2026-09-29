@@ -122,6 +122,23 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   }
 
+  async function handleDsUsage(c) {
+    const count = Number(c.req.query("count")) || 1;
+    const monthsParam = c.req.query("months");
+    const payload = {
+      count,
+      months: monthsParam ? String(monthsParam).split(",").map(s => s.trim()).filter(Boolean) : undefined,
+      force: c.req.query("force") === "1",
+    };
+    try {
+      const raw = await busClient.request("token-tracker.ds-usage", payload, { mock: isMock(c) });
+      return jsonResponse(c, okResponse({ dsUsage: raw }));
+    } catch (err) {
+      log("error", "GET /ds-usage error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "DS_USAGE_FAILED", err?.message || "获取官网用量失败"), err?.code === "INVALID_SETTINGS" ? 400 : 503);
+    }
+  }
+
   async function handleRefresh(c) {
     try {
       const payload = { force: c.req.query("force") === "1" };
@@ -164,6 +181,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       app.get("/snapshot", handleSnapshot);
       app.get("/dashboard", handleDashboard);
       app.get("/balance", handleBalance);
+      app.get("/ds-usage", handleDsUsage);
       app.post("/refresh", handleRefresh);
       app.get("/settings", handleSettingsRead);
       app.post("/settings", handleSettingsWrite);
@@ -184,7 +202,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     throw err;
   }
 
-  log("info", "routes registered: /snapshot /dashboard /balance /refresh /settings /events");
+  log("info", "routes registered: /snapshot /dashboard /balance /ds-usage /refresh /settings /events");
 
   let disposed = false;
   return async () => {

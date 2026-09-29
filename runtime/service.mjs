@@ -52,7 +52,7 @@ async function request(method, payload = {}) {
     view.summary.highUsageThreshold = handlers.get('token-tracker.settings.read')().highUsageThreshold;
     return view;
   }
-  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
+  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'ds-usage': 'ds-usage', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
   if (!name) throw Object.assign(new Error('Unknown method'), { status: 404 });
   const value = await handlers.get('token-tracker.' + name)(payload);
   if (method === 'snapshot') { value.revision = revision; if (value.realtime) delete value.realtime.sessionPath; }
