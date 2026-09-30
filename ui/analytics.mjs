@@ -106,6 +106,8 @@ function legend(models, color, selected, onSelect, totals) {
 // 默认按「来源」叠（对话 / 子代理 / 频道 / 后台 / 账本），可切成按 Agent。
 const KIND_LABELS = { desktop: '对话', sub: '子代理', bridge: '频道', background: '后台任务', ledger: '账本', channel: '其他' };
 const KIND_ORDER = ['desktop', 'sub', 'bridge', 'background', 'ledger', 'channel'];
+// 按模型/供应商筛选时后端不给来源与 Agent 拆分，图退化成这一层总量，不空着。
+const TOTAL_LAYER = '__total';
 let flowDimension = 'kind'; // 模块级：重绘后仍记得用户上次选的是哪个维度
 let flowScale = 'abs';      // 'abs' 绝对量 | 'pct' 每列归一成占比（小层才看得见）
 let flowFocus = '';         // 非空时只显示这一层，纵轴按这层重新缩放；再点图例恢复
@@ -171,6 +173,11 @@ function stackedAreaPaths(layers, count, width, height, max) {
 function renderFlowPanel(a, days, agentNames = {}) {
   const useHour = days.length <= 1 && a.heatmap.length > 0;
   const cells = useHour ? a.heatmap : a.daily;
+  // 有来源 / Agent 拆分就用它们；后端因为模型、供应商筛选把这两项撤掉时，改按模型看：
+  // 供应商筛选下每格 models 仍然齐全（已按筛选过滤），所以各家模型自己的线加起来就是总量。
+  const canSplitKind = cells.some((c) => Object.keys(c.kinds || {}).length || Object.keys(c.agents || {}).length);
+  const hasModels = cells.some((c) => Object.keys(c.models || {}).length);
+  const DIMS = canSplitKind || !hasModels ? [['kind', '按来源'], ['agent', '按 Agent']] : [['model', '按模型']];
   const sw = h('div', { className: 'tt-flow-switch' });
   const body = h('div', { className: 'tt-board-body' });
   const canvas = h('div', { className: 'tt-flow-canvas' });
@@ -180,36 +187,58 @@ function renderFlowPanel(a, days, agentNames = {}) {
     h('header', {}, h('h2', {}, '用量总览'), sw), body);
 
   // Agent 一律显它的中文名（缓存里带 agentNames 映射）；回落到 id 只是兜底。
-  const nameOf = (id) => (flowDimension === 'kind' ? (KIND_LABELS[id] || id) : (agentNames[id] || id));
+  const nameOf = (id) => {
+    if (id === TOTAL_LAYER) return '总量';
+    if (flowDimension === 'kind') return KIND_LABELS[id] || id;
+    if (flowDimension === 'agent') return agentNames[id] || id;
+    return id;
+  };
   const cellLabel = (c) => (useHour ? `${c.date} ${String(c.hour).padStart(2, '0')}:00` : c.date);
 
   function draw() {
-    for (const btn of [...sw.children]) {
-      if (btn.dataset.dim) btn.setAttribute('aria-pressed', String(btn.dataset.dim === flowDimension));
-      if (btn.dataset.scale) btn.setAttribute('aria-pressed', String(btn.dataset.scale === flowScale));
-    }
-    canvas.replaceChildren();
-    if (!cells.length) { canvas.append(h('div', { className: 'tt-board-empty' }, '所选范围暂无用量')); foot.textContent = ''; return; }
-
-    const field = flowDimension === 'kind' ? 'kinds' : 'agents';
+    // 拆分维度由数据决定：后端在按模型 / 供应商筛选时不发 kinds / agents（各分项之和会对不上
+    // 筛选后的总量），这时改按模型看：每家自己的模型各一条线。
+    if (!DIMS.some(([d]) => d === flowDimension)) flowDimension = DIMS[0][0];
+    const field = flowDimension === 'kind' ? 'kinds' : flowDimension === 'agent' ? 'agents' : 'models';
     const totals = new Map();
     for (const c of cells) for (const [id, v] of Object.entries(c[field] || {})) totals.set(id, (totals.get(id) || 0) + v);
-    if (!totals.size) {
-      canvas.append(h('div', { className: 'tt-board-empty' },
-        flowDimension === 'kind'
-          ? '按模型或供应商筛选时，来源拆分不再成立（各分项之和会对不上总量）。先清掉这两项筛选，或切回看总量。'
-          : '按模型或供应商筛选时，按 Agent 的拆分不再成立。先清掉这两项筛选。'));
+    const splittable = totals.size > 0 && cells.length > 0;
+    const cellsTotal = cells.reduce((sum, c) => sum + Math.max(0, c.totalTokens || 0), 0);
+    // 只有一层总量时「占比」恒为 100%，没有信息量，收回这个选项。
+    if (!splittable && flowScale === 'pct') flowScale = 'abs';
+    const noSplit = cells.length > 0 && !splittable;
+    for (const btn of [...sw.children]) {
+      if (btn.dataset.dim) {
+        btn.setAttribute('aria-pressed', String(btn.dataset.dim === flowDimension));
+        btn.disabled = noSplit;
+        btn.title = noSplit ? '所选范围内没有可拆分的用量' : '';
+      }
+      if (btn.dataset.scale) {
+        btn.setAttribute('aria-pressed', String(btn.dataset.scale === flowScale));
+        btn.disabled = noSplit && btn.dataset.scale === 'pct';
+        btn.title = btn.disabled ? '只有总量一层时，占比恒为 100%' : '';
+      }
+    }
+    canvas.replaceChildren();
+    if (!cells.length || (!splittable && cellsTotal <= 0)) {
+      canvas.append(h('div', { className: 'tt-board-empty' }, '所选范围暂无用量'));
       foot.textContent = '';
       return;
     }
-    const ids = flowDimension === 'kind'
-      ? KIND_ORDER.filter((k) => totals.has(k))
-      : [...totals.keys()].sort((x, y) => totals.get(y) - totals.get(x));
+
+    const ids = splittable
+      ? (flowDimension === 'kind'
+          ? KIND_ORDER.filter((k) => totals.has(k))
+          : [...totals.keys()].sort((x, y) => totals.get(y) - totals.get(x)))
+      : [TOTAL_LAYER];
+    const totalOf = (id) => (id === TOTAL_LAYER || !splittable ? cellsTotal : totals.get(id));
     const colTotals = cells.map((c) => Math.max(1, c.totalTokens));
     const layers = ids.map((id, i) => ({
-      id, total: totals.get(id), colorIndex: i,
+      id, total: totalOf(id), colorIndex: i,
       values: cells.map((c, i2) => {
-        const v = (c[field] || {})[id] || 0;
+        const v = id === TOTAL_LAYER
+          ? Math.max(0, c.totalTokens || 0)
+          : (splittable ? ((c[field] || {})[id] || 0) : Math.max(0, c.totalTokens || 0));
         return flowScale === 'pct' ? v / colTotals[i2] : v;
       }),
     }));
@@ -247,7 +276,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
         ? { 'fill-opacity': .15, stroke: color, 'stroke-width': 1.4 }
         : { 'fill-opacity': .55, stroke: color, 'stroke-width': .8, 'stroke-opacity': .85 };
       g.append(node('path', { d: paths[i], fill: color, ...style },
-        [title(`${nameOf(layer.id)} · 合计 ${compact(layer.total)} Token`)]));
+        [title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]));
     });
     // x 轴刻度按列中心摆（而不是数据点位置）：首尾两个刻度才不会把一半压在框外。
     const colW = cw / Math.max(1, cells.length);
@@ -345,28 +374,32 @@ function renderFlowPanel(a, days, agentNames = {}) {
     // 否则按整块画布（还含图例）算，标签会落到底下的图例上。
     const plot = h('div', { className: 'tt-flow-plot' }, chart, axes, hud);
     canvas.append(plot);
-    const grand = [...totals.values()].reduce((s, v) => s + v, 0) || 1;
+    const grand = (splittable ? [...totals.values()].reduce((s, v) => s + v, 0) : cellsTotal) || 1;
     canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
       ...ids.map((id, i) => h('button', {
         type: 'button',
-        title: `${nameOf(id)} · 点击只看这一层，再点恢复`,
+        title: `${nameOf(id)}${splittable ? ' · 点击只看这一层，再点恢复' : ''}`,
         'aria-pressed': String(flowFocus === id),
         onClick: () => { flowFocus = flowFocus === id ? '' : id; draw(); },
       },
         h('span', { className: 'tt-legend-name' },
           h('i', { style: `background:${COLORS[i % COLORS.length]}` }),
           h('span', {}, nameOf(id))),
-        h('b', {}, `${compact(totals.get(id))} · ${((totals.get(id) / grand) * 100).toFixed(1)}%`)))));
+        h('b', {}, `${compact(totalOf(id))} · ${((totalOf(id) / grand) * 100).toFixed(1)}%`)))));
     // 叠加模式下各层独立成线，叠满不等于总量，页脚不能再那么写。
-    const scaleNote = solo
-      ? `只看「${nameOf(solo.id)}」，纵轴已按这层重新缩放`
-      : (flowScale === 'pct' ? '每列归一到 100%，看构成' : '各层独立成线，重叠处自然加深');
+    const scaleNote = !splittable
+      ? '按模型或供应商筛选时只显示总量'
+      : solo
+        ? `只看「${nameOf(solo.id)}」，纵轴已按这层重新缩放`
+        : flowDimension === 'model' && ids.length === 1
+          ? '只看所选模型自己的用量'
+          : (flowScale === 'pct' ? '每列归一到 100%，看构成' : '各层独立成线，重叠处自然加深');
     foot.textContent = useHour
       ? `按小时 · ${cells[0].date} · 共 ${cells.length} 小时 · ${scaleNote}`
       : `${cells[0].date} → ${cells[cells.length - 1].date} · 共 ${cells.length} 天 · ${scaleNote}`;
   }
 
-  for (const [dim, label] of [['kind', '按来源'], ['agent', '按 Agent']]) {
+  for (const [dim, label] of DIMS) {
     sw.append(h('button', { type: 'button', dataset: { dim }, 'aria-pressed': String(flowDimension === dim),
       onClick: () => { flowDimension = dim; flowFocus = ''; draw(); } }, label));
   }

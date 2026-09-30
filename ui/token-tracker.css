@@ -957,8 +957,8 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-flow-canvas .tt-board-svg { flex: 0 0 auto; width: 100%; height: auto; overflow: visible; }
 /* 字号固定：viewBox 宽度 = 容器像素宽，1 单位 = 1 像素，刻度不随面板拉宽而放大。 */
 .tt-flow-canvas .tt-board-svg .tt-axis { font: 14px var(--font-mono); }
-/* 图例容器不裁切，选中圈横着溢出色块时才不会被剪掉一截；space-between 把各项铺满底部。 */
-.tt-flow-panel .tt-board-legend { overflow: visible; padding: 0 6px; justify-content: space-between; }
+/* 图例容器不裁切，选中圈横着溢出色块时才不会被剪掉一截；默认居中摆，内容比容器宽时用 safe 退回左对齐，不会把左侧几项顶到划不到的地方。 */
+.tt-flow-panel .tt-board-legend { overflow: visible; padding: 0 6px; justify-content: safe center; }
 /* 图区：SVG、轴标签层、浮层共用一个盒子，绝对定位的百分比才跟图对得上。 */
 .tt-flow-plot { position: relative; }
 /* 轴标签层：盖在图上的一层 HTML，字号是固定 px，不随 SVG 缩放。 */
@@ -1043,7 +1043,7 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-board-right .tt-board-panel > header { padding-top: 10px; padding-bottom: 4px; }
 .tt-board-right .tt-board-panel h2 { font-size: 13px; }
 .tt-board-right .tt-board-body { gap: 2px; padding-bottom: 7px; }
-.tt-board-legend { display: flex; gap: 4px 10px; align-items: center; flex: 0 0 auto; overflow-x: auto; scrollbar-width: thin; max-height: 42px; }
+.tt-board-legend { display: flex; gap: 4px 10px; align-items: center; flex: 0 0 auto; overflow-x: auto; justify-content: safe center; scrollbar-width: thin; max-height: 42px; }
 .tt-board-legend button { display: flex; align-items: center; gap: 4px; background: none; border: 0; padding: 3px 0; color: var(--tt-t2); font: 9px var(--font-sans); cursor: pointer; flex-shrink: 0; max-width: 160px; }
 .tt-board-legend button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tt-board-legend button:hover, .tt-board-legend button.selected { color: var(--tt-t1); }
@@ -1070,7 +1070,9 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: var(--tt-b1); background: var(--tt-card); box-shadow: none; }
 @media (max-height: 760px) {
   .tt-app.tt-dashboard-app { --tt-page-inset: 12px; padding: var(--tt-page-inset); gap: 7px; }
-  .tt-board { grid-template-rows: 72px minmax(0,1fr) 12px; gap: 12px; }
+  /* 行序固定为 KPI / 用量总览色带图 / 细分图组 / 页脚说明；行数必须跟着子节点数量走，
+     少一行就会把细分图组压进 12px 的轨道，页脚说明落到紧贴它的隐式行上盖住面板标题。 */
+  .tt-board { grid-template-rows: 72px max-content max-content 12px; gap: 12px; }
   .tt-board-kpis > div { padding: 10px; }
   .tt-board-kpis strong { font-size: clamp(13px,21cqi,24px); }
   .tt-board-grid,.tt-board-right { gap: 12px; }
@@ -1095,7 +1097,7 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
   .tt-board-heading h1 { font-size: 21px; }
   .tt-board-controls { justify-content: flex-start; }
   .tt-board-kpis { grid-template-columns: repeat(4,minmax(0,1fr)); gap: 5px; }
-  .tt-board { grid-template-rows: 114px minmax(0,1fr) 12px; }
+  .tt-board { grid-template-rows: 114px max-content max-content 12px; }
   .tt-board-kpis > div { padding: 7px; border-radius: 9px; }
   .tt-filter-status { flex-wrap: wrap; gap: 4px; }
   .tt-filter-clear { margin-left: 0; }
