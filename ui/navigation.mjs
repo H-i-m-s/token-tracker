@@ -1,5 +1,6 @@
 import { applyAppearance } from "./appearance.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
+import { decodeRows } from "./details-view.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { h, RANGES, fmt, fmtCost, fmtPct, renderPills, rankAgents } from "./components.mjs";
 
@@ -78,7 +79,7 @@ export class NavigationApp {
       })(),
       (async () => {
         let dashboard = null;
-        try { dashboard = await this.api.getDashboard(filters, { mock: this.mock }); } catch {}
+        try { dashboard = decodeRows(await this.api.getDashboard(filters, { mock: this.mock })); } catch {}
         if (!current()) return;
         this.dashboard = dashboard;
         this.renderSummary();
@@ -176,7 +177,7 @@ export class NavigationApp {
 
   async onExport() {
     try {
-      const dashboard = await this.api.getDashboard(this.state.get(), { mock: this.mock });
+      const dashboard = decodeRows(await this.api.getDashboard(this.state.get(), { mock: this.mock }));
       await saveDetailsCSV(this.hana, dashboard?.rows || [], this.state.get().range);
     } catch (err) {
       this.summarySection.appendChild(h("div", { className: "tt-error" }, `导出失败：${err.message}`));

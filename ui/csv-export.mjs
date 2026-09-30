@@ -1,7 +1,16 @@
+import { hitRate } from "./details-view.mjs";
+
 export function buildDetailsCSV(rows) {
-  const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "总Token", "成本"];
-  const lines = rows.map(r => [r.time || "", r.agentName || r.agent || "", r.provider || "", r.model || "",
-    r.inputTokens ?? "", r.outputTokens ?? "", r.totalTokens ?? 0, r.cost ?? ""]);
+  const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "缓存命中率", "调用次数", "总Token", "成本"];
+  const lines = rows.map((r) => {
+    // 缓存命中率是这两列里唯一需要算的：没口径就留空，不写 0%（那会读成“完全没命中”）。
+    const hr = hitRate(r);
+    return [r.time || "", r.agentName || r.agent || "", r.provider || "", r.model || "",
+      r.inputTokens ?? "", r.outputTokens ?? "",
+      hr == null ? "" : (hr * 100).toFixed(1) + "%",
+      r.calls ?? "",
+      r.totalTokens ?? 0, r.cost ?? ""];
+  });
   return "\uFEFF" + [header, ...lines].map(line => line.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\r\n");
 }
 

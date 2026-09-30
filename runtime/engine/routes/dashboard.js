@@ -945,6 +945,34 @@ export default function (app, ctx) {
 // 这几个调用点（日期筛选起点、明细行、今天）用的是同一套 en-CA / Asia/Shanghai，共用这一个。
 const CN_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
 
+// 明细行的列顺序。上线前按这个顺序压成数组，前端按同一顺序解回来（对拍在 test/rows-wire.test.js）。
+// 为什么不上对象：键名会在每一行里重复一遭，17k 行光键名就 1.6 MB，而宿主给托管服务的
+// 响应设了 4 MiB 硬顶（实测超了整条请求直接失败，不是截断）。
+export const ROW_COLS = ["time", "agent", "agentName", "provider", "model",
+  "totalTokens", "inputTokens", "outputTokens", "cacheRead", "calls"];
+
+export function encodeRows(rows, cols = ROW_COLS) {
+  return rows.map((r) => cols.map((k) => r[k] ?? null));
+}
+
+// 明细行 = 会话 × 一轮。抽成纯函数是为了能单独断言字段：
+// 这道口漏一个字段，前端就永远看不见它（缓存拆分与调用次数就是这么加上来的）。
+// 没有口径的老记录（v24 之前）给 null 而不是 0：没口径和真的是 0 不是一回事。
+export function rowOf(session, conv, agentNames) {
+  return {
+    time: conv.time || null,
+    agent: session.agent,
+    agentName: agentNames?.[session.agent] || session.agent,
+    provider: conv.provider || "",
+    model: conv.model || "",
+    totalTokens: conv.totalTokens || 0,
+    inputTokens: conv.inTokens ?? null,
+    outputTokens: conv.outTokens ?? null,
+    cacheRead: conv.cacheRead ?? null,
+    calls: conv.msgCount ?? null,
+  };
+}
+
 function build(cache, range = "all", filters = {}, fxRate = null) {
   const priceTable = loadPriceTable(cache.dataDir || "");
   let sessions = Object.values(cache.sessions);
@@ -1228,9 +1256,7 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     if (dateFilter && (!day || !dateFilter(day))) continue;
     if (filterModel && c.model !== filterModel) continue;
     if (filterProvider && c.provider !== filterProvider) continue;
-    rows.push({ time: c.time || null, agent: s.agent, agentName: cache.agentNames?.[s.agent] || s.agent,
-      provider: c.provider || "", model: c.model || "", totalTokens: c.totalTokens || 0,
-      inputTokens: c.inTokens ?? null, outputTokens: c.outTokens ?? null });
+    rows.push(rowOf(s, c, cache.agentNames));
   }
   rows.sort((a, b) => String(b.time).localeCompare(String(a.time)));
 
@@ -1306,7 +1332,9 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     analytics: buildVisualAnalytics(sessions, dateFilter, filters, rows),
     agentNames: cache.agentNames || {},
     summary: { ...sums, cacheHitRate: sums.totalTokens > 0 ? +((sums.totalCacheRead / sums.totalTokens * 100).toFixed(1)) : 0, estimatedCost },
-    agents, models, modelOptions, providers: allProviderList, daily, hourly, rows,
+    agents, models, modelOptions, providers: allProviderList, daily, hourly,
+    // 行数组编码 + 列名：键名只发一次（上面 ROW_COLS 有说明），前端 decodeRows 解回对象。
+    rows: encodeRows(rows), rowCols: ROW_COLS,
   };
 }
 

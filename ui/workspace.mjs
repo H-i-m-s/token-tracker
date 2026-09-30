@@ -8,7 +8,7 @@ import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
 import { h, RANGES, fmt, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
-import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice } from "./details-view.mjs";
+import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRate, decodeRows } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
 
@@ -288,7 +288,8 @@ export class WorkspaceApp {
     try {
       const dashboard = await this.api.getDashboard(this.state.get(), { mock: this.mock });
       if (request !== this.dashboardRequest || this.disposed) return;
-      this.dashboard = dashboard;
+      // 行是数组编码来的，在这一层解回对象；下面所有渲染都按对象行读。
+      this.dashboard = decodeRows(dashboard);
       // Agent 名单以宿主名册为准（dashboard.agentNames 由后端的 agent:list 覆盖），
       // 账本里有用量但名册里已经没有的（被删掉的 agent）只补名字，不能作为唯一来源。
       for (const [id, name] of Object.entries(dashboard.agentNames || {})) this.agentNames.set(id, name || id);
@@ -734,6 +735,7 @@ export class WorkspaceApp {
     const tbody = h("tbody", {},
       ...pageRows.map((r) => {
         const ratio = maxTokens > 0 ? Math.min(100, ((r.totalTokens || 0) / maxTokens) * 100) : 0;
+        const hr = hitRate(r);
         return h("tr", { className: this.dashboard?.summary?.highUsageThreshold > 0 && r.totalTokens >= this.dashboard.summary.highUsageThreshold ? "tt-high-usage" : "" },
           h("td", {}, formatDateTime(r.time)),
           h("td", { title: r.agent }, r.agentName || r.agent || "—"),
@@ -745,6 +747,10 @@ export class WorkspaceApp {
                 r.inputTokens != null || r.outputTokens != null
                   ? "输入 " + fmt(r.inputTokens || 0) + " · 输出 " + fmt(r.outputTokens || 0)
                   : "输入 / 输出 —",
+                // 缓存拆分与调用次数：这两项才是「这一笔为什么贵」的答案（命中部分单价低一个量级）。
+                // 没有口径的记录（老数据）就不显示，不用 0 冒充。
+                hr != null ? h("span", { title: "命中缓存的输入占输入总量的比例（命中部分单价低一个量级）" }, ` · 缓存 ${(hr * 100).toFixed(1)}%`) : null,
+                r.calls != null ? h("span", { title: "这一轮里的模型调用次数" }, ` · ${r.calls} 次`) : null,
               ),
               h("span", { className: "out" }, fmt(r.totalTokens || 0)),
               h("span", { className: "tt-table-unit" }, "tok"),
