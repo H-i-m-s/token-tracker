@@ -15,7 +15,7 @@ import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
 const CACHE = "token-cache.json";
-const CACHE_VERSION = 23; // 23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
+const CACHE_VERSION = 24; // 24：轮次记录补缓存拆分（cacheRead/cacheWrite/reasoning）；23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
 const ARCHIVE = "usage-archive.json";
 const ARCHIVE_VERSION = 1;
 
@@ -694,7 +694,7 @@ function scanDir(dir, agent, type, channel, cache, old) {
           if (conv) data.conversations.push(conv);
           // 不存对话正文与工具参数：用量统计只需要下面这几个数字（正文本来就在会话文件里，
           // 且界面上没有任何地方读它）。
-          conv = { time: ts, model: null, provider: null, totalTokens: 0, msgCount: 0, inTokens: 0, outTokens: 0 };
+          conv = { time: ts, model: null, provider: null, totalTokens: 0, msgCount: 0, inTokens: 0, outTokens: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
         }
         if (m.role === "assistant" && conv) {
           const _f = m.stopReason === "error" || m.isError === true || !!m.errorMessage;
@@ -707,6 +707,12 @@ function scanDir(dir, agent, type, channel, cache, old) {
               // 输入 = 未命中缓存的输入 + 命中缓存的输入；加上输出正好等于总数（逐条实测成立）
               conv.inTokens += tokVal(m.usage.input) + tokVal(m.usage.cacheRead);
               conv.outTokens += tokVal(m.usage.output);
+              // 缓存拆分另存一份：inTokens 把命中与未命中并成了一个数，考古看不出「这一笔为什么贵」。
+              // 命中缓存的输入单价低一个量级（本机价格表：$0.0028/M 对 $0.14/M），拆开才有意义。
+              conv.cacheRead += tokVal(m.usage.cacheRead);
+              conv.cacheWrite += tokVal(m.usage.cacheWrite);
+              // 推理 token 通常已含在 output 里，单独记一份用于看思考占比，不改动 output 口径。
+              conv.reasoning += tokVal(m.usage.reasoning);
             }
           }
           if (Array.isArray(m.content)) {
