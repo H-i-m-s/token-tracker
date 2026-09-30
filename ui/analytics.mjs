@@ -170,9 +170,23 @@ function stackedAreaPaths(layers, count, width, height, max) {
   });
 }
 
+// 短窗口按小时看：1 天 = 24 格，3 天 = 72 格。
+// a.heatmap 只含有数据的那几个小时（实测没有任何一天是满 24 小时的），直接当序列铺开会把时间轴
+// 压扁：8 个不连续的小时看起来像连续的 8 格。所以按「天 × 24」补成连续网格，缺的小时记 0。
+const FLOW_HOUR_MAX_DAYS = 7; // 跨度不超过这几天就切小时刻度
+function hourGrid(heatmap, days) {
+  const byKey = new Map(heatmap.map((c) => [`${c.date}/${c.hour}`, c]));
+  const cells = [];
+  for (const date of days) {
+    for (let hour = 0; hour < 24; hour++) {
+      cells.push(byKey.get(`${date}/${hour}`) || { date, hour, totalTokens: 0, models: {}, kinds: {}, agents: {}, calls: 0 });
+    }
+  }
+  return cells;
+}
 function renderFlowPanel(a, days, agentNames = {}) {
-  const useHour = days.length <= 1 && a.heatmap.length > 0;
-  const cells = useHour ? a.heatmap : a.daily;
+  const useHour = days.length >= 1 && days.length <= FLOW_HOUR_MAX_DAYS && a.heatmap.length > 0;
+  const cells = useHour ? hourGrid(a.heatmap, days) : a.daily;
   // 有来源 / Agent 拆分就用它们；后端因为模型、供应商筛选把这两项撤掉时，改按模型看：
   // 供应商筛选下每格 models 仍然齐全（已按筛选过滤），所以各家模型自己的线加起来就是总量。
   const canSplitKind = cells.some((c) => Object.keys(c.kinds || {}).length || Object.keys(c.agents || {}).length);
@@ -281,10 +295,23 @@ function renderFlowPanel(a, days, agentNames = {}) {
     // x 轴刻度按列中心摆（而不是数据点位置）：首尾两个刻度才不会把一半压在框外。
     const colW = cw / Math.max(1, cells.length);
     const step = Math.max(1, Math.ceil(cells.length / 9));
+    // 跨天的小时轴：00:00 那格写日期（它就是上下两天的分界），其余写整点，
+    // 否则「00:00」会在轴上连着出现好几次，看不出是第几天。
+    // 步长按「总刻度数不超过 ~12」自己选：2–3 天每 6 小时一格，4 天每 12 小时，
+    // 7 天就到 24 小时（一天一个日期，具体小时看悬停读数）。
+    const multiDayHour = useHour && days.length > 1;
+    const hourStep = multiDayHour
+      ? ([6, 12, 24].find((s) => (24 / s) * days.length <= 12) || 24)
+      : step;
     cells.forEach((c, i) => {
+      if (useHour) {
+        if (c.hour % hourStep) return;
+        const text = multiDayHour && c.hour === 0 ? c.date.slice(5) : String(c.hour).padStart(2, '0') + ':00';
+        xTicks.push({ x: PAD_L + i * colW + colW / 2, y: PAD_T + ch + 26, text });
+        return;
+      }
       if (i % step) return;
-      const label = useHour ? String(c.hour).padStart(2, '0') + ':00' : c.date.slice(5);
-      xTicks.push({ x: PAD_L + i * colW + colW / 2, y: PAD_T + ch + 26, text: label });
+      xTicks.push({ x: PAD_L + i * colW + colW / 2, y: PAD_T + ch + 26, text: c.date.slice(5) });
     });
 
     // ── 悬停：竖直虚线 + 各层标记点 + 读数浮层 ──
@@ -394,9 +421,10 @@ function renderFlowPanel(a, days, agentNames = {}) {
         : flowDimension === 'model' && ids.length === 1
           ? '只看所选模型自己的用量'
           : (flowScale === 'pct' ? '每列归一到 100%，看构成' : '各层独立成线，重叠处自然加深');
+    const lastCell = cells[cells.length - 1];
     foot.textContent = useHour
-      ? `按小时 · ${cells[0].date} · 共 ${cells.length} 小时 · ${scaleNote}`
-      : `${cells[0].date} → ${cells[cells.length - 1].date} · 共 ${cells.length} 天 · ${scaleNote}`;
+      ? `按小时 · ${cells[0].date}${lastCell.date === cells[0].date ? '' : ' → ' + lastCell.date} · 共 ${cells.length} 小时 · ${scaleNote}`
+      : `${cells[0].date} → ${lastCell.date} · 共 ${cells.length} 天 · ${scaleNote}`;
   }
 
   for (const [dim, label] of DIMS) {
