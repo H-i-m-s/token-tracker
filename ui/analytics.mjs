@@ -301,6 +301,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
       const cell = cells[Math.round(fx)];
       hud.replaceChildren(
         h('b', {}, cellLabel(cell)),
+        h('small', {}, `${(cell.calls || 0).toLocaleString()} 次调用`),
         ...shown.map((layer, li) => h('span', {},
           h('i', { style: `background:${COLORS[layer.colorIndex % COLORS.length]}` }),
           nameOf(layer.id),
@@ -329,8 +330,9 @@ function renderFlowPanel(a, days, agentNames = {}) {
         'aria-pressed': String(flowFocus === id),
         onClick: () => { flowFocus = flowFocus === id ? '' : id; draw(); },
       },
-        h('i', { style: `background:${COLORS[i % COLORS.length]}` }),
-        h('span', {}, nameOf(id)),
+        h('span', { className: 'tt-legend-name' },
+          h('i', { style: `background:${COLORS[i % COLORS.length]}` }),
+          h('span', {}, nameOf(id))),
         h('b', {}, `${compact(totals.get(id))} · ${((totals.get(id) / grand) * 100).toFixed(1)}%`)))));
     // 叠加模式下各层独立成线，叠满不等于总量，页脚不能再那么写。
     const scaleNote = solo

@@ -955,6 +955,45 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-flow-panel .tt-board-body { overflow: visible; gap: 6px; flex: 0 0 auto; }
 .tt-flow-canvas { position: relative; display: flex; flex-direction: column; gap: 5px; }
 .tt-flow-canvas .tt-board-svg { flex: 0 0 auto; width: 100%; height: auto; overflow: visible; }
+/* 字号固定：viewBox 宽度 = 容器像素宽，1 单位 = 1 像素，刻度不随面板拉宽而放大。 */
+.tt-flow-canvas .tt-board-svg .tt-axis { font: 14px var(--font-mono); }
+/* 图例容器不裁切，选中圈横着溢出色块时才不会被剪掉一截。 */
+.tt-flow-panel .tt-board-legend { overflow: visible; padding: 0 6px; }
+/* 选中圈用 outline 画在色块外侧，中间是真空隙。
+   box-shadow 那种双层写法里，垫底那层主题底色会盖住圈的内侧，左边看着就缺一块。 */
+.tt-flow-panel .tt-board-legend button[aria-pressed="true"] i {
+  box-shadow: none;
+  outline: 1.5px solid currentColor;
+  outline-offset: 2px;
+}
+/* 图例：色块和名称看成一块，整块与下面的用量按中线对齐；宽度随内容，不额外撑大。 */
+.tt-flow-panel .tt-legend-totals button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: auto;
+  max-width: none;
+  text-align: center;
+  font-size: 12px;
+}
+.tt-flow-panel .tt-legend-totals button > .tt-legend-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* 公共规则给 button > span 加了 overflow: hidden 做省略号，
+     这会把色块外圈的高亮框裁掉一条左边。这里必须放开。 */
+  overflow: visible;
+  text-overflow: clip;
+}
+.tt-flow-panel .tt-legend-totals button > b { text-align: center; font-size: 12px; }
+/* 悬停读数浮层：字号抬一档，跟这张图的其他文字同档。 */
+.tt-flow-panel .tt-flow-hud { font: 12px var(--font-sans); padding: 8px 12px; gap: 3px; }
+.tt-flow-panel .tt-flow-hud b { font: 600 13px var(--font-mono); }
+.tt-flow-panel .tt-flow-hud small { color: var(--tt-t3); font: 11px var(--font-sans); }
+.tt-flow-panel .tt-flow-hud i { width: 8px; height: 8px; border-radius: 2px; }
+.tt-flow-panel .tt-flow-hud em { padding-left: 16px; font: 500 13px var(--font-mono); }
 .tt-flow-hover { pointer-events: none; }
 /* 悬停读数：水平贴着指针，垂直也跟指针走（位置由脚本给，默认压在指针上方的空白处）。 */
 .tt-flow-hud { position: absolute; z-index: 3; display: none; flex-direction: column; gap: 2px; padding: 6px 10px; border: 1px solid var(--tt-b2); border-radius: 9px; background: color-mix(in srgb, var(--tt-card) 94%, transparent); transform: translateX(-50%); pointer-events: none; font: 9px var(--font-sans); color: var(--tt-t2); white-space: nowrap; }

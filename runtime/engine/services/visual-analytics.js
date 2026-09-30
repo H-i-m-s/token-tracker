@@ -41,11 +41,12 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
     for (const [date, bucket] of Object.entries(session.dailyBreakdown || {})) {
       if (dateFilter && !dateFilter(date)) continue;
       const models = modelsFor(bucket, filters);
-      const total = [...models.values()].reduce((sum, m) => sum + m.totalTokens, 0);
+      let total = 0, calls = 0;
+      for (const m of models.values()) { total += m.totalTokens; calls += m.count; }
       if (!total) continue;
       active = true;
-      if (!days.has(date)) days.set(date, { date, totalTokens: 0, models: {}, kinds: {}, agents: {} });
-      const day = days.get(date); day.totalTokens += total;
+      if (!days.has(date)) days.set(date, { date, totalTokens: 0, models: {}, kinds: {}, agents: {}, calls: 0 });
+      const day = days.get(date); day.totalTokens += total; day.calls += calls;
       for (const [id, data] of models) day.models[id] = (day.models[id] || 0) + data.totalTokens;
       const kb = kindsOf(bucket);
       if (kb) for (const [k, v] of Object.entries(kb)) if (v) day.kinds[k] = (day.kinds[k] || 0) + v;
@@ -60,13 +61,14 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
       for (const [hour, bucket] of Object.entries(buckets)) {
         const h = Number(hour); if (!Number.isInteger(h) || h < 0 || h > 23) continue;
         const key = `${date}/${h}`;
-        if (!hours.has(key)) hours.set(key, { date, hour: h, totalTokens: 0, models: {}, kinds: {}, agents: {} });
+        if (!hours.has(key)) hours.set(key, { date, hour: h, totalTokens: 0, models: {}, kinds: {}, agents: {}, calls: 0 });
         const cell = hours.get(key);
         let cellTotal = 0;
         for (const [id, data] of modelsFor(bucket, filters)) {
           cell.totalTokens += data.totalTokens;
           cell.models[id] = (cell.models[id] || 0) + data.totalTokens;
           cellTotal += data.totalTokens;
+          cell.calls += value(data.count);
         }
         const hb = kindsOf(bucket);
         if (hb) for (const [k, v] of Object.entries(hb)) if (v) cell.kinds[k] = (cell.kinds[k] || 0) + v;
