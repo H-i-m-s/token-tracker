@@ -455,7 +455,8 @@ export class WorkspaceApp {
       this.state.patch({ range: "all", from: from.value, to: to.value });
     } }, "应用日期");
     this.boardControls.replaceChildren(
-      renderPills(BOARD_RANGES, state.range, range => this.state.patch({ range, from: "", to: "" })),
+      // 「全部历史」放在「近30天」和日期选择之间：它也是范围的一种，放在同一排才找得到。
+      renderPills([...BOARD_RANGES, { key: "all", label: "全部历史" }], state.range, range => this.state.patch({ range, from: "", to: "" })),
       h("details", { className: "tt-date-picker" }, h("summary", {}, state.from ? `${state.from} — ${state.to}` : "年 / 月 / 日"), h("div", { className: "tt-board-dates" }, from, h("span", {}, "至"), to, apply)),
     );
     this.renderFilterStatus();
@@ -508,18 +509,14 @@ export class WorkspaceApp {
     closeOpenDate();
     const state = this.state.get();
     this.stripPlaceholderFilters(state);
-    const rangeLabel = state.from || state.to
-      ? `${state.from || "不限"} — ${state.to || "不限"}`
-      : RANGES.find(item => item.key === state.range)?.label || (state.range === "all" ? "全部历史" : state.range);
+    // 时间范围已交由看板右上角那排统一负责，这里只管 Agent / 供应商 / 模型。
     const next = renderFilterChips({
       state,
-      rangeLabel,
       agentLabel: this.agentNames.get(state.agent) || state.agent,
       agentOptions: this.agentOptions(),
       providerOptions: this.providerOptions(),
       modelOptions: this.modelOptions(),
       onPatch: (patch) => this.state.patch(patch),
-      onError: (message) => this.setError(message),
     });
     this.filterStatus.replaceWith(next);
     this.filterStatus = next;
@@ -649,6 +646,8 @@ export class WorkspaceApp {
         if (!diag.partitionsDir) why = "找不到浏览器数据目录（环境变量缺失），插件无法自行定位登录态";
         else if (!diag.exists || !diag.readable) why = "浏览器数据目录读不到（" + (diag.error || "未知") + "），可能是这个 App 的运行沙箱没放行";
         else if (!diag.filesWithTokenKey) why = "浏览器数据目录里没有 DeepSeek 登录记录（共 " + diag.entries + " 个存储区）";
+      } else if (this.dsUsage.tokenError === "DS_TOKEN_INVALID") {
+        why = "官网登录态已失效，请到内置浏览器重新登录";
       } else if (this.dsUsage.tokenError) {
         why = "取数失败：" + this.dsUsage.tokenError;
       }
@@ -674,7 +673,15 @@ export class WorkspaceApp {
         tot.hitRate != null ? h("span", {}, `命中率 ${tot.hitRate.toFixed(1)}%`) : null,
       );
       dsPanel.appendChild(foot);
-      if (!this.dsUsage.hasToken) {
+      // 登录态过期：官网已经拒了这枚 token，图上这些点不会再长。把「停在哪天」写出来，
+      // 否则你看到的是一张完好的旧图 + 一个刷到「刚刚」的时间戳，看不出数据早就停了。
+      if (this.dsUsage.tokenError === "DS_TOKEN_INVALID") {
+        const lastT = ds.points[ds.points.length - 1]?.t;
+        const stopped = Number.isFinite(lastT)
+          ? `，数据停在 ${ds.bucket === 86400 ? dsClock(lastT).slice(0, 5) : dsClock(lastT)}`
+          : "";
+        dsPanel.appendChild(h("div", { className: "tt-ds-note" }, `官网登录态已失效${stopped}；请到内置浏览器重新登录`));
+      } else if (!this.dsUsage.hasToken) {
         dsPanel.appendChild(h("div", { className: "tt-ds-note" }, "显示的是已缓存数据，当前取不到登录态"));
       }
     }

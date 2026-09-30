@@ -101,13 +101,265 @@ function legend(models, color, selected, onSelect, totals) {
   }, h('i', { style: `background:${color(id)}` }), h('span', {}, id), totals ? h('b', {}, compact(totals.get(id) || 0)) : null)));
 }
 
+// ── 用量总览（色带图）──
+// 全页唯一一张真正按顶部时间范围铺满的图：窗口长就按天，只剩一天就按小时。
+// 默认按「来源」叠（对话 / 子代理 / 频道 / 后台 / 账本），可切成按 Agent。
+const KIND_LABELS = { desktop: '对话', sub: '子代理', bridge: '频道', background: '后台任务', ledger: '账本', channel: '其他' };
+const KIND_ORDER = ['desktop', 'sub', 'bridge', 'background', 'ledger', 'channel'];
+let flowDimension = 'kind'; // 模块级：重绘后仍记得用户上次选的是哪个维度
+let flowScale = 'abs';      // 'abs' 绝对量 | 'pct' 每列归一成占比（小层才看得见）
+let flowFocus = '';         // 非空时只显示这一层，纵轴按这层重新缩放；再点图例恢复
+
+// 中点插值的平滑曲线段（不含起笔的 M）。上下边界用同一套算法，层与层之间才不露缝。
+function curve(pts) {
+  let d = '';
+  for (let i = 1; i < pts.length; i++) {
+    const [x, y] = pts[i], [px, py] = pts[i - 1], mx = (x + px) / 2;
+    d += ` C${mx},${py} ${mx},${y} ${x},${y}`;
+  }
+  return d;
+}
+
+const axisX = (i, count, width) => (count <= 1 ? width / 2 : (i * width) / (count - 1));
+
+// 求平滑曲线在某个浮点索引处的值。用的是与绘制完全相同的中点贝塞尔：
+// x 控制点落在两段中点，x(t) 单调，二分反解 t；y 控制点就是两端点，直接可算。
+// 这样鼠标停在两点之间时，读数对得上曲线上那一点，而不是生硬地卡到整列。
+function bezierYAt(i0, y0, i1, y1, target) {
+  const mx = (i0 + i1) / 2;
+  let lo = 0, hi = 1;
+  for (let k = 0; k < 20; k++) {
+    const t = (lo + hi) / 2;
+    const x = i0 * (1 - t) ** 3 + 3 * mx * (1 - t) ** 2 * t + 3 * mx * (1 - t) * t ** 2 + i1 * t ** 3;
+    if (x < target) lo = t; else hi = t;
+  }
+  const t = (lo + hi) / 2;
+  return y0 * (1 - t) ** 2 * (1 + 2 * t) + y1 * t ** 2 * (3 - 2 * t);
+}
+
+// 叠加：每条曲线各自从基线画起，互相重叠。
+// 这是「0–24 时分布」那张图的形状：填充很淡，重叠层数越多颜色越深，描边始终清楚。
+function overlayPaths(layers, count, width, height, max) {
+  const Y = (v) => height - (v / max) * (height - 6);
+  return layers.map((layer) => {
+    if (!count) return '';
+    const pts = layer.values.map((v, i) => [axisX(i, count, width), Y(v)]);
+    return `M${pts[0][0]},${pts[0][1]}` + curve(pts)
+      + ` L${axisX(count - 1, count, width)},${height} L${axisX(0, count, width)},${height} Z`;
+  });
+}
+
+// 堆叠：各层首尾相接，叠满即为总量。上下边界用同一套插值，层与层之间才不露缝。
+function stackedAreaPaths(layers, count, width, height, max) {
+  const X = (i) => axisX(i, count, width);
+  const Y = (v) => height - (v / max) * (height - 6);
+  const tops = [], bots = [];
+  let acc = new Array(count).fill(0);
+  for (const layer of layers) {
+    bots.push(acc.slice());
+    acc = acc.map((v, i) => v + layer.values[i]);
+    tops.push(acc.slice());
+  }
+  return layers.map((layer, li) => {
+    if (!count) return '';
+    const topPts = tops[li].map((v, i) => [X(i), Y(v)]);
+    const botPts = bots[li].map((v, i) => [X(i), Y(v)]).reverse();
+    return `M${topPts[0][0]},${topPts[0][1]}` + curve(topPts) + ` L${botPts[0][0]},${botPts[0][1]}` + curve(botPts) + ' Z';
+  });
+}
+
+function renderFlowPanel(a, days, agentNames = {}) {
+  const useHour = days.length <= 1 && a.heatmap.length > 0;
+  const cells = useHour ? a.heatmap : a.daily;
+  const sw = h('div', { className: 'tt-flow-switch' });
+  const body = h('div', { className: 'tt-board-body' });
+  const canvas = h('div', { className: 'tt-flow-canvas' });
+  const foot = h('footer', {}, '');
+  body.append(canvas, foot);
+  const el = h('section', { className: 'tt-board-panel tt-flow-panel' },
+    h('header', {}, h('h2', {}, '用量总览'), sw), body);
+
+  // Agent 一律显它的中文名（缓存里带 agentNames 映射）；回落到 id 只是兜底。
+  const nameOf = (id) => (flowDimension === 'kind' ? (KIND_LABELS[id] || id) : (agentNames[id] || id));
+  const cellLabel = (c) => (useHour ? `${c.date} ${String(c.hour).padStart(2, '0')}:00` : c.date);
+
+  function draw() {
+    for (const btn of [...sw.children]) {
+      if (btn.dataset.dim) btn.setAttribute('aria-pressed', String(btn.dataset.dim === flowDimension));
+      if (btn.dataset.scale) btn.setAttribute('aria-pressed', String(btn.dataset.scale === flowScale));
+    }
+    canvas.replaceChildren();
+    if (!cells.length) { canvas.append(h('div', { className: 'tt-board-empty' }, '所选范围暂无用量')); foot.textContent = ''; return; }
+
+    const field = flowDimension === 'kind' ? 'kinds' : 'agents';
+    const totals = new Map();
+    for (const c of cells) for (const [id, v] of Object.entries(c[field] || {})) totals.set(id, (totals.get(id) || 0) + v);
+    if (!totals.size) {
+      canvas.append(h('div', { className: 'tt-board-empty' },
+        flowDimension === 'kind'
+          ? '按模型或供应商筛选时，来源拆分不再成立（各分项之和会对不上总量）。先清掉这两项筛选，或切回看总量。'
+          : '按模型或供应商筛选时，按 Agent 的拆分不再成立。先清掉这两项筛选。'));
+      foot.textContent = '';
+      return;
+    }
+    const ids = flowDimension === 'kind'
+      ? KIND_ORDER.filter((k) => totals.has(k))
+      : [...totals.keys()].sort((x, y) => totals.get(y) - totals.get(x));
+    const colTotals = cells.map((c) => Math.max(1, c.totalTokens));
+    const layers = ids.map((id, i) => ({
+      id, total: totals.get(id), colorIndex: i,
+      values: cells.map((c, i2) => {
+        const v = (c[field] || {})[id] || 0;
+        return flowScale === 'pct' ? v / colTotals[i2] : v;
+      }),
+    }));
+    // 聚焦：点图例只留一层。纵轴改成按这层自己的量算，否则小层被大层一并压平看不见。
+    let shown = flowFocus ? layers.filter((l) => l.id === flowFocus) : layers;
+    if (flowFocus && !shown.length) { flowFocus = ''; shown = layers; }
+    const solo = shown.length === 1 && flowFocus ? shown[0] : null;
+
+    const W = 1000, H = 270, PAD_L = 48, PAD_B = 20, PAD_T = 8;
+    const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
+    const max = solo
+      ? Math.max(...solo.values, 0.01)
+      : (flowScale === 'pct' ? 1 : Math.max(1, ...cells.map((c) => c.totalTokens)));
+    // 绝对量用叠加（复刻「0–24 时分布」的观感），占比用堆叠（归一到 100% 才有意义）。
+    const overlaid = flowScale === 'abs';
+    const paths = overlaid
+      ? overlayPaths(shown, cells.length, cw, ch, max)
+      : stackedAreaPaths(shown, cells.length, cw, ch, max);
+    const chart = svg(W, H, '用量总览：各来源消耗随时间的变化');
+    const g = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
+    for (let i = 0; i <= 2; i++) {
+      const v = (max * i) / 2, y = ch - (v / max) * (ch - 6);
+      g.append(node('line', { x1: 0, x2: cw, y1: y, y2: y, stroke: 'var(--tt-b3)', 'stroke-dasharray': '2 4' }));
+      g.append(node('text', { x: -7, y: y + 3, class: 'tt-axis', 'text-anchor': 'end' },
+        [flowScale === 'pct' ? Math.round(v * 1000) / 10 + '%' : compact(v)]));
+    }
+    shown.forEach((layer, i) => {
+      const color = COLORS[layer.colorIndex % COLORS.length];
+      // 叠加：照搬「0–24 时分布」的色彩逻辑——填充只给 15%，重叠层数越多颜色越深；
+      // 描边一点都不透，所以叠得再深，轮廓也始终认得出来。
+      // 占比：那是堆叠，层不重叠，重叠加深不成立，填充得实一些才能看出构成。
+      const style = overlaid
+        ? { 'fill-opacity': .15, stroke: color, 'stroke-width': 1.4 }
+        : { 'fill-opacity': .55, stroke: color, 'stroke-width': .8, 'stroke-opacity': .85 };
+      g.append(node('path', { d: paths[i], fill: color, ...style },
+        [title(`${nameOf(layer.id)} · 合计 ${compact(layer.total)} Token`)]));
+    });
+    // x 轴刻度按列中心摆（而不是数据点位置）：首尾两个刻度才不会把一半压在框外。
+    const colW = cw / Math.max(1, cells.length);
+    const step = Math.max(1, Math.ceil(cells.length / 9));
+    cells.forEach((c, i) => {
+      if (i % step) return;
+      const label = useHour ? String(c.hour).padStart(2, '0') + ':00' : c.date.slice(5);
+      g.append(node('text', { x: i * colW + colW / 2, y: ch + 14, class: 'tt-axis', 'text-anchor': 'middle' }, [label]));
+    });
+
+    // ── 悬停：竖直虚线 + 各层标记点 + 读数浮层 ──
+    // 虚线跟着指针的 x 走，取值走插值，所以停在哪都能读出那个位置的值。
+    const span = Math.max(1, cells.length - 1);
+    const stepX = cw / span;
+    const valueAt = (layer, fx) => {
+      const a = Math.max(0, Math.min(cells.length - 1, Math.floor(fx)));
+      const b = Math.min(cells.length - 1, a + 1);
+      return a === b ? layer.values[a] : bezierYAt(a, layer.values[a], b, layer.values[b], fx);
+    };
+    const fmtValue = (v) => (flowScale === 'pct' ? (v * 100).toFixed(1) + '%' : compact(v));
+    const hover = node('g', { class: 'tt-flow-hover' });
+    const vline = node('line', { y1: 0, y2: ch, stroke: 'var(--tt-t2)', 'stroke-width': 1, 'stroke-dasharray': '3 3', 'shape-rendering': 'crispEdges', opacity: 0 });
+    hover.append(vline);
+    const dots = shown.map((layer) => node('circle', {
+      r: 2.6, cx: 0, cy: 0,
+      fill: COLORS[layer.colorIndex % COLORS.length], stroke: 'var(--tt-card)', 'stroke-width': 1, opacity: 0,
+    }));
+    for (const dot of dots) hover.append(dot);
+    g.append(hover);
+
+    const hud = h('div', { className: 'tt-flow-hud' });
+    let hudH = 0; // 浮层高度的缓存：不缓存的话每次 mousemove 读 offsetHeight 都会强制重排
+
+    const clearHover = () => {
+      vline.setAttribute('opacity', '0');
+      for (const dot of dots) dot.setAttribute('opacity', '0');
+      hud.className = 'tt-flow-hud';
+    };
+    chart.addEventListener('mousemove', (event) => {
+      const box = chart.getBoundingClientRect ? chart.getBoundingClientRect() : null;
+      if (!box || !box.width) return;
+      const gx = ((event.clientX - box.left) / box.width) * W - PAD_L;
+      const fx = Math.max(0, Math.min(span, gx / stepX));
+      const vx = fx * stepX;
+      vline.setAttribute('x1', vx); vline.setAttribute('x2', vx); vline.setAttribute('opacity', '1');
+      shown.forEach((layer, li) => {
+        const v = valueAt(layer, fx);
+        dots[li].setAttribute('cx', vx);
+        dots[li].setAttribute('cy', ch - (v / max) * (ch - 6));
+        dots[li].setAttribute('opacity', '1');
+      });
+      // 日期取最近的一列（半天那种中间值写出来没意义），数值才是插值结果。
+      const cell = cells[Math.round(fx)];
+      hud.replaceChildren(
+        h('b', {}, cellLabel(cell)),
+        ...shown.map((layer, li) => h('span', {},
+          h('i', { style: `background:${COLORS[layer.colorIndex % COLORS.length]}` }),
+          nameOf(layer.id),
+          h('em', {}, fmtValue(valueAt(layer, fx))))),
+      );
+      hud.className = 'tt-flow-hud on';
+      hud.style.left = Math.max(9, Math.min(91, ((PAD_L + vx) / W) * 100)) + '%';
+      // 浮层跟着指针的高度走。之前钉在面板顶部，指针在下方时它离得远，还压住上面那片曲线。
+      // 现在默认贴在指针上方，上方放不下就翻到下面，最后再夹一次不让它跑出画布。
+      if (!hudH) hudH = hud.offsetHeight || 46;
+      const rectH = box.height || H;
+      const py = event.clientY - box.top;
+      let top = py - hudH - 10;
+      if (top < 4) top = py + 16;
+      hud.style.top = Math.max(4, Math.min(Math.max(4, rectH - hudH - 4), top)) + 'px';
+    });
+    chart.addEventListener('mouseleave', clearHover);
+
+    chart.append(g);
+    canvas.append(chart, hud);
+    const grand = [...totals.values()].reduce((s, v) => s + v, 0) || 1;
+    canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
+      ...ids.map((id, i) => h('button', {
+        type: 'button',
+        title: `${nameOf(id)} · 点击只看这一层，再点恢复`,
+        'aria-pressed': String(flowFocus === id),
+        onClick: () => { flowFocus = flowFocus === id ? '' : id; draw(); },
+      },
+        h('i', { style: `background:${COLORS[i % COLORS.length]}` }),
+        h('span', {}, nameOf(id)),
+        h('b', {}, `${compact(totals.get(id))} · ${((totals.get(id) / grand) * 100).toFixed(1)}%`)))));
+    // 叠加模式下各层独立成线，叠满不等于总量，页脚不能再那么写。
+    const scaleNote = solo
+      ? `只看「${nameOf(solo.id)}」，纵轴已按这层重新缩放`
+      : (flowScale === 'pct' ? '每列归一到 100%，看构成' : '各层独立成线，重叠处自然加深');
+    foot.textContent = useHour
+      ? `按小时 · ${cells[0].date} · 共 ${cells.length} 小时 · ${scaleNote}`
+      : `${cells[0].date} → ${cells[cells.length - 1].date} · 共 ${cells.length} 天 · ${scaleNote}`;
+  }
+
+  for (const [dim, label] of [['kind', '按来源'], ['agent', '按 Agent']]) {
+    sw.append(h('button', { type: 'button', dataset: { dim }, 'aria-pressed': String(flowDimension === dim),
+      onClick: () => { flowDimension = dim; flowFocus = ''; draw(); } }, label));
+  }
+  sw.append(h('span', { className: 'tt-flow-sep' }));
+  for (const [sc, label] of [['abs', '绝对量'], ['pct', '占比']]) {
+    sw.append(h('button', { type: 'button', dataset: { scale: sc }, 'aria-pressed': String(flowScale === sc),
+      onClick: () => { flowScale = sc; draw(); } }, label));
+  }
+  draw();
+  return el;
+}
+
 export function renderAnalytics(container, dashboard, state, patch) {
   container.replaceChildren(); container.className = 'tt-board';
   if (!dashboard) { empty(container, '正在读取用量统计…'); return; }
   const a = dashboard.analytics, summary = dashboard.summary;
   const days = a ? calendarDays(a, state) : [];
-  const total = summary.totalTokens || 0;
-  const input = (summary.inputTokens || 0) + (summary.cacheRead || 0);
+  const total = summary.totalTokens || 0;  const input = (summary.inputTokens || 0) + (summary.cacheRead || 0);
   const tiles = [
     ['合计 Token', compact(total), '所选范围的累计用量'],
     ['日均 Token', days.length ? compact(total / days.length) : '—', `按 ${days.length} 个自然日计算（含无记录日）`],
@@ -120,6 +372,8 @@ export function renderAnalytics(container, dashboard, state, patch) {
   container.append(h('div', { className: 'tt-board-kpis' }, ...tiles.map(([label, value, hint]) =>
     h('div', { title: hint }, h('span', {}, label), h('strong', {}, value)))));
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
+  // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
+  container.append(renderFlowPanel(a, days, dashboard.agentNames || {}));
   const totals = new Map();
   for (const day of a.daily) for (const [id, n] of Object.entries(day.models)) totals.set(id, (totals.get(id) || 0) + n);
   const allModels = [...totals].sort((x,y) => y[1]-x[1]).map(([id]) => id);

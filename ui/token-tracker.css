@@ -933,13 +933,36 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-dashboard-app .tt-main > section { height: 100%; min-height: 0; }
 .tt-dashboard-app [hidden] { display: none !important; }
 .tt-dashboard-app .tt-main > .tt-module { overflow: auto; scrollbar-width: thin; border-radius: 14px; }
-.tt-board { height: 100%; min-height: 0; display: grid; grid-template-rows: 83px minmax(0,1fr) 14px; gap: 12px; }
+/* 大屏整页纵向滚动：每块高度由内容决定，不再把所有图压进一屏。
+   行序：KPI / 用量总览色带图 / 细分图组 / 页脚说明。
+   用 max-content 而不是 auto：auto 行还可能被 align-content 的默认行为抻高，
+   一旦抻高，块内部的 footer{margin-top:auto} 就会把页脚推到最底，中间空出一大片。 */
+.tt-board { height: 100%; min-height: 0; display: grid; grid-template-rows: 83px max-content max-content 14px; gap: 12px; overflow-y: auto; align-content: start; scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent; }
 .tt-board-kpis { display: grid; grid-template-columns: repeat(7,minmax(0,1fr)); gap: 12px; min-width: 0; }
 .tt-board-kpis > div { container-type: inline-size; overflow: hidden; padding: 13px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: space-between; }
 .tt-board-kpis span { display: block; min-width: 0; color: var(--tt-t2); font-size: clamp(8px,6cqi,11px); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tt-board-kpis strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 700 clamp(13px,21cqi,28px)/1.3 var(--font-sans); color: var(--tt-t1); letter-spacing: -.025em; white-space: nowrap; }
 .tt-board-kpis > div:last-child strong { font-size: clamp(12px,18cqi,24px); }
-.tt-board-grid { display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1fr) minmax(0,1fr); gap: 14px; min-height: 0; }
+.tt-board-grid { display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: 340px 340px; gap: 14px; min-height: 0; }
+
+/* 用量总览（色带图）：全宽，高度由内容撑开。 */
+.tt-flow-panel { overflow: visible; align-self: start; }
+.tt-flow-switch { display: flex; gap: 4px; align-items: center; flex: 0 0 auto; }
+.tt-flow-switch button { border: 1px solid var(--tt-b2); border-radius: 999px; background: var(--tt-card); color: var(--tt-t2); font: 10px var(--font-sans); padding: 3px 10px; cursor: pointer; transition: background .15s ease, color .15s ease, border-color .15s ease; }
+.tt-flow-switch button:hover { color: var(--tt-t1); }
+.tt-flow-switch button[aria-pressed="true"] { background: var(--tt-select-bg); color: var(--tt-select-fg); border-color: var(--tt-select-b); }
+.tt-flow-sep { flex: 0 0 auto; width: 1px; height: 14px; margin: 0 3px; background: var(--tt-b2); }
+.tt-flow-panel .tt-board-body { overflow: visible; gap: 6px; flex: 0 0 auto; }
+.tt-flow-canvas { position: relative; display: flex; flex-direction: column; gap: 5px; }
+.tt-flow-canvas .tt-board-svg { flex: 0 0 auto; width: 100%; height: auto; overflow: visible; }
+.tt-flow-hover { pointer-events: none; }
+/* 悬停读数：水平贴着指针，垂直也跟指针走（位置由脚本给，默认压在指针上方的空白处）。 */
+.tt-flow-hud { position: absolute; z-index: 3; display: none; flex-direction: column; gap: 2px; padding: 6px 10px; border: 1px solid var(--tt-b2); border-radius: 9px; background: color-mix(in srgb, var(--tt-card) 94%, transparent); transform: translateX(-50%); pointer-events: none; font: 9px var(--font-sans); color: var(--tt-t2); white-space: nowrap; }
+.tt-flow-hud.on { display: flex; }
+.tt-flow-hud b { color: var(--tt-t1); font: 600 10px var(--font-mono); }
+.tt-flow-hud span { display: flex; align-items: center; gap: 4px; }
+.tt-flow-hud i { width: 6px; height: 6px; border-radius: 1px; flex: 0 0 auto; }
+.tt-flow-hud em { margin-left: auto; padding-left: 12px; font: 500 10px var(--font-mono); font-style: normal; color: var(--tt-t1); }
 .tt-board-panel { background: var(--tt-card); border: 1px solid var(--tt-b1); border-radius: 14px; display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
 .tt-board-panel > header { display: flex; flex: 0 0 auto; justify-content: space-between; align-items: center; gap: 7px; min-width: 0; padding: 12px 14px 9px; }
 .tt-board-panel h2 { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: var(--tt-t1); font-size: 13px; font-weight: 600; white-space: nowrap; }
@@ -980,6 +1003,9 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-board-legend button > span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .tt-board-legend button:hover, .tt-board-legend button.selected { color: var(--tt-t1); }
 .tt-board-legend i { width: 6px; height: 6px; border-radius: 1px; flex-shrink: 0; }
+/* 图例可点：点一下只看这一层，再点恢复。选中态用色块外的圈标出。 */
+.tt-board-legend button[aria-pressed="true"] { color: var(--tt-t1); }
+.tt-board-legend button[aria-pressed="true"] i { box-shadow: 0 0 0 1.5px var(--tt-card), 0 0 0 3px currentColor; }
 .tt-legend-totals { gap: 10px; border-top: 1px solid var(--tt-b3); padding-top: 3px; }
 .tt-legend-totals button { display: grid; grid-template-columns: 6px minmax(0,1fr); gap: 2px 4px; width: 110px; }
 .tt-legend-totals b { grid-column: 2; font: 500 10px var(--font-mono); color: var(--tt-t1); text-align: left; }
@@ -1343,63 +1369,3 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
 .tt-select .tt-select-clear { order: 1; flex: 0 0 16px; width: 16px; height: 16px; margin-left: 1px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; font: 13px/1 var(--font-sans); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .tt-select .tt-select-clear[hidden] { display: none; }
 .tt-select .tt-select-clear:hover { background: var(--tt-row-hover); }
-
-/* 时间 chip：<details> 只做定位壳，chip 外观落在 <summary> 上。 */
-.tt-filter-status .tt-filter-chip.tt-filter-time { border: 0; padding: 0; background: transparent; gap: 0; max-width: none; }
-.tt-filter-time > summary {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 26px;
-  padding: 4px 10px;
-  border: 1px solid var(--tt-b2);
-  border-radius: 999px;
-  background: var(--tt-card);
-  color: var(--tt-t2);
-  font-size: 11px;
-  white-space: nowrap;
-  cursor: pointer;
-  user-select: none;
-  list-style: none;
-  transition: border-color .15s ease, background .15s ease, color .15s ease;
-}
-.tt-filter-time > summary::-webkit-details-marker { display: none; }
-.tt-filter-time > summary:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
-.tt-filter-time > summary:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; }
-.tt-filter-time.is-set > summary,
-.tt-filter-time[open] > summary { background: var(--tt-select-bg); color: var(--tt-select-fg); border-color: var(--tt-select-b); }
-
-/* 时间面板：fixed 逃出 .tt-filter-chips 的 overflow-x 裁剪，随 details 一起被移除。 */
-.tt-filter-time-panel {
-  position: fixed;
-  z-index: 2600;
-  box-sizing: border-box;
-  width: 260px;
-  max-width: calc(100vw - 24px);
-  padding: 10px;
-  border: 1px solid var(--tt-b2);
-  border-radius: var(--tt-radius-card);
-  background: var(--tt-card);
-  color: var(--tt-t1);
-  box-shadow: 0 12px 30px color-mix(in srgb, #000 22%, transparent), 0 2px 8px color-mix(in srgb, #000 10%, transparent);
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  opacity: 0;
-  transform: scale(.97) translateY(-4px);
-  transform-origin: top left;
-  transition: opacity .12s ease, transform .12s ease;
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-}
-.tt-filter-time-panel.flip { transform-origin: bottom left; }
-.tt-filter-time-panel.open { opacity: 1; transform: scale(1) translateY(0); pointer-events: auto; }
-.tt-filter-time-panel .tt-pills { display: flex; flex-wrap: wrap; gap: 4px; }
-.tt-filter-time-sep { height: 1px; background: var(--tt-b3); }
-.tt-filter-time-dates { display: flex; align-items: center; gap: 6px; }
-.tt-filter-time-dates > span { color: var(--tt-t2); font-size: 10px; }
-.tt-filter-time-dates .tt-date-field { flex: 1 1 0; min-width: 0; }
-.tt-filter-time-actions { display: flex; justify-content: flex-end; }
-@media (max-width: 650px) {
-  .tt-filter-time-panel { width: auto; min-width: 210px; }
-}

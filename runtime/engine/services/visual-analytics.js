@@ -26,6 +26,14 @@ function modelsFor(bucket, { model, provider }) {
 export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
   const days = new Map(), agents = new Map(), hours = new Map();
   let sessionCount = 0;
+  // 按「来源」拆分（对话 / 子代理 / 频道 / 后台 / 账本）只在没有模型、供应商筛选时成立：
+  // dailyBreakdown 里这几个分项是不分模型的，一旦按模型筛选，各分项之和就不再等于
+  // 筛选后的总量，硬画出来是假的。这种情况就退回单层总量。
+  const canSplit = !filters.model && !filters.provider;
+  const kindsOf = (b) => canSplit ? {
+    desktop: value(b.desktop), sub: value(b.sub), bridge: value(b.bridge),
+    background: value(b.background), ledger: value(b.ledger), channel: value(b.channel),
+  } : null;
   for (const session of sessions) {
     if (filters.agent && session.agent !== filters.agent) continue;
     if (filters.type && session.type !== filters.type) continue;
@@ -36,9 +44,12 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
       const total = [...models.values()].reduce((sum, m) => sum + m.totalTokens, 0);
       if (!total) continue;
       active = true;
-      if (!days.has(date)) days.set(date, { date, totalTokens: 0, models: {} });
+      if (!days.has(date)) days.set(date, { date, totalTokens: 0, models: {}, kinds: {}, agents: {} });
       const day = days.get(date); day.totalTokens += total;
       for (const [id, data] of models) day.models[id] = (day.models[id] || 0) + data.totalTokens;
+      const kb = kindsOf(bucket);
+      if (kb) for (const [k, v] of Object.entries(kb)) if (v) day.kinds[k] = (day.kinds[k] || 0) + v;
+      if (canSplit) day.agents[session.agent] = (day.agents[session.agent] || 0) + total;
       if (!agents.has(session.agent)) agents.set(session.agent, { id: session.agent, totalTokens: 0, days: {} });
       const agent = agents.get(session.agent); agent.totalTokens += total;
       agent.days[date] = (agent.days[date] || 0) + total;
@@ -49,12 +60,17 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
       for (const [hour, bucket] of Object.entries(buckets)) {
         const h = Number(hour); if (!Number.isInteger(h) || h < 0 || h > 23) continue;
         const key = `${date}/${h}`;
-        if (!hours.has(key)) hours.set(key, { date, hour: h, totalTokens: 0, models: {} });
+        if (!hours.has(key)) hours.set(key, { date, hour: h, totalTokens: 0, models: {}, kinds: {}, agents: {} });
         const cell = hours.get(key);
+        let cellTotal = 0;
         for (const [id, data] of modelsFor(bucket, filters)) {
           cell.totalTokens += data.totalTokens;
           cell.models[id] = (cell.models[id] || 0) + data.totalTokens;
+          cellTotal += data.totalTokens;
         }
+        const hb = kindsOf(bucket);
+        if (hb) for (const [k, v] of Object.entries(hb)) if (v) cell.kinds[k] = (cell.kinds[k] || 0) + v;
+        if (canSplit && cellTotal) cell.agents[session.agent] = (cell.agents[session.agent] || 0) + cellTotal;
       }
     }
   }
@@ -67,7 +83,7 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
   }
   return {
     granularity: 'hour', timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-    sessionCount, daily, heatmap,
+    sessionCount, daily, heatmap, canSplit,
     agents: [...agents.values()].sort((a, b) => b.totalTokens - a.totalTokens),
     modelHours: [...modelHours.values()].sort((a, b) => b.totalTokens - a.totalTokens),
     hourlyTotal: heatmap.reduce((sum, row) => sum + row.totalTokens, 0),

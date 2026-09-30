@@ -113,7 +113,7 @@ export function createDsUsageService({ store = null, partitionsDir, log = () => 
       segments.push([begin, end]);
     }
 
-    let saved = 0, okAny = false, lastErr = null, emptyStreak = 0, earliest = cover?.from ?? null, done = 0;
+    let saved = 0, okAny = false, lastErr = null, emptyStreak = 0, earliest = cover?.from ?? null, done = 0, tokenInvalid = false;
     // 严格从新到旧串行："连续两段全空即到头"这个判据只有在有序时才成立。
     // 并发会打乱顺序，把中间某个没用量的月份误当终点，所以这里不用并发。
     for (const [a, b] of segments) {
@@ -126,6 +126,15 @@ export function createDsUsageService({ store = null, partitionsDir, log = () => 
         done += 1;
         if (emptyStreak >= 2) break;
         continue;
+      }
+      // 官网明确拒了这枚 token：后面每一段都会一样被拒，停手，把原因如实带出去。
+      // 这里必须显式判：fetchWindowPair 用 allSettled，失效是当成 amountError/costError 返回的，
+      // 不走 catch，光收 catch 里的错误会把 DS_TOKEN_INVALID 整个吞掉、最后报成含糊的 DS_EMPTY。
+      if (pair.amountError === "DS_TOKEN_INVALID" || pair.costError === "DS_TOKEN_INVALID") {
+        tokenInvalid = true;
+        lastErr = "DS_TOKEN_INVALID";
+        done += 1;
+        break;
       }
       const aOk = !!pair.amount, cOk = !!pair.cost;
       const hasData = (pair.amount?.points?.length || 0) > 0 || (pair.cost?.points?.length || 0) > 0;
@@ -155,7 +164,10 @@ export function createDsUsageService({ store = null, partitionsDir, log = () => 
       fetched: true,
       segments: done,
       saved,
-      error: okAny ? null : (lastErr || "DS_EMPTY"),
+      tokenInvalid,
+      // token 失效优先于「有没有拉到数据」：它是需要人去处理的状态，不能被 okAny 盖掉，
+      // 否则界面会把一份停止更新的旧数据当成正常结果摆出来。
+      error: tokenInvalid ? "DS_TOKEN_INVALID" : (okAny ? null : (lastErr || "DS_EMPTY")),
     };
   }
 
@@ -213,6 +225,8 @@ export function createDsUsageService({ store = null, partitionsDir, log = () => 
         for (let s = fromT; s < toT; s += DAY) {
           const e = Math.min(s + DAY, toT);
           const pair = await pull(s, e, found.token);
+          // 短窗口同样要认这个码，否则会白打每一天，最后只报个 DS_EMPTY。
+          if (pair.amountError === "DS_TOKEN_INVALID" || pair.costError === "DS_TOKEN_INVALID") { err = "DS_TOKEN_INVALID"; break; }
           if (pair.amount?.bucket) bucket = pair.amount.bucket;
           else if (pair.cost?.bucket) bucket = pair.cost.bucket;
           if (pair.amount || pair.cost) ok = true;

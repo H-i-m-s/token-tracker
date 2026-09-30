@@ -63,6 +63,13 @@ async function callApi(token, kind, { start, end, tz, signal } = {}) {
     throw makeError("DS_BAD_JSON", "官网响应不是合法 JSON");
   }
   if (!json || typeof json !== "object") throw makeError("DS_BAD_RESPONSE", "响应不是 JSON 对象");
+  // 鉴权失败有两种形态：HTTP 401/403，以及 HTTP 200 里带业务码 40003。
+  // 实测 platform.deepseek.com 对无效 token 走的是后者：
+  //   {"code":40003,"msg":"Authorization Failed (invalid token)","data":null}
+  // 只看状态码的话，失效会被丢进笼统的“接口错误”，界面就认不出来。
+  if (json.code === 40003 || /authorization failed|invalid token|unauthor/i.test(json.msg || "")) {
+    throw makeError("DS_TOKEN_INVALID", "官网拒绝了这枚 token（可能已过期）：" + (json.msg || ""));
+  }
   if (json.code !== 0) throw makeError("DS_API_ERROR", `接口返回 code=${json.code}: ${json.msg || ""}`);
   const data = json.data || {};
   if (data.biz_code !== 0) throw makeError("DS_BIZ_ERROR", `业务返回 biz_code=${data.biz_code}: ${data.biz_msg || ""}`);
