@@ -472,7 +472,8 @@ body {
 }
 
 /* ── 消费明细：头部动作与分页器 ── */
-.tt-module-actions { display: flex; align-items: center; gap: 8px; }
+/* 头部一行里现在放：条数/合计、排序、门槛、导出。窄卡下允许换行，不要把按钮挤成一条线。 */
+.tt-module-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .tt-module-meta { font-size: 10px; color: var(--tt-t3); font-variant-numeric: tabular-nums; }
 .tt-details-pager {
   display: flex;

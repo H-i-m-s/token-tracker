@@ -5,11 +5,12 @@ export function buildDetailsCSV(rows) {
   return "\uFEFF" + [header, ...lines].map(line => line.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\r\n");
 }
 
-export async function saveDetailsCSV(hana, rows, range, preview = showCSVPreview) {
+export async function saveDetailsCSV(hana, rows, range, { suffix = "", preview = showCSVPreview } = {}) {
   const content = buildDetailsCSV(rows);
   const now = new Date();
   const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
-  const name = `token-details-${range}-${date}.csv`;
+  // suffix：明细按用量设了门槛时把档位写进文件名，不然一份被筛过的 CSV 会自称是全部。
+  const name = `token-details-${range}${suffix}-${date}.csv`;
   // Sandboxed App surfaces cannot reliably trigger an <a download>.
   // The host validates slot and resource grants; never bypass those checks.
   if (hana?.resources?.saveFile) {

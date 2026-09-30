@@ -6,8 +6,9 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, fmt, formatDateTime, renderPills, timeAgo } from "./components.mjs";
-import { closeOpenSelect } from "./custom-select.mjs";
+import { h, RANGES, fmt, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
+import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
+import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
 
@@ -58,6 +59,9 @@ export class WorkspaceApp {
     this.eventController = null;
     this.filterKey = "";
     this.detailsPage = 1;
+    // 明细的“看”法：默认跟后端一样的时间倒序；考古时改成按用量倒序 + 设门槛。
+    this.detailsSort = "time";
+    this.detailsMin = 0;
     this.agentNames = new Map();
 
     this.pollTimer = null;
@@ -694,19 +698,22 @@ export class WorkspaceApp {
   // ---------- details module ----------
 
   renderDetails({ preserveScroll = false } = {}) {
-    // 范围与筛选由页面顶部那两排统一负责（顶右的范围行 + 「当前范围」筛选行），这里只留表格与翻页。
+    // 范围与筛选由页面顶部那两排统一负责（顶右的范围行 + 「当前范围」筛选行），这里只留表格、排序/门槛与翻页。
     // 同一个 state 摆两套控件只会互相打架：顶部选「全部历史」时，这一排的 pills 一个都不亮。
+    // 下面两个下拉会让模块重建，钳住已经摊开的浮层，避免面板变孤儿。
+    closeOpenSelect();
     let el = this.container.querySelector("#details-module");
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
       this.mainEl.appendChild(el);
     }
 
+    // 先排序/筛门槛得到「看得到的那些」，再切页。
+    // 顶部显示的条数与合计都算在这份视图上，所以换个门槛数字会跟着变。
     const rows = this.dashboard?.rows || [];
-    const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
-    const page = Math.min(this.detailsPage, totalPages);
-    const start = (page - 1) * PAGE_SIZE;
-    const pageRows = rows.slice(start, start + PAGE_SIZE);
+    const view = viewRows(rows, { sort: this.detailsSort, minTokens: this.detailsMin });
+    const { page, totalPages, rows: pageRows } = pageSlice(view, this.detailsPage, PAGE_SIZE);
+    this.detailsPage = page; // 夹过界的页码写回去，否则输入框会一直显示一个不存在的页
     const maxTokens = Math.max(...pageRows.map((r) => r.totalTokens || 0), 1);
 
     const keepScroll = preserveScroll ? el.scrollTop : 0;
@@ -715,24 +722,37 @@ export class WorkspaceApp {
       h("div", { className: "tt-module-hd" },
         h("span", { className: "tt-module-title" }, "消费明细"),
         h("div", { className: "tt-module-actions" },
-          h("span", { className: "tt-module-meta" }, `共 ${rows.length.toLocaleString()} 条`),
+          h("span", { className: "tt-module-meta" }, `共 ${view.length.toLocaleString()} 条 · 合计 ${fmt(sumTokens(view))} tok`),
+          h("select", { id: "details-sort", className: "tt-pill", "aria-label": "明细排序" },
+            ...selectOptions(DETAIL_SORTS.map((s) => ({ value: s.key, label: s.label })), this.detailsSort)),
+          h("select", { id: "details-min", className: "tt-pill", "aria-label": "按单轮用量过滤" },
+            ...selectOptions(DETAIL_THRESHOLDS.map((t) => ({ value: String(t.key), label: t.label })), String(this.detailsMin))),
           h("button", { type: "button", id: "details-export", className: "tt-btn ghost" }, "⤓ 导出"),
         ),
       ),
       h("div", { className: "tt-module-bd dense" },
-        this.renderDetailsTable(pageRows, maxTokens),
-        this.renderDetailsPagination(rows.length, page, totalPages),
+        this.renderDetailsTable(pageRows, maxTokens,
+          view.length ? "当前门槛之上没有轮次，把门槛放宽些" : "该时间范围内无消费记录"),
+        this.renderDetailsPagination(view.length, page, totalPages),
       ),
     );
     if (preserveScroll) el.scrollTop = keepScroll;
 
+    // 原生 select 留着当状态源，换成自绘下拉（幂等）；改完排序/门槛都回到第 1 页。
+    enhanceSelects(this.container);
+    this.container.querySelector("#details-sort")?.addEventListener("change", (e) => {
+      this.detailsSort = e.target.value; this.detailsPage = 1; this.renderDetails();
+    });
+    this.container.querySelector("#details-min")?.addEventListener("change", (e) => {
+      this.detailsMin = Number(e.target.value) || 0; this.detailsPage = 1; this.renderDetails();
+    });
     this.container.querySelector("#details-export")?.addEventListener("click", () => this.exportCSV());
     this.bindDetailsPagination();
   }
 
-  renderDetailsTable(pageRows, maxTokens) {
+  renderDetailsTable(pageRows, maxTokens, emptyText = "该时间范围内无消费记录") {
     if (!pageRows.length) {
-      return h("div", { className: "tt-empty" }, "该时间范围内无消费记录");
+      return h("div", { className: "tt-empty" }, emptyText);
     }
 
     const thead = h("thead", {},
@@ -831,7 +851,11 @@ export class WorkspaceApp {
 
   async exportCSV() {
     try {
-      await saveDetailsCSV(this.hana, this.dashboard?.rows || [], this.state.get().range);
+      // 导出的就是眼前这份：当前排序 + 当前门槛，导出来的行数要跟顶部的「共 N 条」对得上。
+      const view = viewRows(this.dashboard?.rows || [], { sort: this.detailsSort, minTokens: this.detailsMin });
+      const label = DETAIL_THRESHOLDS.find((t) => t.key === this.detailsMin)?.label || "";
+      const suffix = this.detailsMin > 0 ? `-${label.replace("≥", "")}` : "";
+      await saveDetailsCSV(this.hana, view, this.state.get().range, { suffix });
     } catch (err) {
       this.setError(`导出失败：${err.message}`);
     }
