@@ -1,5 +1,6 @@
 import { resolveHanaHome, readTextFile } from "../services/platform.js";
 import { buildVisualAnalytics } from "../services/visual-analytics.js";
+import { loadLedger } from "../services/ledger-source.js";
 import fs from "node:fs";
 import path from "node:path";
 import https from "node:https";
@@ -317,8 +318,7 @@ export function createRealtimeStream(cache) {
 }
 
 export default function (app, ctx) {
-  const base = "/api/plugins/" + ctx.pluginId;
-
+  
   // /dashboard/data 构建逻辑（P1）：抽为挂在 ctx 上的可复用函数，
   // HTTP 路由与 bus handler(token-tracker.dashboard，见 index.js) 共用。
   // 挂在 ctx 是因为 ctx 是 index.js 与路由共享的同一实例（如 ctx._tokenCache）。
@@ -550,17 +550,13 @@ export default function (app, ctx) {
                 if (!subStart && stats.keys && stats.keys.length) {
                   for (const k2 of stats.keys) { const u2 = ulidToTs(String(k2.id || "").replace(/^key_/, "")); if (u2 && (!subStart || u2 < subStart)) subStart = u2; }
                 }
-                // 兜底：usage-ledger 最早 opencode-go 记录（usage 缓存/账单明细为空时仍可给出订阅起点）
+                // 兜底：账本里最早的 opencode-go 记录（usage 缓存/账单明细为空时仍可给出订阅起点）
                 if (!subStart) {
                   try {
-                    const ogLedgerPath = path.join(resolveHanaHome(), "usage-ledger.json");
-                    if (fs.existsSync(ogLedgerPath)) {
-                      const ogLedger = JSON.parse(readTextFile(ogLedgerPath));
-                      for (const le of (ogLedger.entries || [])) {
-                        if (!le.model || le.model.provider !== "opencode-go") continue;
-                        const t2 = new Date(le.startedAt || "").getTime();
-                        if (t2 > 0 && (!subStart || t2 < subStart)) subStart = t2;
-                      }
+                    for (const le of loadLedger(resolveHanaHome()).entries) {
+                      if (!le.model || le.model.provider !== "opencode-go") continue;
+                      const t2 = new Date(le.startedAt || "").getTime();
+                      if (t2 > 0 && (!subStart || t2 < subStart)) subStart = t2;
                     }
                   } catch {}
                 }
@@ -611,17 +607,13 @@ export default function (app, ctx) {
                 // ledger 实测 token（含 cache，明细接口不含 cache）→ 每 token 成本
                 const ogLedgerTok = {};
                 try {
-                  const ogLedgerPath = path.join(resolveHanaHome(), "usage-ledger.json");
-                  if (fs.existsSync(ogLedgerPath)) {
-                    const ogLedger = JSON.parse(readTextFile(ogLedgerPath));
-                    for (const le of (ogLedger.entries || [])) {
-                      if (!le.model || le.model.provider !== "opencode-go") continue;
-                      const mid = le.model.id || le.model.modelId || "";
-                      if (!mid) continue;
-                      const lu = le.usage || {};
-                      const ti = (lu.input && lu.input.totalTokens) || 0, to = (lu.output && lu.output.totalTokens) || 0, tc = (lu.cache && lu.cache.readTokens) || 0;
-                      ogLedgerTok[mid] = (ogLedgerTok[mid] || 0) + ti + to + tc;
-                    }
+                  for (const le of loadLedger(resolveHanaHome()).entries) {
+                    if (!le.model || le.model.provider !== "opencode-go") continue;
+                    const mid = le.model.id || le.model.modelId || "";
+                    if (!mid) continue;
+                    const lu = le.usage || {};
+                    const ti = (lu.input && lu.input.totalTokens) || 0, to = (lu.output && lu.output.totalTokens) || 0, tc = (lu.cache && lu.cache.readTokens) || 0;
+                    ogLedgerTok[mid] = (ogLedgerTok[mid] || 0) + ti + to + tc;
                   }
                 } catch {}
                 const remainEst = ogCostTotal > 0 && ogRemainUsd > 0 ? Object.values(ogAgg).map(a => {
@@ -938,92 +930,12 @@ export default function (app, ctx) {
     }
   });
 
-  // 阶段 3：旧 surface 入口转为 302 重定向，指向对应的卡片路由（兼容窗口，下个版本可删）
-  app.get("/widget", c => {
-    return c.redirect(base + "/cards/realtime", 302);
-  });
+  // 卡片壳路由（/cards/*）与旧的 widget / 看板入口已删除：它们读的是 runtime/assets/cards/*，
+  // 那个目录不存在（直接打开只会看到「卡片脚本加载失败」），界面早已换成 ui/*.html 那套 v2 页面。
+  // 引擎与界面之间走 /rpc 取数据，不受影响。
 
-  app.get("/dashboard", c => {
-    return c.redirect(base + "/cards/details", 302);
-  });
 
-// ── 阶段 1：卡片壳路由（在 export default 函数内注册）──
-// 依赖本模块已有的：fs, path, fileURLToPath, esc, ctx, app
 
-const CARDS_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "../assets/cards");
-const CARD_BASE_CSS = readIfExists(path.join(CARDS_DIR, "card-base.css"));
-
-// P0-3 修复：直连卡片 URL（?token=xxx 无会话 cookie）时，卡片脚本内的 fetch/EventSource
-// 只透传 pluginSurfaceSession 不透传 token → forbidden/missing_credential。
-// 在 HTML 壳头部注入透传桥：把当前 URL 上的 token 参数补进同源 /api/plugins/* 请求
-//（含 EventSource，query token 走 README 踩坑点 16 的 _qs 模式）。卡片资产（assets/）不改。
-const CARD_TOKEN_BRIDGE = '<script>\n' +
-'(function(){try{\n' +
-'var tk=new URLSearchParams(window.location.search).get("token");\n' +
-'if(!tk)return;\n' +
-'function wrapUrl(u){\n' +
-'  try{\n' +
-'    if(typeof u!=="string"||!u||u.indexOf("token=")>=0||/^(data:|blob:|about:)/i.test(u))return u;\n' +
-'    var x=new URL(u,window.location.href);\n' +
-'    if(x.origin!==window.location.origin)return u;\n' +
-'    if(x.pathname.indexOf("/api/plugins/")!==0)return u;\n' +
-'    x.searchParams.set("token",tk);\n' +
-'    return x.pathname+x.search+x.hash;\n' +
-'  }catch(e){return u;}\n' +
-'}\n' +
-'var of=window.fetch;\n' +
-'if(of)window.fetch=function(i,init){\n' +
-'  try{if(typeof i==="string")return of(wrapUrl(i),init);}catch(e){}\n' +
-'  return of(i,init);\n' +
-'};\n' +
-'if(window.EventSource){\n' +
-'  var OE=window.EventSource;\n' +
-'  function ES(url,cfg){return new OE(wrapUrl(url),cfg);}\n' +
-'  ES.prototype=OE.prototype;\n' +
-'  window.EventSource=ES;\n' +
-'}\n' +
-'}catch(e){}})();\n' +
-'</script>';
-
-function cardHtml(ctx, title, jsName, assetBase, theme, cssUrl) {
-  const themeLink = cssUrl ? '<link rel="stylesheet" href="' + esc(cssUrl) + '">' : '';
-  let js = '';
-  try {
-    js = readTextFile(path.join(CARDS_DIR, jsName));
-  } catch (e) {
-    js = 'document.getElementById("app").innerHTML = "<div class=\\"error-state\\">卡片脚本加载失败：' + esc(jsName) + '</div>";';
-  }
-  js = js.replace(/<\/script/gi, '<\\/script');
-  return '<!DOCTYPE html>\n<html lang="zh-CN">\n<head>\n<meta charset="UTF-8">\n<meta name="viewport" content="width=device-width, initial-scale=1.0">\n<title>' + esc(title) + '</title>\n' + themeLink + '\n' + CARD_TOKEN_BRIDGE + '\n<style>' + CARD_BASE_CSS + '</style>\n</head>\n<body data-hana-theme="' + esc(theme || 'inherit') + '" data-surface="card">\n<h2 class="sr-only">' + esc(title) + '</h2>\n<div id="app"></div>\n<script>' + js + '</script>\n<script>(function(){try{parent.postMessage({source:"hana-plugin",type:"ready"},"*")}catch(e){}})();</script>\n</body>\n</html>';
-}
-
-app.get("/cards/overview", (c) => {
-  const th = c.req.query("hana-theme") || "inherit";
-  const hc = c.req.query("hana-css") || "";
-  const assetBase = c.req.query("hana-asset-base") || `/api/plugins/${ctx.pluginId}`;
-  return c.html(cardHtml(ctx, "今日用量", "overview.js", assetBase, th, hc));
-});
-
-app.get("/cards/balance", (c) => {
-  const th = c.req.query("hana-theme") || "inherit";
-  const hc = c.req.query("hana-css") || "";
-  const assetBase = c.req.query("hana-asset-base") || `/api/plugins/${ctx.pluginId}`;
-  return c.html(cardHtml(ctx, "账户余额", "balance.js", assetBase, th, hc));
-});
-
-app.get("/cards/details", (c) => {
-  const th = c.req.query("hana-theme") || "inherit";
-  const hc = c.req.query("hana-css") || "";
-  const assetBase = c.req.query("hana-asset-base") || `/api/plugins/${ctx.pluginId}`;
-  return c.html(cardHtml(ctx, "消费明细", "details.js", assetBase, th, hc));
-});
-
-app.get("/cards/realtime", (c) => {
-  const th = c.req.query("hana-theme") || "inherit";
-  const hc = c.req.query("hana-css") || "";
-  const assetBase = c.req.query("hana-asset-base") || `/api/plugins/${ctx.pluginId}`;
-  return c.html(cardHtml(ctx, "实时监控", "realtime.js", assetBase, th, hc));
-});
 }
 
 // ── 后端数据构建 ──
@@ -1036,8 +948,6 @@ const CN_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
 function build(cache, range = "all", filters = {}, fxRate = null) {
   const priceTable = loadPriceTable(cache.dataDir || "");
   let sessions = Object.values(cache.sessions);
-  let earliest = null;
-  for (const s of sessions) { if (s.firstTime) { const d = s.firstTime.slice(0, 10); if (!earliest || d < earliest) earliest = d; } }
 
   // ── 按时间维度确定过滤函数 ──
   let dateFilter = null;
@@ -1221,48 +1131,6 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
   }
   const modelOptions = Object.entries(modelOptMap).sort((a, b) => b[1] - a[1]).map(([id]) => ({ id }));
 
-  // ── 供应商/模型组合饼图（受日期/Agent/类型/供应商筛选影响） ──
-  const provBrkMap = {};
-  var provAttributed = 0;
-  var provDayTotal = 0;
-  for (const s of sessions) {
-    for (const [day, d] of Object.entries(s.dailyBreakdown || {})) {
-      if (dateFilter && !dateFilter(day)) continue;
-      provDayTotal += d.totalTokens || 0;
-      if (d.providerTotals) {
-        for (const [pk, pt] of Object.entries(d.providerTotals)) {
-          if (filterProvider && !pk.startsWith(filterProvider + "/")) continue;
-          if (filterModel && !pk.endsWith("/" + filterModel)) continue;
-          if (!provBrkMap[pk]) {
-            const sep = pk.indexOf("/");
-            provBrkMap[pk] = { provider: pk.slice(0, sep), model: pk.slice(sep + 1), totalTokens: 0, count: 0 };
-          }
-          provBrkMap[pk].totalTokens += pt.totalTokens;
-          provBrkMap[pk].count += pt.assistantCount || 0;
-          provAttributed += pt.totalTokens;
-        }
-      } else if (s.providers && d.models) {
-        for (const [mn, mv] of Object.entries(d.models)) {
-          const pk = Object.keys(s.providers).find(p => p.endsWith("/" + mn));
-          if (!pk) continue;
-          const pv = s.providers[pk];
-          if (filterProvider && pv.provider !== filterProvider) continue;
-          if (filterModel && pv.model !== filterModel) continue;
-          if (!provBrkMap[pk]) provBrkMap[pk] = { provider: pv.provider, model: pv.model, totalTokens: 0, count: 0 };
-          provBrkMap[pk].totalTokens += mv.totalTokens || 0;
-          provBrkMap[pk].count += mv.assistantCount || 0;
-          provAttributed += mv.totalTokens || 0;
-        }
-      }
-    }
-  }
-  const providerBreakdown = Object.values(provBrkMap).sort((a, b) => b.totalTokens - a.totalTokens);
-  // 补上未归属的用量，使饼图总和 = 日数据总和（仅无供应商筛选时）
-  var gap = provDayTotal - provAttributed;
-  if (gap > 0 && !filterProvider && !filterModel) {
-    providerBreakdown.push({ provider: "?", model: "未归属", totalTokens: gap });
-  }
-
   const agents = Object.entries(agentMap).map(([id, d]) => ({ id, ...d })).sort((a, b) => b.totalTokens - a.totalTokens);
   const models = Object.entries(modelMap).map(([id, d]) => ({ id, ...d })).sort((a, b) => (b.input + b.output + (b.cacheRead || 0)) - (a.input + a.output + (a.cacheRead || 0)));
   const daily = Object.keys(dailyMap).sort().map(d => ({ date: d, totalTokens: dailyMap[d].totalTokens, desktop: dailyMap[d].desktop, channel: dailyMap[d].channel, bridge: dailyMap[d].bridge, background: dailyMap[d].background, sub: dailyMap[d].sub, ledger: dailyMap[d].ledger, cacheRead: dailyMap[d].cacheRead, assistantCount: dailyMap[d].assistantCount }));
@@ -1353,17 +1221,6 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     });
   }
 
-  // ── 对话流水 & 异常对话（不受筛选影响） ──
-  var convs = [];
-  for (const s of Object.values(cache.sessions)) {
-    if (s.conversations) {
-      for (const c of s.conversations) {
-        convs.push({ time:c.time, userSnippet:c.userSnippet, userContent:c.userContent, model:c.model||"", provider:c.provider||"", totalTokens:c.totalTokens||0, msgCount:c.msgCount||0, toolCalls:c.toolCalls||[], steps:c.steps||[], agent:s.agent, agentName:(cache.agentNames && cache.agentNames[s.agent]) || s.agent, speedAvg: (c.speedOut && c.speedDur) ? Math.round(c.speedOut/(c.speedDur/1000)) : 0, speedMax: c.speedMax||0 });
-      }
-    }
-  }
-  convs.sort((a,b) => a.time < b.time ? 1 : (a.time > b.time ? -1 : 0));
-  var stream = convs.slice(0, 100);
   const rows = [];
   for (const s of sessions) for (const c of s.conversations || []) {
     const timestamp = new Date(c.time);
@@ -1376,8 +1233,6 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
       inputTokens: c.inTokens ?? null, outputTokens: c.outTokens ?? null });
   }
   rows.sort((a, b) => String(b.time).localeCompare(String(a.time)));
-  var today = cnToday();
-  var abnormal = convs.filter(function(c){if(!c.time)return false;var d=new Date(c.time);return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0")===today;}).sort(function(a,b){return b.totalTokens - a.totalTokens;}).slice(0, 10);
 
   // ── 供应商全量列表（不受筛选影响，用于前端下拉） ──
   const allProviders = {};
@@ -1422,6 +1277,7 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
       }
     }
   }
+  // ── 下面的 mediaGen 只用来把媒体生成的花费计入 estimatedCost；界面不读它，所以不再进载荷 ──
   const mediaGen = Object.values(mediaGenMap);
   for (const mg of mediaGen) {
     const price = priceTable[mg.provider + "/" + mg.model];
@@ -1443,80 +1299,15 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     }
   }
 
-  // ── 缓存命中率下钻（Agent + 模型）──
-  const agentCacheBreakdown = agents.map(a => {
-    const totalAll = a.totalTokens > 0 ? a.totalTokens : 1;
-    return {
-      id: a.id,
-      hitRate: +((a.cacheRead || 0) / totalAll * 100).toFixed(1),
-      cacheRead: a.cacheRead || 0,
-      cacheWrite: Math.max(0, (a.totalTokens || 0) - (a.output || 0) - (a.cacheRead || 0)),
-      totalTokens: a.totalTokens,
-    };
-  }).sort((a, b) => b.hitRate - a.hitRate);
-
-  const modelCacheBreakdown = models.map(m => {
-    const total = m.totalTokens > 0 ? m.totalTokens : 1;
-    return {
-      id: m.id,
-      hitRate: +((m.cacheRead || 0) / total * 100).toFixed(1),
-      cacheRead: m.cacheRead || 0,
-      cacheWrite: Math.max(0, (m.totalTokens || 0) - (m.output || 0) - (m.cacheRead || 0)),
-      totalTokens: m.totalTokens,
-    };
-  }).sort((a, b) => b.hitRate - a.hitRate);
-
+  // 载荷只带界面真正读的东西（对照 ui/ 与内嵌页对 dashboard.<字段> 的读取）：
+  // 以前还发 stream / abnormal / mediaGen / providerBreakdown / earliest / 缓存下钻 / prediction，
+  // 全仓界面一处都没读，属于白算白传。
   return {
     analytics: buildVisualAnalytics(sessions, dateFilter, filters, rows),
-    lastScan: cache.lastScan, agentNames: cache.agentNames || {}, earliest,
+    agentNames: cache.agentNames || {},
     summary: { ...sums, cacheHitRate: sums.totalTokens > 0 ? +((sums.totalCacheRead / sums.totalTokens * 100).toFixed(1)) : 0, estimatedCost },
-    agents, models, modelOptions, providerBreakdown, providers: allProviderList, daily, hourly, stream, rows, abnormal, mediaGen,
-    agentCacheBreakdown, modelCacheBreakdown, prediction: buildPredictionResponse(cache, daily),
+    agents, models, modelOptions, providers: allProviderList, daily, hourly, rows,
   };
-}
-
-// ── 预测：请求时实时计算 P_now / predictedToday / trend ──
-function buildPredictionResponse(cache, daily) {
-  const p = cache.prediction;
-  if (!p) return null;
-  const base = { dailyAvg: p.dailyAvg, monthToDate: p.monthToDate, daysLeftInMonth: p.daysLeftInMonth, projectedMonthEnd: p.projectedMonthEnd };
-  if (!p.cumulativePct) return { ...base, predictedToday: p.dailyAvg, trend: "持平" };
-
-  // 当前时间（Asia/Shanghai）
-  const now = new Date();
-  const cnParts = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai", hour: "2-digit", minute: "2-digit", hour12: false }).formatToParts(now);
-  let curHour = 0, curMinute = 0;
-  for (const part of cnParts) { if (part.type === "hour") curHour = parseInt(part.value, 10) % 24; if (part.type === "minute") curMinute = parseInt(part.value, 10); }
-
-  // P_now
-  const pPrev = curHour > 0 ? p.cumulativePct[curHour - 1] : 0;
-  const pCur = p.cumulativePct[curHour];
-  const pNow = pPrev + (pCur - pPrev) * (curMinute / 60);
-
-  // 今日已消耗
-  const today = CN_DAY.format(now);
-  const todayEntry = daily.find(d => d.date === today);
-  const todayTokens = todayEntry ? todayEntry.totalTokens : 0;
-
-  // 预测
-  let predictedToday;
-  if (pNow < 0.001 || todayTokens === 0) {
-    predictedToday = p.dailyAvg;
-  } else {
-    const raw = todayTokens / pNow;
-    const maxRemaining = p.dailyAvg * (1 - pNow) * 1.5;
-    predictedToday = Math.min(raw, todayTokens + maxRemaining);
-  }
-  predictedToday = Math.round(predictedToday);
-
-  // 趋势
-  const expected = p.dailyAvg * pNow;
-  let trend;
-  if (todayTokens > expected * 1.05) trend = "上升";
-  else if (todayTokens < expected * 0.95) trend = "下降";
-  else trend = "持平";
-
-  return { ...base, predictedToday, trend };
 }
 
 // ── 余额查询配置 ──
@@ -1596,13 +1387,11 @@ function saveOgCalibration(ratio) {
 }
 loadOgCalibration();
 
-// 从 usage-ledger 聚合 opencode-go 各窗口消耗，按官方价估算美元
+// 从账本汇总 opencode-go 各窗口消耗，按官方价估算美元（来源见 services/ledger-source.js）
 function estimateOpenCodeGoUsage() {
   try {
-    const ledgerPath = path.join(resolveHanaHome(), "usage-ledger.json");
-    if (!fs.existsSync(ledgerPath)) return null;
-    const ledger = JSON.parse(readTextFile(ledgerPath));
-    const entries = ledger.entries || [];
+    const entries = loadLedger(resolveHanaHome()).entries;
+    if (!entries.length) return null;
     const now = new Date();
     const startOfDay = new Date(now.getFullYear(), now.getMonth(), now.getDate());
     const dow = (now.getDay() + 6) % 7; // 周一 = 0
@@ -2125,17 +1914,6 @@ async function fetchOpenCodeGoQuota(apiConfig) {
 
 function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
 function cnToday(){return CN_DAY.format(new Date())}
-
-function widgetHtml(ctx, th, token, css, js) {
-  return `<!DOCTYPE html>
-<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<link rel="stylesheet" href="/api/plugins/${ctx.pluginId}/widget.css?token=${esc(token)}">
-<style>${css}</style>
-</head><body data-hana-theme="${esc(th)}" data-surface="widget">
-<div id="app"><div class="loading">翻阅档案…</div></div>
-<script>${js}</script>
-</body></html>`;
-}
 
 // realtimeSnapshot 函数不再重复定义；使用 cache.realtimeSnapshot（由 index.js onload 时挂入到 shared）
 

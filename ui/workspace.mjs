@@ -544,40 +544,6 @@ export class WorkspaceApp {
     );
   }
 
-  computeTrend() {
-    const points = this.state.get().range === "today" ? this.dashboard?.hourly : this.dashboard?.daily;
-    if (points?.length) return { values: points.map(p => Number(p.totalTokens) || 0), labels: [String(points[0].date ?? points[0].hour ?? ""), String(points.at(-1).date ?? points.at(-1).hour ?? "")] };
-    const rows = this.dashboard?.rows || [];
-    if (!rows.length) return { values: [], labels: ["00:00", "12:00", "现在"] };
-    const range = this.state.get().range;
-    if (range === "today") {
-      const buckets = new Array(24).fill(0);
-      for (const r of rows) {
-        const d = new Date(r.time);
-        if (!isNaN(d.getTime())) buckets[d.getHours()] += r.totalTokens || 0;
-      }
-      return { values: buckets, labels: ["00:00", "06:00", "12:00", "18:00", "现在"] };
-    }
-    if (range === "week") {
-      const buckets = new Array(7).fill(0);
-      for (const r of rows) {
-        const d = new Date(r.time);
-        if (!isNaN(d.getTime())) buckets[(d.getDay() + 6) % 7] += r.totalTokens || 0;
-      }
-      return { values: buckets, labels: ["一", "二", "三", "四", "五", "六", "日"] };
-    }
-    const buckets = new Map();
-    for (const r of rows) {
-      const d = new Date(r.time);
-      if (!isNaN(d.getTime())) {
-        const key = `${d.getMonth() + 1}/${d.getDate()}`;
-        buckets.set(key, (buckets.get(key) || 0) + (r.totalTokens || 0));
-      }
-    }
-    const values = Array.from(buckets.values());
-    return { values, labels: [" earliest", "latest"] };
-  }
-
   // ---------- balance module ----------
 
   renderBalance() {

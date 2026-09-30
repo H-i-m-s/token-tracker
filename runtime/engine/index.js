@@ -8,6 +8,7 @@ import { openDsUsageStore } from "./services/ds-usage-store.js";
 import { createDsUsageService } from "./services/ds-usage-service.js";
 import { diagnosePartitions } from "./services/ds-token-source.js";
 import { createJsonJournalStore } from "./services/json-journal-store.js";
+import { loadLedger } from "./services/ledger-source.js";
 import { openArchiveStore } from "./services/archive-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 
@@ -876,23 +877,21 @@ function scanDir(dir, agent, type, channel, cache, old) {
   return changed;
 }
 
-// ─── usage-ledger.json 扫描（memory + utility 子系统无 JSONL 的 LLM 调用）───
+// ─── 宿主账本扫描（memory + utility 子系统没有 JSONL 的 LLM 调用）───
+// 来源以活账本 SQLite 为准，见 services/ledger-source.js：json 那份从 2026-09-09 起就冻结了。
 function scanLedger(cache, log, force, shared) {
-  const p = path.join(HOME, "usage-ledger.json");
-  if (!fs.existsSync(p)) return false;
+  const ledger = loadLedger(HOME, log);
+  if (!ledger.entries.length) return false;
 
-  // 增量：仅当 ledger 文件 mtime 变化或强制时重建，否则跳过（避免每次全量重算）
-  const lmtime = fs.statSync(p).mtimeMs;
-  if (!force && cache._ledgerMtime === lmtime) return false;
+  // 增量：账本指纹（来源文件的时间/大小）没变就跳过，避免每次全量重算
+  if (!force && cache._ledgerKey === ledger.key) return false;
 
   for (const k of Object.keys(cache.sessions)) {
     if (k.startsWith("__ledger__")) delete cache.sessions[k];
   }
 
-  let data;
-  try { data = JSON.parse(readTextFile(p)); }
-  catch { return false; }
-  if (!data?.entries?.length) return false;
+  const data = { entries: ledger.entries };
+  const p = ledger.sourcePath;
 
   // ── 独立历史归档：账本记录按 requestId 去重并入 usage-archive.json。
   // 账本是 5000 条环形缓冲，满了会挤掉最旧记录；归档后统计从归档构建，
@@ -935,11 +934,10 @@ function scanLedger(cache, log, force, shared) {
     const ts = e.startedAt || e.endedAt || "";
     // 统一本地时区取日（与 scanDir 一致，避免 UTC 日期错位）
     let day = "unknown";
-    if (ts) {
-      const td = new Date(ts);
-      if (!isNaN(td.getTime())) {
-        day = td.getFullYear() + "-" + String(td.getMonth() + 1).padStart(2, "0") + "-" + String(td.getDate()).padStart(2, "0");
-      }
+    const tdate = ts ? new Date(ts) : null;
+    const tvalid = !!(tdate && !isNaN(tdate.getTime()));
+    if (tvalid) {
+      day = tdate.getFullYear() + "-" + String(tdate.getMonth() + 1).padStart(2, "0") + "-" + String(tdate.getDate()).padStart(2, "0");
     }
     const inpRaw = tokVal(e.usage?.input);
     const out = tokVal(e.usage?.output);
@@ -954,7 +952,7 @@ function scanLedger(cache, log, force, shared) {
       cache.sessions[key] = {
         agent, type: "ledger", channelName: null, 
         filePath: p, mtime: 0, size: 0,
-        fileName: "usage-ledger.json",
+        fileName: path.basename(p),
         firstTime: null, lastTime: null,
         msgCount: 0, assistantCount: 0,
         input: 0, output: 0, cacheRead: 0, cacheWrite: 0,
@@ -1014,7 +1012,8 @@ function scanLedger(cache, log, force, shared) {
       bd.providerTotals[pk].cacheWrite += cw;
       bd.providerTotals[pk].assistantCount++;
     }
-    const hour = ts ? ts.slice(11, 13) : "00";
+    // 小时也取本地时区：以前用 ts.slice(11,13) 拿的是 UTC 小时，账本桶会整体偏 8 小时
+    const hour = tvalid ? String(tdate.getHours()).padStart(2, "0") : "00";
     if (!s.hourlyBreakdown[day]) s.hourlyBreakdown[day] = {};
     if (!s.hourlyBreakdown[day][hour]) {
       s.hourlyBreakdown[day][hour] = {
@@ -1059,7 +1058,7 @@ function scanLedger(cache, log, force, shared) {
       hb.providerTotals[pk].ledger += tot;
     }
   }
-  cache._ledgerMtime = lmtime;
+  cache._ledgerKey = ledger.key;
   return changed;
 }
 
