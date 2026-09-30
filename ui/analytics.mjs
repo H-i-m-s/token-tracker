@@ -19,27 +19,6 @@ export function compact(n) {
   if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
   return Math.round(n).toLocaleString('zh-CN');
 }
-export function quantile(values, q) {
-  if (!values.length) return null;
-  const sorted = [...values].sort((a,b) => a-b), pos = (sorted.length - 1) * q;
-  const lo = Math.floor(pos), hi = Math.ceil(pos);
-  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
-}
-export function distribution(rows) {
-  const models = new Map();
-  for (const r of rows) {
-    if (!Number.isFinite(r.totalTokens) || r.totalTokens <= 0) continue;
-    if (!models.has(r.model)) models.set(r.model, []);
-    models.get(r.model).push(r.totalTokens);
-  }
-  let max = 1;
-  for (const values of models.values()) for (const n of values) max = Math.max(max, n);
-  return [...models].map(([id, values]) => {
-    const bins = Array(32).fill(0);
-    for (const n of values) bins[Math.min(31, Math.floor(Math.log1p(n) / Math.log1p(max) * 32))]++;
-    return { id, count: values.length, p50: quantile(values, .5), p90: quantile(values, .9), bins };
-  }).sort((a,b) => b.count-a.count);
-}
 function node(tag, attrs = {}, children = []) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));
@@ -552,9 +531,10 @@ export function renderAnalytics(container, dashboard, state, patch) {
   }
   heat.body.append(h('footer', {}, `小时记录覆盖 ${fmtPct(a.hourlyTotal / Math.max(1,a.dailyTotal) * 100,1)} · ${a.timeZone || '日志本地时间'} · ${days.length} 天 · 最新在上`));
 
-  const dist = panel('单次请求大小分布', '当前为会话轮次口径 · 最近 5 天', 'tt-dist-panel');
-  const samples = distribution(dashboard.rows);
-  if (!samples.length) empty(dist.body, '该范围无保留的会话轮次明细；日汇总仍可查看');
+  const dist = panel('单轮请求大小分布', `会话轮次口径 · ${(a?.turnSize?.turnCount || 0).toLocaleString()} 轮`, 'tt-dist-panel');
+  // 摘要是引擎侧算好的（次数 / P50 / P90 / 32 桶），前端不再搬明细自己算。
+  const samples = a?.turnSize?.models || [];
+  if (!samples.length) empty(dist.body, '该范围没有轮次明细');
   else {
     dist.body.append(h('div',{className:'tt-dist-head'},h('span',{},'模型 / 轮次'),h('span',{},'P50'),h('span',{},'P90'),h('span',{},'分布 · 横轴为 Token 对数')));
     const list = h('div', { className: 'tt-dist-list' }); dist.body.append(list);
@@ -565,7 +545,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
         h('span',{},h('b',{},sample.id),h('small',{},`${sample.count.toLocaleString()} 轮`)),h('b',{},compact(sample.p50)),h('b',{},compact(sample.p90)),chart));
     }
   }
-  dist.body.append(h('footer',{},'按一轮对话累计用量统计，不代表单次 API 请求；历史明细仅保留最近 5 天。'));
+  dist.body.append(h('footer',{},'按一轮对话累计用量统计（含该轮的全部工具调用），不是单次 API 请求。'));
 
   const right=h('div',{className:'tt-board-right'});bottomRow.append(dist.el, right);
   const ridge=panel('0–24 时分布 · 按模型','每条曲线独立缩放 · 平滑显示');right.append(ridge.el);
@@ -605,5 +585,5 @@ export function renderAnalytics(container, dashboard, state, patch) {
     });
     daily.body.append(chart,legend(allModels,color,state.model,selectModel,totals));
   }
-  container.append(h('p',{className:'tt-board-note'},'数据来自 HanaAgent 本地日志汇总；图表沿用日志日期，明细分布受最近 5 天保留期限制。模型颜色仅用于区分数据序列。'));
+  container.append(h('p',{className:'tt-board-note'},'数据来自 HanaAgent 本地日志汇总；图表沿用日志日期。模型颜色仅用于区分数据序列。'));
 }

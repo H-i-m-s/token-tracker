@@ -23,7 +23,44 @@ function modelsFor(bucket, { model, provider }) {
   return result;
 }
 
-export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
+function quantile(values, q) {
+  if (!values.length) return null;
+  const sorted = [...values].sort((a, b) => a - b), pos = (sorted.length - 1) * q;
+  const lo = Math.floor(pos), hi = Math.ceil(pos);
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo);
+}
+
+// 单轮请求大小分布：把调用方已经筛好的轮次按模型汇成摘要（次数 / P50 / P90 / 32 桶）。
+//
+// 口径与前端旧实现完全一致：桶位 = floor(log1p(n) / log1p(跨模型最大值) * 32)，
+// 对数轴只用一条（模型之间可比），分位数线性插值，排序按轮次数降序。
+// 为什么放在引擎侧：轮次明细现在覆盖全部历史（上万条），而分布只是个摘要，
+// 没必要把明细搬进每次请求再让前端自己算。传进来的 rows 就是消费明细那批（同一套筛选），
+// 所以分布与明细看到的是同一个集合。
+export function summarizeTurns(rows = []) {
+  const groups = new Map();
+  for (const r of rows) {
+    const n = r?.totalTokens;
+    if (!Number.isFinite(n) || n <= 0) continue;
+    const id = r.model || '';
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id).push(n);
+  }
+  let max = 1;
+  for (const values of groups.values()) for (const n of values) if (n > max) max = n;
+  const scale = Math.log1p(max);
+  const models = [...groups].map(([id, values]) => {
+    const bins = Array(32).fill(0);
+    for (const n of values) bins[Math.min(31, Math.floor(Math.log1p(n) / scale * 32))]++;
+    return {
+      id, count: values.length, totalTokens: values.reduce((sum, n) => sum + n, 0),
+      p50: quantile(values, .5), p90: quantile(values, .9), bins,
+    };
+  }).sort((a, b) => b.count - a.count);
+  return { turnCount: rows.length, models };
+}
+
+export function buildVisualAnalytics(sessions, dateFilter, filters = {}, rows = []) {
   const days = new Map(), agents = new Map(), hours = new Map();
   let sessionCount = 0;
   // 按「来源」拆分（对话 / 子代理 / 频道 / 后台 / 账本）只在没有模型、供应商筛选时成立：
@@ -90,6 +127,6 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}) {
     modelHours: [...modelHours.values()].sort((a, b) => b.totalTokens - a.totalTokens),
     hourlyTotal: heatmap.reduce((sum, row) => sum + row.totalTokens, 0),
     dailyTotal: daily.reduce((sum, row) => sum + row.totalTokens, 0),
-    conversationRetentionDays: 5,
+    turnSize: summarizeTurns(rows),
   };
 }

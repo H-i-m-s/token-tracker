@@ -6,7 +6,7 @@ export const CARD_VIEWS = [
   { id: 'realtime', label: '实时', title: '实时监控', icon: 'realtime' },
   { id: 'agents', label: '工作空间', title: '工作空间活跃分布', icon: 'agents' },
   { id: 'heat', label: '日活', title: '日活分布', icon: 'heat' },
-  { id: 'distribution', label: '请求分布', title: '单次请求大小分布（会话轮次口径）', icon: 'distribution' },
+  { id: 'distribution', label: '请求分布', title: '单轮请求大小分布', icon: 'distribution' },
   { id: 'hours', label: '时段模型', title: '0–24 时分布 · 按模型', icon: 'hours' },
   { id: 'daily', label: '每日模型', title: '每日模型用量比例', icon: 'daily' },
 ];

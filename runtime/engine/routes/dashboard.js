@@ -1462,7 +1462,7 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
   }).sort((a, b) => b.hitRate - a.hitRate);
 
   return {
-    analytics: buildVisualAnalytics(sessions, dateFilter, filters),
+    analytics: buildVisualAnalytics(sessions, dateFilter, filters, rows),
     lastScan: cache.lastScan, agentNames: cache.agentNames || {}, earliest,
     summary: { ...sums, cacheHitRate: sums.totalTokens > 0 ? +((sums.totalCacheRead / sums.totalTokens * 100).toFixed(1)) : 0, estimatedCost },
     agents, models, modelOptions, providerBreakdown, providers: allProviderList, daily, hourly, stream, rows, abnormal, mediaGen,

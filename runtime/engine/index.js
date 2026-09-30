@@ -14,7 +14,7 @@ import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
 const CACHE = "token-cache.json";
-const CACHE_VERSION = 22; // 22：生成速度采样改成紧凑数组、只存会话级、每会话每模型上限 16 条（旧库由版本不一致触发全量重建）
+const CACHE_VERSION = 23; // 23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
 const ARCHIVE = "usage-archive.json";
 const ARCHIVE_VERSION = 1;
 
@@ -506,7 +506,7 @@ function realtimeSnapshot(rt, agentNames) {
 async function scanAll(shared, log, force) {
   // 旧缓存：优先用上一轮的扫描结果（它来自 SQLite 缓存，启动时已由 store.load() 播下）。
   // 以前这里只读 token-cache.json —— 那份文件在迁移到 SQLite 之后已经不存在，于是每一轮都
-  // 从空白开始：文件全量重解析、账本每轮重建、5 天裁剪每轮重跑，一次落盘要写上千行。
+  // 从空白开始：文件全量重解析、账本每轮重建，一次落盘要写上千行。
   const old = (shared.data && shared.data.sessions && Object.keys(shared.data.sessions).length)
     ? shared.data
     : loadCache(shared.cachePath, log);
@@ -602,16 +602,9 @@ async function scanAll(shared, log, force) {
     for (const _key of Object.keys(cache.sessions)) if (_key.startsWith("__ledger__")) _forcedKeys.push(_key);
   }
 
-  // 保留最近5天的对话（同样就地改记录、不动 mtime/size → 补报被裁的键）
-  var cutoff5d = Date.now() - 5 * 86400000;
-  for (const _key of Object.keys(cache.sessions)) {
-    const _s = cache.sessions[_key];
-    if (_s.conversations && _s.conversations.length) {
-      var _before = _s.conversations.length;
-      _s.conversations = _s.conversations.filter(function(c){ return new Date(c.time).getTime() >= cutoff5d; });
-      if (_s.conversations.length !== _before) { changed = true; _forcedKeys.push(_key); }
-    }
-  }
+  // 轮次明细不裁剪：早先只留 5 天，是因为一条轮次记录里约 83% 是嵌套的测速采样（合起来每轮约 1.7 KB）。
+  // 那份包袱已经搬到会话级，现在一轮只剩约 200 字节，全历史约 3 MB，值得留下来。
+  // 留着它，「单轮请求大小分布」与消费明细才看得见完整的过去；裁掉只会让历史凭空消失。
 
   if (changed) {
     cache.lastScan = new Date().toISOString();
@@ -619,7 +612,10 @@ async function scanAll(shared, log, force) {
     cache.prediction = computePrediction(cache, dailyGlobal);
     cache._speedStats = buildSpeedStats(cache);
     // 标脏而不是立刻写：攒批由调度器决定（没有调度器时才直接落盘）
-    if (shared.persist) shared.persist.markDirty(_forcedKeys);
+    // 全量重扫要整库重写：记录是重新解析出来的，但文件的 mtime/size 可能一个没变，
+    // 按行比较会认为「这一行没变」而跳过，新格式就永远写不进旧行（历史上格式改了
+    // 却滞留在旧行、以及刚去掉的 5 天裁剪，都是这么留下的）。markAllDirty 正是为这种场合备的。
+    if (shared.persist) { if (full) shared.persist.markAllDirty(); else shared.persist.markDirty(_forcedKeys); }
     else saveCache(shared.cachePath, cache, log);
   }
   shared.data = cache;
