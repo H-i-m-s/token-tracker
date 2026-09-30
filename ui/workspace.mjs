@@ -844,8 +844,9 @@ export class WorkspaceApp {
       this.mainEl.appendChild(el);
     }
 
-    const rt = this.snapshot?.realtime || { connected: false, tps: 0, contextPercent: 0, model: "—", agentName: "—", contextTokens: 0, contextWindow: 0, updatedAt: null };
+    const rt = this.snapshot?.realtime || { connected: false, tps: 0, ttft: 0, contextPercent: 0, model: "—", agentName: "—", contextTokens: 0, contextWindow: 0, updatedAt: null };
     const cpShow = rt.contextPercent > 100 ? "99+" : Math.round(rt.contextPercent).toString();
+    const ttftShow = rt.ttft > 0 ? (rt.ttft / 1000).toFixed(1) + " s" : "—";
 
     // 扫描结果写入统计：这份文件是派生数据，写入量该跟“变化量”走而不是“数据量”（见引擎里的落盘调度器）。
     // 叫“扫描结果”而不是“缓存”：界面里其他地方的“缓存”都指模型侧的提示缓存，不要撞名。
@@ -877,6 +878,7 @@ export class WorkspaceApp {
           h("div", { id: "realtime-ring", className: "tt-ring" }),
           h("div", { className: "tt-rt-metrics" },
             h("div", { className: "tt-rt-metric" }, h("span", { className: "l" }, "tok/s"), h("span", { className: "v accent" }, fmt(rt.tps))),
+            h("div", { className: "tt-rt-metric" }, h("span", { className: "l" }, "首字"), h("span", { className: "v" }, ttftShow)),
             h("div", { className: "tt-rt-metric" }, h("span", { className: "l" }, "上下文"), h("span", { className: "v" }, `${fmt(rt.contextTokens)} / ${fmt(rt.contextWindow)}`)),
             h("div", { className: "tt-rt-metric" }, h("span", { className: "l" }, "当前模型"), h("span", { className: "v" }, rt.model || "—")),
             h("div", { className: "tt-rt-metric" }, h("span", { className: "l" }, "Agent"), h("span", { className: "v" }, rt.agentName || "—")),

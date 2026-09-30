@@ -14,7 +14,7 @@ import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
 const CACHE = "token-cache.json";
-const CACHE_VERSION = 21;
+const CACHE_VERSION = 22; // 22：生成速度采样改成紧凑数组、只存会话级、每会话每模型上限 16 条（旧库由版本不一致触发全量重建）
 const ARCHIVE = "usage-archive.json";
 const ARCHIVE_VERSION = 1;
 
@@ -313,12 +313,8 @@ export default class TokenTrackerPlugin {
         for (const session of Object.values(cacheData.sessions)) {
           if (!session || session.type === "ledger") continue;
           if (session.fileName !== wantFile) continue;
-          // 对话级与会话级是同一批采样的两份存法，取其一，避免重复计入校正样本。
-          let got = 0;
-          for (const conv of (session.conversations || [])) {
-            for (const s of (conv.speeds || [])) if (s) { samples.push(s); got++; }
-          }
-          if (!got) for (const s of (session.speeds || [])) if (s) samples.push(s);
+          // 采样只存会话级一份（轮次级那份是同一批数据的副本，已随缓存瘦身去掉）。
+          for (const s of decodeSpeedSamples(session)) samples.push(s);
         }
       }
       if (!samples.length) {
@@ -766,16 +762,11 @@ function scanDir(dir, agent, type, channel, cache, old) {
             var _durMs = _evTs - _prevEvTs;
             if (_durMs >= 100 && _durMs < 600000) {
               var _tps = Math.round(out / (_durMs / 1000));
-              var _txtTps = Math.round((out - rsn) / (_durMs / 1000));
-              if (!conv.speeds) conv.speeds = [];
-              conv.speeds.push({ ts, durMs: _durMs, out, reasoning: rsn, tps: _tps, textTps: _txtTps, model, provider: msgProvider });
-              if (conv.speeds.length > 100) conv.speeds.shift();
               conv.speedOut = (conv.speedOut || 0) + out;
               conv.speedDur = (conv.speedDur || 0) + _durMs;
               if (_tps > (conv.speedMax || 0)) conv.speedMax = _tps;
-              if (!data.speeds) data.speeds = [];
-              data.speeds.push({ ts, durMs: _durMs, out, reasoning: rsn, tps: _tps, textTps: _txtTps, model, provider: msgProvider, agent, type });
-              if (data.speeds.length > 200) data.speeds.shift();
+              // 采样只留会话级一份：轮次级那份是同一批数据的副本，读取端本来也只当成兑底用。
+              pushSpeedSample(data, _evTs, _durMs, out, rsn, msgProvider ? msgProvider + "/" + model : model);
             }
           }
           // 模型变了但没有 model_change 事件 → 不知道供应商，不归属
@@ -991,12 +982,7 @@ function scanLedger(cache, log, force, shared) {
       if (!isNaN(_d1) && !isNaN(_d2) && _d2 > _d1) _durMs = _d2 - _d1;
     }
     if (_durMs >= 100 && _durMs < 600000) {
-      var _tps = Math.round(out / (_durMs / 1000));
-      var _rsn = e.usage?.output?.reasoningTokens || 0;
-      var _txtTps = Math.round((out - _rsn) / (_durMs / 1000));
-      if (!s.speeds) s.speeds = [];
-      s.speeds.push({ ts, durMs: _durMs, out, reasoning: _rsn, tps: _tps, textTps: _txtTps, model, provider });
-      if (s.speeds.length > 200) s.speeds.shift();
+      pushSpeedSample(s, tsNum(ts), _durMs, out, e.usage?.output?.reasoningTokens || 0, provider ? provider + "/" + model : model);
     }
 
     if (!s.models[model]) s.models[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0 };
@@ -1114,6 +1100,56 @@ const SPEED_FIXED_OVERHEAD_MS = 1000; // 估不出起跑开销时的固定值
 const SPEED_MIN_TPS = 20;             // 合理区间：本机各模型实测约 20~550，明显失真的不端出来
 const SPEED_MAX_TPS = 1500;
 
+// ─── 采样存储：紧凑 + 每会话每模型只留最近若干条 ───
+// 采样是派生数据（源头是日志里两条相邻消息的时间差），存进库只是为了让下次启动不必重读全部日志。
+// 读取端最多只用「当前模型、最新的 8 条合格采样」，所以留 16 条就够（一倍余量）。
+// 一条采样存成 [落笔毫秒, 耗时, 输出, 推理, 模型序号]，模型名每个会话只写一遍（speedModels）。
+// 全机平均速度另用两个累计数（speedTotals：Σ输出、Σ耗时），不随环形上限丢样本。
+const SPEED_KEEP_PER_MODEL = 16;
+
+function pushSpeedSample(session, tsMs, durMs, out, reasoning, modelKey) {
+  if (!session || !Number.isFinite(tsMs) || !(durMs >= 100) || !(durMs < 600000)) return;
+  if (!session.speedModels) session.speedModels = [];
+  if (!session.speeds) session.speeds = [];
+  if (!session.speedTotals) session.speedTotals = [0, 0];
+  let idx = session.speedModels.indexOf(modelKey);
+  if (idx < 0) { session.speedModels.push(modelKey); idx = session.speedModels.length - 1; }
+  const ring = session.speeds;
+  let same = 0;
+  for (const r of ring) if (r[4] === idx) same++;
+  while (same >= SPEED_KEEP_PER_MODEL) {
+    let oldest = -1;
+    for (let i = 0; i < ring.length; i++) {
+      if (ring[i][4] !== idx) continue;
+      if (oldest < 0 || ring[i][0] < ring[oldest][0]) oldest = i;
+    }
+    if (oldest < 0) break;
+    ring.splice(oldest, 1);
+    same--;
+  }
+  ring.push([tsMs, durMs, out, reasoning, idx]);
+  session.speedTotals[0] += out;
+  session.speedTotals[1] += durMs;
+}
+
+// 紧凑采样 → 读取端用的对象形状。provider 与 model 从会话自己的 speedModels 表还原。
+function decodeSpeedSamples(session) {
+  const models = (session && session.speedModels) || [];
+  const out = [];
+  for (const r of ((session && session.speeds) || [])) {
+    if (!Array.isArray(r)) continue;
+    const key = String(models[r[4]] || "?");
+    const sep = key.indexOf("/");
+    const provider = sep > 0 ? key.slice(0, sep) : "";
+    const model = sep > 0 ? key.slice(sep + 1) : key;
+    const durMs = tsNum(r[1]), o = tsNum(r[2]), rsn = tsNum(r[3]);
+    out.push({ ts: tsNum(r[0]), durMs, out: o, reasoning: rsn, model, provider,
+      tps: durMs > 0 ? Math.round(o / (durMs / 1000)) : 0,
+      textTps: durMs > 0 ? Math.round((o - rsn) / (durMs / 1000)) : 0 });
+  }
+  return out;
+}
+
 // 采样属于哪个模型。新记录自带 provider；没有 provider 的旧记录只按 model 归。
 function speedModelKey(sample) {
   const model = String(sample?.model || "?");
@@ -1175,81 +1211,24 @@ function provOfSession(s, model) {
   return best;
 }
 
+// 汇总只留两个被界面真正读到的值：
+//   last   —— 全机最新一条采样（实时页的 tok/s 用它，消息里没采样时也拿它兑底）
+//   avgTps —— 全机加权平均（Σ输出 / Σ耗时），取自每个会话自己累计的两个数，不受环形上限影响
+// 原来还顺手算过按模型/按供应商的速度统计、最近一小时、最近 50 条…… 全仓没有任何读取点，随本次瘦身删掉。
 function buildSpeedStats(cache) {
-  const all = [];
+  let last = null, sumOut = 0, sumDur = 0;
   for (const s of Object.values(cache.sessions)) {
-    if (s.type === "ledger") {
-      for (const sp of (s.speeds || [])) all.push({ sp, s });
-      continue;
-    }
-    // 普通会话：优先对话级 speeds（避免与会话级重复计数）；无对话时用会话级兑底
-    let got = 0;
-    for (const c of (s.conversations || [])) {
-      for (const sp of (c.speeds || [])) { all.push({ sp, s }); got++; }
-    }
-    if (!got) {
-      for (const sp of (s.speeds || [])) all.push({ sp, s });
+    const t = s.speedTotals;
+    if (Array.isArray(t) && t.length === 2) { sumOut += tsNum(t[0]); sumDur += tsNum(t[1]); }
+    for (const sp of decodeSpeedSamples(s)) {
+      if (!last || sp.ts > last.ts) {
+        last = { ts: sp.ts, model: sp.model, provider: sp.provider || provOfSession(s, sp.model),
+          tps: sp.tps, textTps: sp.textTps, out: sp.out, durMs: sp.durMs };
+      }
     }
   }
-  if (!all.length) return null;
-  all.sort((a, b) => tsNum(b.sp.ts) - tsNum(a.sp.ts));
-  const recent = all.slice(0, 50);
-  const wAvg = (arr) => {
-    const out = arr.reduce((a, x) => a + (x.sp.out || 0), 0);
-    const dur = arr.reduce((a, x) => a + (x.sp.durMs || 0), 0);
-    return dur > 0 ? out / (dur / 1000) : 0;
-  };
-  const byModel = {};
-  const byProvider = {};
-  for (const { sp, s } of all) {
-    if (!byModel[sp.model]) byModel[sp.model] = { out: 0, durMs: 0, txt: 0, n: 0 };
-    byModel[sp.model].out += sp.out || 0;
-    byModel[sp.model].durMs += sp.durMs || 0;
-    byModel[sp.model].txt += (sp.out || 0) - (sp.reasoning || 0);
-    byModel[sp.model].n++;
-    const prov = sp.provider || provOfSession(s, sp.model);
-    if (!prov) continue;
-    if (!byProvider[prov]) byProvider[prov] = { out: 0, durMs: 0, txt: 0, n: 0, models: {} };
-    byProvider[prov].out += sp.out || 0;
-    byProvider[prov].durMs += sp.durMs || 0;
-    byProvider[prov].txt += (sp.out || 0) - (sp.reasoning || 0);
-    byProvider[prov].n++;
-    const mm = sp.model || "unknown";
-    if (!byProvider[prov].models[mm]) byProvider[prov].models[mm] = { out: 0, durMs: 0, txt: 0, n: 0 };
-    byProvider[prov].models[mm].out += sp.out || 0;
-    byProvider[prov].models[mm].durMs += sp.durMs || 0;
-    byProvider[prov].models[mm].txt += (sp.out || 0) - (sp.reasoning || 0);
-    byProvider[prov].models[mm].n++;
-  }
-  const modelStats = Object.entries(byModel)
-    .map(([model, v]) => ({ model, n: v.n, tps: Math.round(v.out / (v.durMs / 1000)), textTps: Math.round(v.txt / (v.durMs / 1000)) }))
-    .sort((a, b) => b.n - a.n);
-  const providerStats = Object.entries(byProvider)
-    .map(([provider, v]) => ({
-      provider, n: v.n, tps: Math.round(v.out / (v.durMs / 1000)), textTps: Math.round(v.txt / (v.durMs / 1000)),
-      models: Object.entries(v.models)
-        .map(([model, mv]) => ({ model, n: mv.n, tps: Math.round(mv.out / (mv.durMs / 1000)), textTps: Math.round(mv.txt / (mv.durMs / 1000)) }))
-        .sort((a, b) => b.n - a.n)
-    }))
-    .sort((a, b) => b.n - a.n);
-  // ── 最近一小时：ts 距今 3600s 内的调用加权平均 ──
-  const hourCut = Date.now() - 3600000;
-  const hour = all.filter((x) => {
-    const t = new Date(x.sp.ts).getTime();
-    return !isNaN(t) && t >= hourCut;
-  });
-  const last = all[0];
-  return {
-    last: last ? { ts: last.sp.ts, model: last.sp.model, provider: last.sp.provider || provOfSession(last.s, last.sp.model), tps: last.sp.tps, textTps: last.sp.textTps, out: last.sp.out, durMs: last.sp.durMs } : null,
-    avgTps: Math.round(wAvg(all)),
-    avgTextTps: Math.round(all.reduce((a, x) => a + ((x.sp.out || 0) - (x.sp.reasoning || 0)), 0) / (all.reduce((a, x) => a + (x.sp.durMs || 0), 0) / 1000)),
-    recentTps: Math.round(wAvg(recent)),
-    hourTps: hour.length ? Math.round(wAvg(hour)) : 0,
-    hourCount: hour.length,
-    count: all.length,
-    modelStats,
-    providerStats
-  };
+  if (!last) return null;
+  return { last, avgTps: sumDur > 0 ? Math.round(sumOut / (sumDur / 1000)) : 0 };
 }
 
 // ─── 预测：历史小时分布 + 实时占比 ───

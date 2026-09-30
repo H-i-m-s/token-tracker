@@ -1,4 +1,5 @@
 import { mkdir } from "node:fs/promises";
+import path from "node:path";
 import { createEventStreams } from "./lib/event-stream.mjs";
 import { EventEmitter } from "node:events";
 import { LocalClient } from "./lib/local-client.mjs";
@@ -45,11 +46,82 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
 
   const defaultMock = process.env.TOKEN_TRACKER_MOCK === "1";
   const busClient = clientFactory({ ctx, log, defaultMock });
+
+  // ── 首字响应时间（TTFT）──
+  // 口径：请求即将发出（provider/before-request）→ 收到响应（provider/after-response）。
+  // 两处都只取一个时间戳，不改请求也不读内容。before-request 是决策钩子，宿主会等它返回，
+  // 所以回调里绝不能做 IO —— 任何耗时都等于给每一次生成加一道闸。
+  // 同一会话的请求是串行的，按会话文件名排队取起点即可，不需要请求 id。
+  // 只存内存：这是实时测出来的值，重启后从下一次请求重新开始。
+  // 位置很关键：扫描引擎跑在独立子进程里（ctx.runtime.start），它的 ctx 没有 hooks，
+  // 所以 TTFT 只能在这个进程里测，再注入给输入栏与实时页两处。
+  const ttft = {
+    pending: new Map(),   // 会话文件名 → 起点毫秒（FIFO）
+    rings: new Map(),     // 会话文件名 → 最近几次首字耗时（毫秒）
+    last: 0,              // 全机最近一次（实时页用）
+    KEEP: 10,
+    STALE_MS: 300000,     // 超过 5 分钟没等到响应的起点作废
+  };
+  const ttftDisposers = [];
+  const ttftKeyOf = (sessionPath) => (sessionPath ? path.basename(String(sessionPath)) : "");
+  const ttftFor = (sessionPath) => {
+    const ring = ttft.rings.get(ttftKeyOf(sessionPath));
+    return Array.isArray(ring) && ring.length ? ring[ring.length - 1] : 0;
+  };
+  const ttftAverage = () => {
+    let sum = 0, n = 0;
+    for (const ring of ttft.rings.values()) for (const v of ring) { sum += v; n++; }
+    return n > 0 ? Math.round(sum / n) : 0;
+  };
+  try {
+    const hooks = ctx.hooks;
+    if (typeof hooks?.onDecision === "function" && typeof hooks?.on === "function") {
+      const offDecision = hooks.onDecision("provider/before-request", (invocation) => {
+        const key = ttftKeyOf(invocation?.session?.sessionPath);
+        if (key) {
+          const queue = ttft.pending.get(key) || [];
+          queue.push(Date.now());
+          if (queue.length > 8) queue.shift();
+          ttft.pending.set(key, queue);
+        }
+        return undefined; // 不改动请求本身
+      });
+      const offEvent = hooks.on("provider/after-response", (event) => {
+        const key = ttftKeyOf(event?.session?.sessionPath);
+        if (!key) return;
+        const queue = ttft.pending.get(key);
+        if (!queue || !queue.length) return;
+        const now = Date.now();
+        while (queue.length && now - queue[0] > ttft.STALE_MS) queue.shift();
+        if (!queue.length) { ttft.pending.delete(key); return; }
+        const ms = now - queue.shift();
+        if (!queue.length) ttft.pending.delete(key);
+        if (!(ms > 0 && ms < ttft.STALE_MS)) return;
+        const ring = ttft.rings.get(key) || [];
+        ring.push(ms);
+        if (ring.length > ttft.KEEP) ring.shift();
+        ttft.rings.set(key, ring);
+        ttft.last = ms;
+        // 实时页不必等下一个轮询周期，让它在这一次计量后立刻重新拉一次快照。
+        try { updateEmitter.emit("update", { type: "update" }); } catch {}
+      });
+      ttftDisposers.push(() => { try { offDecision?.(); } catch {} try { offEvent?.(); } catch {} });
+      log("info", "首字响应时间：钩子已注册（provider/before-request + provider/after-response）");
+    } else {
+      log("warn", "首字响应时间不可用：ctx.hooks 未提供（宿主版本过低或权限未开）");
+    }
+  } catch (error) { log("warn", "注册首字钩子失败:", error?.message || error); }
   // 输入栏状态位：本会话缓存命中率 + 本会话最近一次生成速度（见 lib/session-cache.mjs）。
   // 速度走内置服务按真实会话文件路径取，拿不到就返回 null，界面显示“—”。
-  const speedQuery = (sessionPath) => busClient.request("token-tracker.speed", { sessionPath })
-    .then(sample => sample || null)
-    .catch(() => null);
+  // 速度来自引擎（子进程）；首字在这个进程里测。两半在这里合成一条回给输入栏。
+  const speedQuery = async (sessionPath) => {
+    const ttftMs = ttftFor(sessionPath);
+    let sample = null;
+    try { sample = (await busClient.request("token-tracker.speed", { sessionPath })) || null; } catch { sample = null; }
+    if (sample) return ttftMs ? { ...sample, ttft: ttftMs } : sample;
+    // 速度估不出来但有首字时，别把整个状态位丢掉：回一个只带首字的壳。
+    return ttftMs ? { scope: "session", tps: 0, ttft: ttftMs } : null;
+  };
   // 会话 id → 真实会话文件路径：向宿主一次性要对照表（scope:"all"，需 app/sessions.read）。
   // 只取 sessionId 与 path 两个字段做身份对齐，不读会话正文；失败时安静退化到全机兜底。
   const listSessions = async () => {
@@ -83,7 +155,9 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
   async function handleSnapshot(c) {
     try {
       const raw = await busClient.request("token-tracker.snapshot", {}, { mock: isMock(c) });
-      const snapshot = shapeSnapshot(raw);
+      // 首字响应时间在插件进程里测，快照是引擎给的：这里把两格补进去。
+      const withTtft = { ...(raw || {}), realtime: { ...((raw && raw.realtime) || {}), lastTtft: ttft.last, avgTtft: ttftAverage() } };
+      const snapshot = shapeSnapshot(withTtft);
       return jsonResponse(c, okResponse({ snapshot }));
     } catch (err) {
       log("error", "GET /snapshot error:", err?.message || err);
@@ -217,6 +291,8 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     if (typeof unregisterRoutes === "function") {
       try { unregisterRoutes(); } catch {}
     }
+    for (const off of ttftDisposers) { try { off(); } catch {} }
+    ttftDisposers.length = 0;
     await busClient.dispose?.();
     log("info", "disposer：routes / embedded runtime 已注销");
   };

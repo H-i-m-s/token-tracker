@@ -12,7 +12,9 @@
     "app/runtime.network",
     "app/usage.read",
     "app/sessions.read",
-    "app/input.status"
+    "app/input.status",
+    "app/hooks.provider-before-request",
+    "app/hooks.observe"
   ],
   "contributes": {
     "settings": {

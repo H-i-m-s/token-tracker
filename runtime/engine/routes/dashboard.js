@@ -1353,7 +1353,7 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
   for (const s of Object.values(cache.sessions)) {
     if (s.conversations) {
       for (const c of s.conversations) {
-        convs.push({ time:c.time, userSnippet:c.userSnippet, userContent:c.userContent, model:c.model||"", provider:c.provider||"", totalTokens:c.totalTokens||0, msgCount:c.msgCount||0, toolCalls:c.toolCalls||[], steps:c.steps||[], agent:s.agent, agentName:(cache.agentNames && cache.agentNames[s.agent]) || s.agent, speeds:(c.speeds||[]).slice(-10), speedCount:c.speeds?.length||0, speedAvg: (c.speedOut && c.speedDur) ? Math.round(c.speedOut/(c.speedDur/1000)) : 0, speedMax: c.speedMax||0 });
+        convs.push({ time:c.time, userSnippet:c.userSnippet, userContent:c.userContent, model:c.model||"", provider:c.provider||"", totalTokens:c.totalTokens||0, msgCount:c.msgCount||0, toolCalls:c.toolCalls||[], steps:c.steps||[], agent:s.agent, agentName:(cache.agentNames && cache.agentNames[s.agent]) || s.agent, speedAvg: (c.speedOut && c.speedDur) ? Math.round(c.speedOut/(c.speedDur/1000)) : 0, speedMax: c.speedMax||0 });
       }
     }
   }
