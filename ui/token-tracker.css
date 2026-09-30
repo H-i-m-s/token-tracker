@@ -1039,6 +1039,15 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-heat-legend { display: flex; gap: 3px; align-items: center; margin-left: auto; flex-shrink: 0; }
 .tt-heat-legend span { color: var(--tt-t3); font-size: 8px; }
 .tt-heat-legend i { width: 7px; height: 7px; background: var(--tt-heat); border-radius: 1px; }
+/* 日活分布：横轴 24 小时、纵轴日期（最新在上）。格子按可用宽度做成方块——长方形读不出强弱；
+   日期多就纵向滚动，小时表头吸顶。格子之间靠 1px 卡片色描边分隔，不用 grid gap，
+   这样吸顶表头不会在缝里露出下面的内容。 */
+.tt-heat-scroll { flex: 1 1 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent; }
+.tt-heat-grid { display: grid; grid-template-columns: 40px repeat(24,minmax(0,1fr)); align-content: start; }
+.tt-heat-hour { position: sticky; top: 0; z-index: 1; background: var(--tt-card); color: var(--tt-t3); font: 8px var(--font-mono); text-align: center; padding-bottom: 3px; }
+.tt-heat-corner { position: sticky; top: 0; z-index: 2; background: var(--tt-card); }
+.tt-heat-day { align-self: center; color: var(--tt-t3); font: 8px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tt-heat-cell { aspect-ratio: 1; min-width: 0; box-sizing: border-box; border: 1px solid var(--tt-card); border-radius: 3px; background: var(--tt-heat); }
 .tt-board-right { display: grid; grid-template-rows: minmax(0,1fr) minmax(0,1fr); gap: 14px; min-height: 0; min-width: 0; }
 .tt-board-right .tt-board-panel > header { padding-top: 10px; padding-bottom: 4px; }
 .tt-board-right .tt-board-panel h2 { font-size: 13px; }

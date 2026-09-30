@@ -170,23 +170,38 @@ function stackedAreaPaths(layers, count, width, height, max) {
   });
 }
 
-// 短窗口按小时看：1 天 = 24 格，3 天 = 72 格。
-// a.heatmap 只含有数据的那几个小时（实测没有任何一天是满 24 小时的），直接当序列铺开会把时间轴
-// 压扁：8 个不连续的小时看起来像连续的 8 格。所以按「天 × 24」补成连续网格，缺的小时记 0。
-const FLOW_HOUR_MAX_DAYS = 7; // 跨度不超过这几天就切小时刻度
-function hourGrid(heatmap, days) {
-  const byKey = new Map(heatmap.map((c) => [`${c.date}/${c.hour}`, c]));
-  const cells = [];
+// ── 时间刻度 ──
+// 顶部时间选项是唯一的尺子：跨度 ≤7 天按小时，其余按天。看板上所有时间序列图都走这里，
+// 不再各画各的刻度。
+const SCALE_HOUR_MAX_DAYS = 7;
+function scaleFor(days) {
+  return days.length >= 1 && days.length <= SCALE_HOUR_MAX_DAYS ? 'hour' : 'day';
+}
+// 把范围摊成等距的时间格。小时档按「天 × 24」补齐成连续网格：后端的 heatmap 只含有数据的
+// 那几个小时（实测没有任何一天是满 24 小时），直接当序列铺开会把时间轴压扁。
+function timeSlots(days, scale) {
+  if (scale !== 'hour') return days.map((date) => ({ date, hour: null, key: date, label: date.slice(5) }));
+  const out = [];
   for (const date of days) {
     for (let hour = 0; hour < 24; hour++) {
-      cells.push(byKey.get(`${date}/${hour}`) || { date, hour, totalTokens: 0, models: {}, kinds: {}, agents: {}, calls: 0 });
+      out.push({ date, hour, key: `${date}/${hour}`, label: `${date.slice(5)} ${String(hour).padStart(2, '0')}:00` });
     }
   }
-  return cells;
+  return out;
+}
+// 轴刻度文字：天档每 N 天一个；小时档只在 00:00 写日期，免得同一天重复标注。
+function slotLabel(slot, index, count, scale) {
+  if (scale === 'hour') return slot.hour === 0 ? slot.date.slice(5) : '';
+  return index % Math.max(1, Math.ceil(count / 12)) === 0 ? slot.date.slice(5) : '';
+}
+function hourCells(heatmap, days) {
+  const byKey = new Map(heatmap.map((c) => [`${c.date}/${c.hour}`, c]));
+  return timeSlots(days, 'hour').map((s) => byKey.get(s.key)
+    || { date: s.date, hour: s.hour, totalTokens: 0, models: {}, kinds: {}, agents: {}, calls: 0 });
 }
 function renderFlowPanel(a, days, agentNames = {}) {
-  const useHour = days.length >= 1 && days.length <= FLOW_HOUR_MAX_DAYS && a.heatmap.length > 0;
-  const cells = useHour ? hourGrid(a.heatmap, days) : a.daily;
+  const useHour = scaleFor(days) === 'hour' && a.heatmap.length > 0;
+  const cells = useHour ? hourCells(a.heatmap, days) : a.daily;
   // 有来源 / Agent 拆分就用它们；后端因为模型、供应商筛选把这两项撤掉时，改按模型看：
   // 供应商筛选下每格 models 仍然齐全（已按筛选过滤），所以各家模型自己的线加起来就是总量。
   const canSplitKind = cells.some((c) => Object.keys(c.kinds || {}).length || Object.keys(c.agents || {}).length);
@@ -466,27 +481,39 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const color = id => COLORS[Math.max(0, allModels.indexOf(id)) % COLORS.length];
   const selectModel = id => patch({ model: state.model === id ? '' : id });
   const grid = h('div', { className: 'tt-board-grid' }); container.append(grid);
-  const shownDays = days.slice(-31);
+  const scale = scaleFor(days);
   const agent = panel('工作空间活跃分布', '当前按 Agent 归属 · 点击筛选', 'tt-agent-panel');
   const topRow = splitRow('boardTopSplit', '调整上方面板宽度', state, patch);
   const bottomRow = splitRow('boardBottomSplit', '调整下方面板宽度', state, patch);
   grid.append(topRow.row, bottomRow.row);
   if (!a.agents.length) empty(agent.body, '所选范围暂无 Agent 用量');
-  const activityPeak = a.agents.reduce((peak, item) => shownDays.reduce((max, day) => Math.max(max, item.days[day] || 0), peak), 0);
+  // Agent 的小时拆分只有后端 canSplit 时才有（按模型 / 供应商筛选会整块撤掉），拿不到就退回按天。
+  const agentHours = new Map();
+  for (const c of a.heatmap) for (const [id, v] of Object.entries(c.agents || {})) {
+    const key = `${id}/${c.date}/${c.hour}`;
+    agentHours.set(key, (agentHours.get(key) || 0) + v);
+  }
+  const agentScale = scale === 'hour' && agentHours.size ? 'hour' : 'day';
+  const agentSlots = timeSlots(days, agentScale);
+  const agentValue = (item, s) => (agentScale === 'hour'
+    ? (agentHours.get(`${item.id}/${s.key}`) || 0)
+    : (item.days[s.date] || 0));
+  const activityPeak = a.agents.reduce((peak, item) => agentSlots.reduce((max, s) => Math.max(max, agentValue(item, s)), peak), 0);
   const intensityLabels = ['无用量', '低：低于峰值 1%', '较低：峰值 1%–5%', '中：峰值 5%–20%', '较高：峰值 20%–50%', '高：峰值 50% 及以上'];
-  agent.body.append(h('div', { className: 'tt-agent-intensity-key', 'aria-label': '每日用量强度图例：无用量和五档蓝色，同屏统一标尺' },
-    h('span', {}, '日用量'), h('span', {}, '无'),
-    ...intensityLabels.map((label, level) => h('i', { 'data-intensity': level, title: `${label}；同屏最高日用量 ${compact(activityPeak)} Token`, style: `background:var(--tt-activity-${level})` })), h('span', {}, '高'),
+  const unit = agentScale === 'hour' ? '小时' : '日';
+  agent.body.append(h('div', { className: 'tt-agent-intensity-key', 'aria-label': `每${unit}用量强度图例：无用量和五档蓝色，同屏统一标尺` },
+    h('span', {}, `${unit}用量`), h('span', {}, '无'),
+    ...intensityLabels.map((label, level) => h('i', { 'data-intensity': level, title: `${label}；同屏最高${unit}用量 ${compact(activityPeak)} Token`, style: `background:var(--tt-activity-${level})` })), h('span', {}, '高'),
     h('span', { className: 'tt-agent-scale-note' }, '同屏统一标尺')));
-  const agentList = h('div', { className: 'tt-agent-list', style: `--timeline-columns:${Math.max(1, shownDays.length)}` }); agent.body.append(agentList);
+  const agentList = h('div', { className: 'tt-agent-list', style: `--timeline-columns:${Math.max(1, agentSlots.length)}` }); agent.body.append(agentList);
   agentList.append(h('div', { className: 'tt-agent-axis' }, h('span', {}, '名称'), h('span', {}, 'Token'), h('span', {}, '占比'),
-    h('span', { className: 'tt-agent-axis-dates' }, ...shownDays.map((day,i) => h('small', { title: day }, i % 6 === 0 ? day.slice(5) : '')))));
+    h('span', { className: 'tt-agent-axis-dates' }, ...agentSlots.map((s, i) => h('small', { title: s.label }, slotLabel(s, i, agentSlots.length, agentScale))))));
   for (const item of a.agents) {
     const name = dashboard.agents.find(x => x.id === item.id)?.name || item.id;
-    const cells = h('span', { className: 'tt-agent-cells', style: `grid-template-columns:repeat(${Math.max(1, shownDays.length)},minmax(2px,1fr))` },
-      ...shownDays.map(day => {
-        const value = item.days[day] || 0, level = activityLevel(value, activityPeak);
-        return h('i', { 'data-intensity': level, title: `${day} · ${compact(value)} Token · ${intensityLabels[level]}`, style: `background:var(--tt-activity-${level})` });
+    const cells = h('span', { className: 'tt-agent-cells', style: `grid-template-columns:repeat(${Math.max(1, agentSlots.length)},minmax(2px,1fr))` },
+      ...agentSlots.map(s => {
+        const value = agentValue(item, s), level = activityLevel(value, activityPeak);
+        return h('i', { 'data-intensity': level, title: `${s.label} · ${compact(value)} Token · ${intensityLabels[level]}`, style: `background:var(--tt-activity-${level})` });
       }));
     agentList.append(h('button', { className: 'tt-agent-row', type: 'button', title: name,
       'aria-label': `筛选 Agent ${name}`, 'aria-pressed': String(state.agent === item.id),
@@ -494,30 +521,36 @@ export function renderAnalytics(container, dashboard, state, patch) {
       h('span', { className: 'tt-agent-name' }, name), h('b', {}, compact(item.totalTokens)),
       h('small', {}, `${(item.totalTokens / Math.max(1,total) * 100).toFixed(1)}%`), cells));
   }
-  agent.body.append(h('footer', {}, shownDays.length ? `${shownDays[0]} — ${shownDays.at(-1)} · 每日一条 · 最多最近 31 天` : '暂无记录'));
+  agent.body.append(h('footer', {}, !days.length ? '暂无记录'
+    : `${days[0]} — ${days.at(-1)} · ${agentScale === 'hour' ? '每小时一条' : '每日一条'}${scale === 'hour' && agentScale === 'day' ? ' · 该筛选下无小时级 Agent 拆分' : ''}`));
 
-  const heat = panel('日活分布', '1 小时粒度', 'tt-heat-panel'); topRow.append(agent.el, heat.el);
+  const heat = panel('日活分布', '24 小时 × 日期', 'tt-heat-panel'); topRow.append(agent.el, heat.el);
   heat.el.querySelector('header').append(h('div', { className: 'tt-heat-legend', 'aria-label': '热力图图例：由少到多' },
     h('span', {}, '少'), ...[.12,.3,.5,.7,1].map(opacity => h('i', { style: `opacity:${opacity}` })), h('span', {}, '多')));
   const periods = [0,0,0,0]; for (const cell of a.heatmap) periods[Math.floor(cell.hour/6)] += cell.totalTokens;
   heat.body.append(h('div', { className: 'tt-time-bands' }, ...periods.map((n,i) => h('div', {},
     h('span', {}, ['凌晨 0–6','上午 6–12','下午 12–18','晚间 18–24'][i]), h('b', {}, fmtPct(n / Math.max(1,a.hourlyTotal) * 100,1))))));
-  if (!a.heatmap.length) empty(heat.body, '所选范围没有小时级记录');
+  if (!a.heatmap.length || !days.length) empty(heat.body, '所选范围没有小时级记录');
   else {
+    // 横轴 24 小时、纵轴日期，最新一天排在最上面（要翻更早的自己往下滚）。格子按可用宽度做成
+    // 方块：这个面板是横长的，格子一旦被拉成细长条，深浅就看不出差别了。
     const byCell = new Map(a.heatmap.map(c => [`${c.date}/${c.hour}`, c.totalTokens]));
     const max = Math.max(1, ...a.heatmap.map(c => c.totalTokens));
-    const height = Math.max(120, 24 + shownDays.length * 9), chart = svg(500,height,'每日每小时 Token 热力图');
-    for (let i=0;i<24;i+=3) chart.append(node('text',{x:40+i*19,y:12,class:'tt-axis'},[String(i).padStart(2,'0')]));
-    shownDays.forEach((date,i) => {
-      chart.append(node('text',{x:0,y:27+i*9,class:'tt-axis'},[date.slice(5)]));
-      for (let hour=0;hour<24;hour++) {
-        const n=byCell.get(`${date}/${hour}`)||0;
-        chart.append(node('rect',{x:40+hour*19,y:20+i*9,width:8,height:7,rx:1,fill:'var(--tt-heat)',opacity:n ? .15+.85*Math.log1p(n)/Math.log1p(max) : .06},[title(`${date} ${hour}:00–${hour+1}:00 · ${compact(n)} Token`)]));
+    const grid = h('div', { className: 'tt-heat-grid' }, h('span', { className: 'tt-heat-corner' }),
+      ...Array.from({ length: 24 }, (_, hour) => h('span', { className: 'tt-heat-hour' }, hour % 3 === 0 ? String(hour).padStart(2, '0') : '')));
+    for (const date of [...days].reverse()) {
+      grid.append(h('span', { className: 'tt-heat-day' }, date.slice(5)));
+      for (let hour = 0; hour < 24; hour++) {
+        const n = byCell.get(`${date}/${hour}`) || 0;
+        const alpha = n ? .15 + .85 * Math.log1p(n) / Math.log1p(max) : .06;
+        grid.append(h('i', { className: 'tt-heat-cell',
+          style: `background:color-mix(in srgb, var(--tt-heat) ${(alpha * 100).toFixed(1)}%, transparent)`,
+          title: `${date} ${String(hour).padStart(2, '0')}:00–${String(hour + 1).padStart(2, '0')}:00 · ${compact(n)} Token` }));
       }
-    });
-    heat.body.append(chart);
+    }
+    heat.body.append(h('div', { className: 'tt-heat-scroll' }, grid));
   }
-  heat.body.append(h('footer', {}, `小时记录覆盖 ${fmtPct(a.hourlyTotal / Math.max(1,a.dailyTotal) * 100,1)} · ${a.timeZone || '日志本地时间'} · 最多最近31天`));
+  heat.body.append(h('footer', {}, `小时记录覆盖 ${fmtPct(a.hourlyTotal / Math.max(1,a.dailyTotal) * 100,1)} · ${a.timeZone || '日志本地时间'} · ${days.length} 天 · 最新在上`));
 
   const dist = panel('单次请求大小分布', '当前为会话轮次口径 · 最近 5 天', 'tt-dist-panel');
   const samples = distribution(dashboard.rows);
@@ -547,18 +580,28 @@ export function renderAnalytics(container, dashboard, state, patch) {
     }
     ridge.body.append(chart,legend(hourModels.map(m=>m.id),color,state.model,selectModel));
   }
-  const daily=panel('每日模型用量比例','柱高为总量 · 分段为模型占比');right.append(daily.el);
-  if (!shownDays.length) empty(daily.body,'所选范围暂无日汇总');
+  const daily=panel(scale === 'hour' ? '每小时模型用量比例' : '每日模型用量比例','柱高为总量 · 分段为模型占比');right.append(daily.el);
+  const barSlots = timeSlots(days, scale);
+  if (!barSlots.length) empty(daily.body, `所选范围暂无${scale === 'hour' ? '小时级' : '日'}汇总`);
   else {
-    const chart=svg(500,118,'每日模型 Token 堆叠柱状图'), map=new Map(a.daily.map(d=>[d.date,d]));
-    const max=Math.max(1,...shownDays.map(day=>map.get(day)?.totalTokens||0)), step=480/shownDays.length;
-    shownDays.forEach((date,i)=>{
-      const day=map.get(date);let y=90;
-      for(const id of allModels){ const n=day?.models[id]||0;if(!n)continue;const height=n/max*82;y-=height;
-        const bar=node('rect',{x:10+i*step+1,y,width:Math.max(1,step-3),height,fill:color(id),rx:.8},[title(`${date} · ${id} · ${compact(n)} Token`)]);
-        bar.addEventListener('click',()=>patch({range:'all',from:date,to:date}));chart.append(bar);
+    // 小时档的每格模型量取 heatmap（后端一直给 models）；天档取日汇总。
+    const byHourModels = new Map(a.heatmap.map(c => [`${c.date}/${c.hour}`, c.models || {}]));
+    const byDay = new Map(a.daily.map(d => [d.date, d]));
+    const modelsAt = (s) => (scale === 'hour' ? (byHourModels.get(s.key) || {}) : (byDay.get(s.date)?.models || {}));
+    const slotTotal = (s) => { const m = modelsAt(s); let n = 0; for (const id of Object.keys(m)) n += m[id] || 0; return n; };
+    const max = Math.max(1, ...barSlots.map(slotTotal)), step = 480 / barSlots.length;
+    const chart = svg(500, 118, '模型 Token 堆叠柱状图');
+    barSlots.forEach((s, i) => {
+      const models = modelsAt(s); let y = 90;
+      for (const id of allModels) {
+        const n = models[id] || 0; if (!n) continue;
+        const height = n / max * 82; y -= height;
+        const bar = node('rect', { x: 10 + i * step + 1, y, width: Math.max(1, step - 3), height, fill: color(id), rx: .8 }, [title(`${s.label} · ${id} · ${compact(n)} Token`)]);
+        bar.addEventListener('click', () => patch({ range: 'all', from: s.date, to: s.date }));
+        chart.append(bar);
       }
-      if(i%Math.max(1,Math.ceil(shownDays.length/7))===0)chart.append(node('text',{x:10+i*step,y:109,class:'tt-axis'},[date.slice(5)]));
+      const label = slotLabel(s, i, barSlots.length, scale);
+      if (label) chart.append(node('text', { x: 10 + i * step + step / 2, y: 109, class: 'tt-axis', 'text-anchor': 'middle' }, [label]));
     });
     daily.body.append(chart,legend(allModels,color,state.model,selectModel,totals));
   }
