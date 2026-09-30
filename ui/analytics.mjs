@@ -218,7 +218,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
     if (flowFocus && !shown.length) { flowFocus = ''; shown = layers; }
     const solo = shown.length === 1 && flowFocus ? shown[0] : null;
 
-    const W = 1000, H = 270, PAD_L = 48, PAD_B = 20, PAD_T = 8;
+    const W = 1000, H = 300, PAD_L = 90, PAD_B = 40, PAD_T = 8;
     const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
     const max = solo
       ? Math.max(...solo.values, 0.01)
@@ -230,11 +230,13 @@ function renderFlowPanel(a, days, agentNames = {}) {
       : stackedAreaPaths(shown, cells.length, cw, ch, max);
     const chart = svg(W, H, '用量总览：各来源消耗随时间的变化');
     const g = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
+    // 轴标签不画进 SVG。SVG 随容器等比缩放，字会一起变大变小；
+    // 改成叠一层 HTML，位置用百分比跟着图走，字号是普通 CSS px，永远不变。
+    const yTicks = [], xTicks = [];
     for (let i = 0; i <= 2; i++) {
       const v = (max * i) / 2, y = ch - (v / max) * (ch - 6);
       g.append(node('line', { x1: 0, x2: cw, y1: y, y2: y, stroke: 'var(--tt-b3)', 'stroke-dasharray': '2 4' }));
-      g.append(node('text', { x: -7, y: y + 3, class: 'tt-axis', 'text-anchor': 'end' },
-        [flowScale === 'pct' ? Math.round(v * 1000) / 10 + '%' : compact(v)]));
+      yTicks.push({ y: PAD_T + y, text: flowScale === 'pct' ? Math.round(v * 1000) / 10 + '%' : compact(v) });
     }
     shown.forEach((layer, i) => {
       const color = COLORS[layer.colorIndex % COLORS.length];
@@ -253,7 +255,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
     cells.forEach((c, i) => {
       if (i % step) return;
       const label = useHour ? String(c.hour).padStart(2, '0') + ':00' : c.date.slice(5);
-      g.append(node('text', { x: i * colW + colW / 2, y: ch + 14, class: 'tt-axis', 'text-anchor': 'middle' }, [label]));
+      xTicks.push({ x: PAD_L + i * colW + colW / 2, y: PAD_T + ch + 26, text: label });
     });
 
     // ── 悬停：竖直虚线 + 各层标记点 + 读数浮层 ──
@@ -277,7 +279,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
     g.append(hover);
 
     const hud = h('div', { className: 'tt-flow-hud' });
-    let hudH = 0; // 浮层高度的缓存：不缓存的话每次 mousemove 读 offsetHeight 都会强制重排
+    let lastPx = null, hudSide = 'right'; // 记住指针上一次的位置，用来判断滑向哪边
 
     const clearHover = () => {
       vline.setAttribute('opacity', '0');
@@ -308,20 +310,40 @@ function renderFlowPanel(a, days, agentNames = {}) {
           h('em', {}, fmtValue(valueAt(layer, fx))))),
       );
       hud.className = 'tt-flow-hud on';
-      hud.style.left = Math.max(9, Math.min(91, ((PAD_L + vx) / W) * 100)) + '%';
-      // 浮层跟着指针的高度走。之前钉在面板顶部，指针在下方时它离得远，还压住上面那片曲线。
-      // 现在默认贴在指针上方，上方放不下就翻到下面，最后再夹一次不让它跑出画布。
-      if (!hudH) hudH = hud.offsetHeight || 46;
+      // 尺寸每次现测。display 刚从 none 切过来，缓存下来的值会差很多。
+      const hudW = hud.offsetWidth || 160;
+      const hudHt = hud.offsetHeight || 60;
+      // 浮层贴在虚线旁边，放哪一侧看指针的移动方向：
+      // 向右滑放左边，向左滑放右边，于是它不会挡在你正要去看的那一侧。
+      const pxPos = ((PAD_L + vx) / W) * box.width;
+      if (lastPx != null && Math.abs(pxPos - lastPx) > 2) hudSide = pxPos > lastPx ? 'left' : 'right';
+      lastPx = pxPos;
+      const hudGap = 14;
+      let hudLeft = hudSide === 'right' ? pxPos + hudGap : pxPos - hudGap - hudW;
+      if (hudLeft < 0) hudLeft = pxPos + hudGap;                          // 左边放不下就让到右边
+      if (hudLeft + hudW > box.width) hudLeft = pxPos - hudGap - hudW;    // 右边放不下就让到左边
+      hud.style.left = Math.max(0, Math.min(Math.max(0, box.width - hudW), hudLeft)) + 'px';
       const rectH = box.height || H;
       const py = event.clientY - box.top;
-      let top = py - hudH - 10;
+      let top = py - hudHt - 10;
       if (top < 4) top = py + 16;
       hud.style.top = Math.max(4, Math.min(Math.max(4, rectH - hudH - 4), top)) + 'px';
     });
     chart.addEventListener('mouseleave', clearHover);
 
     chart.append(g);
-    canvas.append(chart, hud);
+    // 轴标签层：绝对定位盖在图上。viewBox 坐标换算成百分比，位置跟着图走。
+    const axes = h('div', { className: 'tt-flow-axes' },
+      ...yTicks.map((t) => h('span', {
+        style: `left:${((PAD_L / W) * 100).toFixed(3)}%;top:${((t.y / H) * 100).toFixed(3)}%;transform:translate(calc(-100% - 8px),-50%)`,
+      }, t.text)),
+      ...xTicks.map((t) => h('span', {
+        style: `left:${((t.x / W) * 100).toFixed(3)}%;top:${((t.y / H) * 100).toFixed(3)}%;transform:translate(-50%,-50%)`,
+      }, t.text)));
+    // 轴标签层和浮层都塞进 plot。plot 只包 SVG，百分比才以图区为基准，
+    // 否则按整块画布（还含图例）算，标签会落到底下的图例上。
+    const plot = h('div', { className: 'tt-flow-plot' }, chart, axes, hud);
+    canvas.append(plot);
     const grand = [...totals.values()].reduce((s, v) => s + v, 0) || 1;
     canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
       ...ids.map((id, i) => h('button', {
