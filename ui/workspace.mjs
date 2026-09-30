@@ -1,17 +1,17 @@
 import { applyAppearance } from "./appearance.mjs";
 import { applyBoardLayout } from "./board-layout.mjs";
-import { renderAnalytics, BOARD_RANGES } from "./analytics.mjs";
+import { renderAnalytics } from "./analytics.mjs";
 import { renderFilterStatus as renderFilterChips } from "./filter-chips.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, fmt, fmtPct, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
-import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
+import { h, RANGES, fmt, formatDateTime, renderPills, timeAgo } from "./components.mjs";
+import { closeOpenSelect } from "./custom-select.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
 
-const PAGE_SIZE = 10;
+const PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 5000;
 const MAX_SPARK_POINTS = 40;
 
@@ -455,8 +455,8 @@ export class WorkspaceApp {
       this.state.patch({ range: "all", from: from.value, to: to.value });
     } }, "应用日期");
     this.boardControls.replaceChildren(
-      // 「全部历史」放在「近30天」和日期选择之间：它也是范围的一种，放在同一排才找得到。
-      renderPills([...BOARD_RANGES, { key: "all", label: "全部历史" }], state.range, range => this.state.patch({ range, from: "", to: "" })),
+      // 「全部历史」现在就在 RANGES 里，和别的范围同一排、同一套词表。
+      renderPills(RANGES, state.range, range => this.state.patch({ range, from: "", to: "" })),
       h("details", { className: "tt-date-picker" }, h("summary", {}, state.from ? `${state.from} — ${state.to}` : "年 / 月 / 日"), h("div", { className: "tt-board-dates" }, from, h("span", {}, "至"), to, apply)),
     );
     this.renderFilterStatus();
@@ -694,16 +694,14 @@ export class WorkspaceApp {
   // ---------- details module ----------
 
   renderDetails({ preserveScroll = false } = {}) {
-    // 本函数会重建 .tt-module-bd，明细筛选的下拉随之被替换：先把已打开的浮层摘干净。
-    closeOpenSelect();
-    closeOpenDate();
+    // 范围与筛选由页面顶部那两排统一负责（顶右的范围行 + 「当前范围」筛选行），这里只留表格与翻页。
+    // 同一个 state 摆两套控件只会互相打架：顶部选「全部历史」时，这一排的 pills 一个都不亮。
     let el = this.container.querySelector("#details-module");
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
       this.mainEl.appendChild(el);
     }
 
-    const s = this.state.get();
     const rows = this.dashboard?.rows || [];
     const totalPages = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
     const page = Math.min(this.detailsPage, totalPages);
@@ -714,31 +712,22 @@ export class WorkspaceApp {
     const keepScroll = preserveScroll ? el.scrollTop : 0;
     el.innerHTML = "";
     el.append(
-      h("div", { className: "tt-module-hd" }, h("span", { className: "tt-module-title" }, "消费明细")),
+      h("div", { className: "tt-module-hd" },
+        h("span", { className: "tt-module-title" }, "消费明细"),
+        h("div", { className: "tt-module-actions" },
+          h("span", { className: "tt-module-meta" }, `共 ${rows.length.toLocaleString()} 条`),
+          h("button", { type: "button", id: "details-export", className: "tt-btn ghost" }, "⤓ 导出"),
+        ),
+      ),
       h("div", { className: "tt-module-bd dense" },
-        this.renderDetailsFilters(s),
         this.renderDetailsTable(pageRows, maxTokens),
         this.renderDetailsPagination(rows.length, page, totalPages),
       ),
     );
     if (preserveScroll) el.scrollTop = keepScroll;
 
-    this.bindDetailsFilters();
+    this.container.querySelector("#details-export")?.addEventListener("click", () => this.exportCSV());
     this.bindDetailsPagination();
-  }
-
-  renderDetailsFilters(s) {
-    const agents = this.agentOptions();
-    const models = this.modelOptions();
-    const providers = this.providerOptions();
-
-    return h("div", { className: "tt-pills" },
-      renderPills(RANGES, s.range, (v) => this.state.patch({ range: v, from: "", to: "" })),
-      h("select", { id: "details-agent", className: "tt-pill" }, ...selectOptions(agents, s.agent)),
-      h("select", { id: "details-model", className: "tt-pill" }, ...selectOptions(models, s.model)),
-      h("select", { id: "details-provider", className: "tt-pill" }, ...selectOptions(providers, s.provider)),
-      h("button", { id: "details-export", className: "tt-btn ghost" }, "⤓ 导出"),
-    );
   }
 
   renderDetailsTable(pageRows, maxTokens) {
@@ -787,44 +776,57 @@ export class WorkspaceApp {
     );
   }
 
+  // 分页器不再为每一页渲染一个按钮：全部历史 17,345 条 ÷ 50 条/页 = 347 页，
+  // 旧写法会把 347 个按钮塞进 DOM（10 条/页时是 1,735 个）。只留首/上/下/末 + 跳页输入。
   renderDetailsPagination(total, page, totalPages) {
     if (total <= PAGE_SIZE) return h("div");
-    return h("div", { style: "display:flex;justify-content:space-between;align-items:center;margin-top:8px;padding-top:8px;border-top:1px solid var(--tt-b3)" },
-      h("span", { style: "font-size:10px;color:var(--tt-t3)" }, `共 ${total} 条 · ${PAGE_SIZE} 条/页`),
-      h("div", { className: "tt-pills" },
-        h("button", { className: "tt-pill", "data-page": "prev" }, "‹"),
-        ...Array.from({ length: totalPages }, (_, i) => i + 1).map((p) =>
-          h("button", { className: `tt-pill${p === page ? " active" : ""}`, "data-page": String(p) }, String(p))
-        ),
-        h("button", { className: "tt-pill", "data-page": "next" }, "›"),
+    // 坑：h() 对每一个非 null 的键都走 setAttribute，disabled: false 也会把属性写出去，
+    // 而 disable 属性只要存在按钮就是禁用的 —— 所以状态只能在元素建好之后赋值。
+    const step = (target, label, title, off) => {
+      const btn = h("button", { type: "button", className: "tt-pill", "data-page": target, title }, label);
+      btn.disabled = off;
+      return btn;
+    };
+    return h("div", { className: "tt-details-pager" },
+      h("div", { className: "tt-pager-ctrl" },
+        step("first", "«", "第一页", page <= 1),
+        step("prev", "‹", "上一页", page <= 1),
+        h("span", { className: "tt-pager-page" }, "第",
+          h("input", { id: "details-page-jump", className: "tt-page-jump", type: "text", inputMode: "numeric", value: String(page), "aria-label": "跳转到第几页" }),
+          `/ ${totalPages.toLocaleString()} 页`),
+        step("next", "›", "下一页", page >= totalPages),
+        step("last", "»", "最后一页", page >= totalPages),
       ),
     );
   }
 
-  bindDetailsFilters() {
-    // 原生 select 保留为状态源，这里把它们换成自绘下拉（幂等，重复调用无副作用）。
-    enhanceSelects(this.container);
-    this.container.querySelector("#details-agent")?.addEventListener("change", (e) => this.state.patch({ agent: e.target.value }));
-    this.container.querySelector("#details-model")?.addEventListener("change", (e) => this.state.patch({ model: e.target.value }));
-    this.container.querySelector("#details-provider")?.addEventListener("change", (e) => this.state.patch({ provider: e.target.value }));
-    this.container.querySelector("#details-export")?.addEventListener("click", () => this.exportCSV());
-  }
-
   bindDetailsPagination() {
+    const totalPages = Math.max(1, Math.ceil((this.dashboard?.rows || []).length / PAGE_SIZE));
+    const go = (next) => {
+      const target = Math.min(totalPages, Math.max(1, next));
+      this.detailsPage = Number.isFinite(target) ? target : 1;
+      this.renderDetails();
+    };
     this.container.querySelectorAll("[data-page]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        const totalPages = Math.max(1, Math.ceil((this.dashboard?.rows || []).length / PAGE_SIZE));
-        let next = this.detailsPage;
         const p = btn.dataset.page;
-        if (p === "prev") next = Math.max(1, next - 1);
-        else if (p === "next") next = Math.min(totalPages, next + 1);
-        else next = Number(p);
-        if (next !== this.detailsPage) {
-          this.detailsPage = next;
-          this.renderDetails();
-        }
+        if (p === "first") go(1);
+        else if (p === "prev") go(this.detailsPage - 1);
+        else if (p === "next") go(this.detailsPage + 1);
+        else if (p === "last") go(totalPages);
       });
     });
+    // 跳页：只在回车或失焦时生效。范围一换页数就变，所以每次都重新夹一遍上下界；
+    // 输不合法的值时会重建这一块，输入框自己回到当前页，也算给了反馈。
+    const jump = this.container.querySelector("#details-page-jump");
+    if (jump) {
+      const submit = () => {
+        const n = Number(String(jump.value).replace(/[^0-9]/g, ""));
+        go(n > 0 ? n : this.detailsPage);
+      };
+      jump.addEventListener("change", submit);
+      jump.addEventListener("keydown", (e) => { if (e.key === "Enter") { e.preventDefault(); jump.blur(); } });
+    }
   }
 
   async exportCSV() {

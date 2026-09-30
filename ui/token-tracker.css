@@ -471,6 +471,37 @@ body {
   background: var(--tt-card);
 }
 
+/* ── 消费明细：头部动作与分页器 ── */
+.tt-module-actions { display: flex; align-items: center; gap: 8px; }
+.tt-module-meta { font-size: 10px; color: var(--tt-t3); font-variant-numeric: tabular-nums; }
+.tt-details-pager {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid var(--tt-b3);
+}
+.tt-pager-ctrl { display: flex; align-items: center; gap: 4px; }
+.tt-pager-page { display: inline-flex; align-items: center; gap: 4px; font-size: 10px; color: var(--tt-t2); }
+/* 跳页输入沿用 pill 的形状，避免在按钮中间插一个原生输入框的割裂感。 */
+.tt-page-jump {
+  width: 44px;
+  padding: 3px 6px;
+  text-align: center;
+  font-family: var(--font-sans);
+  font-size: 10px;
+  color: var(--tt-t1);
+  background: var(--tt-empty);
+  border: 1px solid var(--tt-b1);
+  border-radius: var(--tt-radius-pill);
+}
+.tt-page-jump:focus { outline: none; border-color: var(--tt-select-b); background: var(--tt-select-bg); color: var(--tt-select-fg); }
+.tt-pill[disabled] { opacity: .4; cursor: default; }
+.tt-pill[disabled]:hover { background: var(--tt-empty); border-color: transparent; }
+
 .tt-table {
   width: 100%;
   border-collapse: collapse;

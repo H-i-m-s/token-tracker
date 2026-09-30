@@ -1,11 +1,14 @@
+// 时间范围的唯一口径。看板工具栏、卡片工具栏、数据大屏都读这一份。
+// 之前这里是 7 项（今日/本周/本月/全年/近3天/近7天/近30天），analytics.mjs 里另有一份 4 项，
+// card.mjs 还内联了一份 —— 同一个「近7天」在界面上有三个入口、两套词表。
+// 收敛成：四个滚动窗口 + 本月 + 全部历史；自定义日期由看板的日期选择负责。
 export const RANGES = [
   { key: "today", label: "今日" },
-  { key: "week", label: "本周" },
-  { key: "month", label: "本月" },
-  { key: "year", label: "全年" },
   { key: "last3", label: "近3天" },
   { key: "last7", label: "近7天" },
   { key: "last30", label: "近30天" },
+  { key: "month", label: "本月" },
+  { key: "all", label: "全部历史" },
 ];
 
 export const PROVIDERS = ["DeepSeek", "GLM", "MiniMax", "商汤", "火山方舟", "OpenCode Go"];

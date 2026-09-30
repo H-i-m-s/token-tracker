@@ -2,10 +2,7 @@ import { splitRow } from './board-layout.mjs';
 import { h, fmtCost, fmtPct } from './components.mjs';
 
 const COLORS = ['#d1b477', '#7ea3cf', '#81b4a1', '#c68487', '#aa97c8', '#a7b779', '#bd987b', '#8897aa'];
-export const BOARD_RANGES = [
-  { key: 'today', label: '1天' }, { key: 'last3', label: '3天' },
-  { key: 'last7', label: '近7天' }, { key: 'last30', label: '近30天' },
-];
+
 // Use one scale for every visible row: equal daily usage gets equal intensity.
 export function activityLevel(value, peak) {
   if (!(value > 0) || !(peak > 0)) return 0;

@@ -83,7 +83,7 @@ export class CardApp extends WorkspaceApp {
     }
     this.filterBar.replaceChildren(...[
       h('select', { 'aria-label': '卡片时间范围', onChange: e => this.state.patch({ range: e.target.value, from: '', to: '' }) },
-        ...selectOptions([{ value: 'today', label: '1天' }, { value: 'last3', label: '3天' }, { value: 'last7', label: '近7天' }, { value: 'last30', label: '近30天' }, ...RANGES.filter(v => ['week', 'month', 'year'].includes(v.key)).map(v => ({ value: v.key, label: v.label })), ...(state.from ? [{ value: 'all', label: `${state.from} — ${state.to}` }] : [])], state.range)),
+        ...selectOptions([...(state.from ? [{ value: 'all', label: `${state.from} — ${state.to}` }] : []), ...RANGES.map(v => ({ value: v.key, label: v.label }))], state.range)),
       h('span', { className: 'tt-card-filter-label', title: [state.agent, state.model, state.provider].filter(Boolean).join(' · ') }, state.agent || state.model || state.provider ? '已筛选' : '全部用量'),
       state.agent || state.model || state.provider || state.from ? h('button', { type: 'button', className: 'tt-btn ghost', onClick: () => this.state.patch({ agent: '', model: '', provider: '', type: '', from: '', to: '', ...(state.from ? { range: 'today' } : {}) }) }, '清除') : null,
       h('button', { type: 'button', className: 'tt-card-more', title: '刷新', 'aria-label': '刷新', onClick: () => this.onRefresh() }, cardIcon('refresh')),
