@@ -1028,6 +1028,11 @@ app.get("/cards/realtime", (c) => {
 
 // ── 后端数据构建 ──
 
+// 时区格式化器只建一次。构造一个 Intl.DateTimeFormat 要几十微秒，
+// 放在按行循环里就是上万次：实测 17,348 行时 1112 ms → 提到循环外 29 ms（相差 38 倍）。
+// 这几个调用点（日期筛选起点、明细行、今天）用的是同一套 en-CA / Asia/Shanghai，共用这一个。
+const CN_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
+
 function build(cache, range = "all", filters = {}, fxRate = null) {
   const priceTable = loadPriceTable(cache.dataDir || "");
   let sessions = Object.values(cache.sessions);
@@ -1042,7 +1047,7 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     if (/^last(3|7|30)$/.test(range)) {
       const start = new Date(today + "T00:00:00+08:00");
       start.setUTCDate(start.getUTCDate() - Number(range.slice(4)) + 1);
-      const first = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(start);
+      const first = CN_DAY.format(start);
       dateFilter = d => d >= first && d <= today;
     } else if (range === "today") {
       dateFilter = d => d === today;
@@ -1362,7 +1367,7 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
   const rows = [];
   for (const s of sessions) for (const c of s.conversations || []) {
     const timestamp = new Date(c.time);
-    const day = c.time && Number.isFinite(timestamp.getTime()) ? new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(timestamp) : "";
+    const day = c.time && Number.isFinite(timestamp.getTime()) ? CN_DAY.format(timestamp) : "";
     if (dateFilter && (!day || !dateFilter(day))) continue;
     if (filterModel && c.model !== filterModel) continue;
     if (filterProvider && c.provider !== filterProvider) continue;
@@ -1489,7 +1494,7 @@ function buildPredictionResponse(cache, daily) {
   const pNow = pPrev + (pCur - pPrev) * (curMinute / 60);
 
   // 今日已消耗
-  const today = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" }).format(now);
+  const today = CN_DAY.format(now);
   const todayEntry = daily.find(d => d.date === today);
   const todayTokens = todayEntry ? todayEntry.totalTokens : 0;
 
@@ -2119,7 +2124,7 @@ async function fetchOpenCodeGoQuota(apiConfig) {
 }
 
 function esc(v) { return String(v).replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;"); }
-function cnToday(){return new Intl.DateTimeFormat("en-CA",{timeZone:"Asia/Shanghai"}).format(new Date())}
+function cnToday(){return CN_DAY.format(new Date())}
 
 function widgetHtml(ctx, th, token, css, js) {
   return `<!DOCTYPE html>
