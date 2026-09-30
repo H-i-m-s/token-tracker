@@ -325,9 +325,10 @@ function renderFlowPanel(a, days, agentNames = {}) {
       hud.style.left = Math.max(0, Math.min(Math.max(0, box.width - hudW), hudLeft)) + 'px';
       const rectH = box.height || H;
       const py = event.clientY - box.top;
-      let top = py - hudHt - 10;
-      if (top < 4) top = py + 16;
-      hud.style.top = Math.max(4, Math.min(Math.max(4, rectH - hudH - 4), top)) + 'px';
+      // 指针落在浮层「从下往上 2/3」处，也就是距顶边 1/3、距底边 2/3。
+      // 浮层顶边因此在指针上方 1/3 个浮层高度处。
+      const top = py - hudHt * (1 / 3);
+      hud.style.top = Math.max(4, Math.min(Math.max(4, rectH - hudHt - 4), top)) + 'px';
     });
     chart.addEventListener('mouseleave', clearHover);
 
