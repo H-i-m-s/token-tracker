@@ -102,23 +102,81 @@ export function selectOptions(items, selected = "", placeholder = "") {
   return opts;
 }
 
+/**
+ * 胶囊选择条。返回的节点上带着 update()：
+ * 高亮不画在按钮上，而是后面一块会滑的底（.tt-pill-thumb）。点另一项时整排不重建，
+ * 只把这块底平移过去 —— 和页签滑轨是同一套手感。renderPills 是它的薄包装（一次性用、只取节点）。
+ */
+export function createPills(items, activeKey, onChange, extraClass = "") {
+  const root = h("div", { className: `tt-pills ${extraClass}`.trim() });
+  const thumb = h("span", { className: "tt-pill-thumb", "aria-hidden": "true" });
+  const buttons = items.map((item) =>
+    h("button", {
+      className: "tt-pill",
+      type: "button",
+      "aria-pressed": "false",
+      onClick: () => onChange(item.key),
+    }, item.label));
+  root.append(thumb, ...buttons);
+
+  let current = null;
+  let placed = false; // 有没有把高亮摆到过位置上：第一次就位不滑，直接落上去
+
+  function place(animate) {
+    const index = items.findIndex((item) => item.key === current);
+    const button = index >= 0 ? buttons[index] : null;
+    if (!button) { thumb.style.opacity = "0"; return; }
+    thumb.style.opacity = "";
+    const box = root.getBoundingClientRect();
+    if (!box.width) return; // 还没挂进页面量不到位置：ResizeObserver 会在它入册时补一次
+    const rect = button.getBoundingClientRect();
+    const width = `${rect.width}px`;
+    const height = `${rect.height}px`;
+    const transform = `translate(${rect.left - box.left}px, ${rect.top - box.top}px)`;
+    // 目标没变就什么都别碰：尺寸观察器在你点完之后还会响一次，
+    // 那一下若照旧重写一遍样式（要加 tt-no-anim 再强制回流），会把正在跑的那次滑动打断 ——
+    // 表现就是“有时候没有滑动效果”。
+    if (thumb.style.width === width && thumb.style.height === height && thumb.style.transform === transform) {
+      placed = true;
+      return;
+    }
+    const still = !animate || !placed;
+    if (still) root.classList.add("tt-no-anim");
+    thumb.style.width = width;
+    thumb.style.height = height;
+    thumb.style.transform = transform;
+    if (still) {
+      void thumb.offsetWidth; // 先让它落到位置上，再把过渡放回来
+      root.classList.remove("tt-no-anim");
+      placed = true;
+    }
+  }
+
+  function update(key, { animate = true } = {}) {
+    if (key === current) return;
+    const index = items.findIndex((item) => item.key === key);
+    current = key;
+    buttons.forEach((button, i) => {
+      const on = i === index;
+      button.classList.toggle("active", on);
+      button.setAttribute("aria-pressed", String(on));
+    });
+    place(animate);
+  }
+
+  // 尺寸或断点变化时重新就位。这里用 animate=true：
+  // 真在滑的时候如果碰上一个尺寸变化（滚动条出现、布局换档…），宁可让它滑到新位置，
+  // 也不要瞬移 —— 瞬移会把那次滑动直接打断（tt-no-anim 一加，过渡就没了）。
+  // 首次就位仍然不滑：那是 placed=false，走的是强制落位那条路。
+  if (typeof ResizeObserver === "function") new ResizeObserver(() => place(true)).observe(root);
+  update(activeKey, { animate: false });
+
+  root.update = (key, options) => update(key, options);
+  return { root, update };
+}
+
 export function renderPills(items, activeKey, onChange, extraClass = "") {
-  return h(
-    "div",
-    { className: `tt-pills ${extraClass}`.trim() },
-    ...items.map((item) =>
-      h(
-        "button",
-        {
-          className: `tt-pill${item.key === activeKey ? " active" : ""}`,
-          type: "button",
-          "aria-pressed": String(item.key === activeKey),
-          onClick: () => onChange(item.key),
-        },
-        item.label
-      )
-    )
-  );
+  return createPills(items, activeKey, onChange, extraClass).root;
 }
 
 export function rankAgents(rows, agentNames = {}) {

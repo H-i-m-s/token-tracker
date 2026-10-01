@@ -596,6 +596,28 @@ body {
 .tt-pill:hover { background: var(--tt-row-hover); border-color: var(--tt-b2); }
 .tt-pill.active { background: var(--tt-select-bg); color: var(--tt-select-fg); border-color: var(--tt-select-b); }
 
+/* 胶囊条的高亮：不画在按钮上，而是后面一块会滑的底。
+   点另一项时它从旧位置平移过去，和页签滑轨同一套手感；文字仍在它上层。 */
+.tt-pills { position: relative; }
+.tt-pill { position: relative; z-index: 1; }
+.tt-pill-thumb {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
+  z-index: 0;
+  border-radius: var(--tt-radius-pill);
+  border: 1px solid var(--tt-select-b);
+  background: var(--tt-select-bg);
+  pointer-events: none;
+  transition: transform 260ms cubic-bezier(.22,.61,.36,1), width 260ms cubic-bezier(.22,.61,.36,1), height 260ms cubic-bezier(.22,.61,.36,1);
+}
+.tt-pills.tt-no-anim .tt-pill-thumb { transition: none; }
+/* 选中那一项自己不再画底，否则会把下面滑过来的那块盖住；文字颜色照旧。 */
+.tt-pills .tt-pill.active,
+.tt-pills .tt-pill.active:hover { background: transparent; border-color: transparent; }
+
 .tt-model-chip {
   display: inline-flex;
   align-items: center;
@@ -929,6 +951,8 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-dashboard-app .tt-pill { border-radius: 6px; padding: 5px 9px; font-size: 10px; border: 1px solid transparent; color: var(--tt-t2); background: transparent; }
 .tt-dashboard-app .tt-pill.active { border-color: var(--tt-select-b); background: var(--tt-select-bg); color: var(--tt-select-fg); }
 .tt-dashboard-app .tt-pill:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tt-dashboard-app .tt-pill-thumb { border-radius: 6px; }
+.tt-dashboard-app .tt-pills .tt-pill.active:hover { background: transparent; }
 .tt-filter-status { display: flex; align-items: center; gap: 8px; min-width: 0; max-width: 100%; overflow: hidden; flex: 0 0 auto; font-size: 11px; }
 .tt-filter-summary { flex: 0 1 auto; min-width: 0; color: var(--tt-t2); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tt-filter-chips { display: flex; align-items: center; gap: 6px; min-width: 0; flex: 1 1 160px; overflow-x: auto; scrollbar-width: thin; padding: 3px; }

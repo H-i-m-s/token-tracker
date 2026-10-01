@@ -6,6 +6,7 @@
 // 手势归属（从按下点往上走，就近优先）：
 //   data-tt-pan    图表里“按住可拖”的区域 → 平移它所在的可滚容器（不换页、不抢选字）
 //   data-tt-select 图表里的文字区 → 什么都不做，把选中、双击这些交回浏览器
+//   data-tt-view   明确声明“这里就是换页拖拽面”（即使它本身/祖先是个横滚容器也照拖）
 //   表单控件 / 面板分割条 / 可编辑区 / 别的真能横滚的容器 → 什么都不做
 //   其余（面板空白处、KPI 块…）→ 拖拽换页
 // 面板那一层（轨道的直接子节点）不算“横滚容器”：它本身就是换页手势的落脚面，
@@ -13,6 +14,7 @@
 //
 // 为什么用声明式属性而不是“看它能不能滚”去猜：能不能滚取决于内容宽度，
 // 同一个图在不同时间范围下时能滚时不能滚，手势归属就会时好时坏。
+// data-tt-view 就是给这种“内容宽度会变、但用途固定”的地方留的明确出口。
 
 export const DRAG_START_PX = 8;     // 超过这个位移才判方向；低于它一律当点击
 export const AXIS_RATIO = 1.2;      // 换页时横向位移要明显大于纵向才算横拖
@@ -80,6 +82,7 @@ export function gestureMode(target, root, { panelRoot = null, limit = WALK_LIMIT
   for (let i = 0; node && node !== root && i < limit; i++) {
     if (hasMarker(node, "pan")) return GESTURE.pan;
     if (hasMarker(node, "select")) return GESTURE.select;
+    if (hasMarker(node, "view")) return GESTURE.view;
     const reason = blockingReason(node);
     if (reason) return GESTURE.blocked;
     if (node.parentElement !== panelRoot && scrollableX(node)) return GESTURE.blocked;
@@ -105,11 +108,22 @@ export function settleTarget({ index, count, dx, velocity = 0, step, snapRatio =
   return Math.min(count - 1, Math.max(0, index + stepDelta));
 }
 
+// 顶部控件区里的控件（页签、胶囊、下拉触发器、日期字段…）不当拖拽面：
+// 在它们身上按住拖动应该没反应，而不是把整块看板拖走。
+// 只对“滑轨区之外”用这条：滑轨区里的按钮自己会用 data-tt-pan / data-tt-select 声明。
+const CONTROL_SELECTOR = "button, a[href], summary, label, [role='button'], input, select, textarea";
+export function isControl(el) {
+  return !!(el && typeof el.closest === "function" && el.closest(CONTROL_SELECTOR));
+}
+
 // 接线部分：只做事件编排，判定全用上面的纯函数。
-export function createViewGestures({ mainEl, trackEl, count, getIndex, onChange, onClaim } = {}) {
+export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, onChange, onClaim } = {}) {
   if (!mainEl || !trackEl || typeof count !== "number" || count < 2) return { dispose() {} };
   const doc = mainEl.ownerDocument;
   const win = doc.defaultView || window;
+  // 监听挂在哪一层：默认只挂滑轨区，传 bindEl 可以扩到整个 App 容器。
+  // 顶部控件区（范围胶囊、筛选排、页签）在滑轨区**外面**，只挂 mainEl 的话在那边按下根本收不到事件。
+  const surfaceEl = bindEl || mainEl;
   let drag = null;
 
   // 一屏 + 面板间距 = 位移的步长。间距定义在 CSS 变量上，这里读同一份，不另写一个数字。
@@ -138,12 +152,15 @@ export function createViewGestures({ mainEl, trackEl, count, getIndex, onChange,
   function onDown(e) {
     if (drag) return;
     if (e.pointerType === "mouse" && e.button !== 0) return;
-    const mode = gestureMode(e.target, mainEl, { panelRoot: trackEl });
+    const target = e.target;
+    // 滑轨区之外的控件（顶部/筛选排里的按钮、下拉、日期字段）不接：按住拖动本来就没意义。
+    if (!mainEl.contains(target) && isControl(target)) return;
+    const mode = gestureMode(target, mainEl, { panelRoot: trackEl });
     if (mode === GESTURE.blocked || mode === GESTURE.select) return;   // 这两类一律不接
     drag = {
       id: e.pointerId, x: e.clientX, y: e.clientY,
       lastX: e.clientX, lastT: e.timeStamp, velocity: 0,
-      axis: "none", claimed: false, dx: 0, mode, startTarget: e.target,
+      axis: "none", claimed: false, dx: 0, mode, startTarget: target,
       index: getIndex(), step: stepOf(), surface: null, left: 0, top: 0,
     };
     listen(true);
@@ -163,7 +180,9 @@ export function createViewGestures({ mainEl, trackEl, count, getIndex, onChange,
         drag.top = drag.surface.scrollTop;
         drag.claimed = true;
         drag.surface.classList.add("tt-panning");
-        try { mainEl.setPointerCapture(drag.id); } catch { /* 合成事件没有真实指针，忽略 */ }
+        // 合成事件（验收台里造的）没有真实指针，setPointerCapture 会抛 NotFoundError；
+        // 只有真指针才需要它，判 isTrusted 比吞异常干净。
+        if (e.isTrusted) { try { mainEl.setPointerCapture(drag.id); } catch { /* 指针已消失 */ } }
       }
       e.preventDefault();
       drag.surface.scrollLeft = drag.left - dx;
@@ -182,7 +201,7 @@ export function createViewGestures({ mainEl, trackEl, count, getIndex, onChange,
       trackEl.classList.add("tt-no-anim");   // 拖动期间关掉过渡，位移由我们逐帧写
       mainEl.classList.add("tt-dragging");
       onClaim?.();                            // 收掉还开着的浮层（文字选中由 CSS 管）
-      try { mainEl.setPointerCapture(drag.id); } catch { /* 合成事件没有真实指针，忽略 */ }
+      if (e.isTrusted) { try { mainEl.setPointerCapture(drag.id); } catch { /* 指针已消失 */ } }
     }
     e.preventDefault();
     const dt = e.timeStamp - drag.lastT;
@@ -209,12 +228,12 @@ export function createViewGestures({ mainEl, trackEl, count, getIndex, onChange,
     onChange(settleTarget({ index: current.index, count, dx: current.dx, velocity: current.velocity, step: current.step }));
   }
 
-  mainEl.addEventListener("pointerdown", onDown, true);
+  surfaceEl.addEventListener("pointerdown", onDown, true);
   return {
     dispose() {
       drag = null;
       listen(false);
-      mainEl.removeEventListener("pointerdown", onDown, true);
+      surfaceEl.removeEventListener("pointerdown", onDown, true);
     },
   };
 }

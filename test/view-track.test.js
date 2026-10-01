@@ -3,7 +3,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
-  decideAxis, blockingReason, scrollableX, scrollableAny, nearestScroller, gestureMode,
+  decideAxis, blockingReason, scrollableX, scrollableAny, nearestScroller, gestureMode, isControl,
   dragOffset, settleTarget, DRAG_START_PX,
 } from "../ui/view-track.mjs";
 
@@ -79,6 +79,25 @@ test("gestureMode：面板那一层不算横滚容器；data-tt-pan / data-tt-se
   assert.equal(gestureMode(el("I", textZone), root, { panelRoot: track }), "select");   // 文字列上则归选字
   const panZone = marked(panel, ["data-tt-pan"]);
   assert.equal(gestureMode(el("I", panZone), root, { panelRoot: track }), "pan");
+
+  // data-tt-view：明确声明“这里就是换页拖拽面”，即使它自己是横滚容器也照拖。
+  // 用在内容宽度会变、但用途固定的地方（筛选排那片：胶囊多了它会变成横滚容器）。
+  const viewScroller = el("DIV", panel, { ...wide, hasAttribute: (name) => name === "data-tt-view" });
+  assert.equal(gestureMode(viewScroller, root, { panelRoot: track }), "view");
+  assert.equal(gestureMode(el("SPAN", viewScroller), root, { panelRoot: track }), "view");
+  const plainScroller = el("DIV", panel, { ...wide });               // 同样的盒子，没标记
+  assert.equal(gestureMode(el("SPAN", plainScroller), root, { panelRoot: track }), "blocked");
+  // 里面标了 select 的更近，仍然赢（声明式标记依旧是就就近优先）
+  const selectInView = el("DIV", viewScroller, { hasAttribute: (name) => name === "data-tt-select" });
+  assert.equal(gestureMode(el("SPAN", selectInView), root, { panelRoot: track }), "select");
+});
+
+test("isControl：顶部控件区里的控件不当拖拽面，普通块算", () => {
+  const fake = (hit) => ({ closest: () => hit });
+  assert.equal(isControl(fake({ tagName: "BUTTON" })), true);
+  assert.equal(isControl(fake(null)), false);
+  assert.equal(isControl(null), false);
+  assert.equal(isControl({}), false);
 });
 
 test("nearestScroller：往上找最近的可滚容器（图表平移的落点）", () => {

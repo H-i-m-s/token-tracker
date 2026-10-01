@@ -7,7 +7,7 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, fmt, formatDateTime, renderPills, selectOptions, timeAgo } from "./components.mjs";
+import { h, RANGES, fmt, formatDateTime, createPills, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
 import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRate, decodeRows } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
@@ -103,6 +103,9 @@ export class WorkspaceApp {
     // 顶部那排控件（范围 pills / 日期 / 显示设置）与筛选条各自记住“上一次画成什么样”。
     // 切页签也会走 onStateChange，若无条件重建，点一次页签就把这两块换一遍 —— 页签切换的“闪”就出在这里。
     this.chromeKey = "";
+    // 范围那排是持久的（只建一次、之后原地更新）：点范围时整排不重建，
+    // 底下那块高亮才能从旧位置滑过去。
+    this.rangePills = null;
     this.detailsPage = 1;
     // 明细的“看”法：默认跟后端一样的时间倒序；考古时改成按用量倒序 + 设门槛。
     this.detailsSort = "time";
@@ -291,6 +294,9 @@ export class WorkspaceApp {
     this.trackDrag = createViewGestures({
       mainEl: this.mainEl,
       trackEl: this.trackEl,
+      // 监听扩到整个 App 容器：顶部控件区（范围胶囊、筛选排、页签）在滑轨区外面，
+      // 只挂滑轨区的话，在那片空白上按住拖动根本收不到指针事件。
+      bindEl: this.container,
       count: VIEW_ORDER.length,
       getIndex: () => Math.max(0, VIEW_ORDER.indexOf(this.view)),
       onChange: (index) => this.selectView(VIEW_ORDER[Math.min(VIEW_ORDER.length - 1, Math.max(0, index))]),
@@ -560,11 +566,14 @@ export class WorkspaceApp {
 
   onStateChange(state) {
     // 只在真的变了才重建顶部那排控件：范围、日期、主题。切页签会带着同一个值进来，这时什么都不必重建。
-    const chromeKey = JSON.stringify([state.range, state.from, state.to, state.appearance]);
+    // 范围那排不参与重建：from/to/主题变了只重建日期那块，胶囊整排原地更新。
+    const chromeKey = JSON.stringify([state.from, state.to, state.appearance]);
     if (chromeKey !== this.chromeKey) {
       this.chromeKey = chromeKey;
       this.renderBoardControls();
     }
+    // 点范围（可能来自别处，比如另一张卡改了共享偏好）：高亮那块滑过去。
+    this.rangePills?.update(state.range, { animate: true });
     this.startPolling();
     applyBoardLayout(this.container, state);
     // 界面选择可能来自别处（比如另一张卡改了共享偏好）：跟着切，但不再回写。
@@ -612,10 +621,20 @@ export class WorkspaceApp {
     } }, "应用日期");
     this.boardControls.replaceChildren(
       // 「全部历史」现在就在 RANGES 里，和别的范围同一排、同一套词表。
-      renderPills(RANGES, state.range, range => this.state.patch({ range, from: "", to: "" })),
+      this.rangePillRow(state.range),
       h("details", { className: "tt-date-picker" }, h("summary", {}, state.from ? `${state.from} — ${state.to}` : "年 / 月 / 日"), h("div", { className: "tt-board-dates" }, from, h("span", {}, "至"), to, apply)),
     );
+    // 挪完再让它就位：整排刚被重新挂进容器，这一步放在重挂之后，过渡才不会被“挪动”打断。
+    this.rangePills?.update(state.range, { animate: true });
     this.renderFilterStatus();
+  }
+
+  // 范围胶囊：只建一次，之后原地更新（重建会把“滑”的那条路堵死）。
+  rangePillRow(range) {
+    if (!this.rangePills) {
+      this.rangePills = createPills(RANGES, range, r => this.state.patch({ range: r, from: "", to: "" }));
+    }
+    return this.rangePills.root;
   }
 
   // 选项列表里的占位文案曾被当成真实筛选值存进 state（见 components.mjs selectOptions 的注释）。

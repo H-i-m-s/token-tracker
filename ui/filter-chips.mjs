@@ -96,7 +96,7 @@ export function createFilterStatus({ state, agentOptions, providerOptions, model
   const patch = typeof onPatch === "function" ? onPatch : () => {};
 
   const summaryEl = h("span", { className: "tt-filter-summary", role: "status", "aria-live": "polite", tabIndex: "-1" }, "当前范围");
-  const chips = h("div", { className: "tt-filter-chips" });
+  const chips = h("div", { className: "tt-filter-chips", "data-tt-view": "" });
   const clearBtn = h("button", {
     type: "button", className: "tt-filter-clear", hidden: true,
     title: "清除 Agent、模型、供应商和类型筛选，保留时间范围",
