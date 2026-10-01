@@ -1042,8 +1042,11 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-board-empty { flex: 1; min-height: 50px; display: grid; place-items: center; padding: 12px; color: var(--tt-t2); text-align: center; font-size: 11px; }
 .tt-agent-list { flex: 1 1 0; min-height: 0; overflow: auto; scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent; }
 .tt-agent-row, .tt-agent-axis { display: grid; width: 100%; min-width: calc(221px + var(--timeline-columns)*6px); grid-template-columns: 89px 72px 42px minmax(0,1fr); align-items: center; gap: 6px; }
-.tt-agent-row { border: 0; border-bottom: 1px solid var(--tt-b3); background: transparent; color: inherit; text-align: left; padding: 7px 0; cursor: pointer; font: 11px var(--font-sans); }
-.tt-agent-axis { position: sticky; top: 0; z-index: 1; color: var(--tt-t3); font-size: 9px; padding: 2px 0 7px; background: var(--tt-card); }
+/* 行内左右留出内边距（表头的 padding 就在它自己那条规则里，同档 8px，否则列对不齐）：
+   选中/悬停的底色与左侧那道竖条就不会贴着文字，看着不挤。
+   圆角放在基础规则上，hover 与选中才都是圆的，不会只有选中圆、hover 直角。 */
+.tt-agent-row { border: 0; border-bottom: 1px solid var(--tt-b3); border-radius: 6px; background: transparent; color: inherit; text-align: left; padding: 7px 8px; cursor: pointer; font: 11px var(--font-sans); }
+.tt-agent-axis { position: sticky; top: 0; z-index: 1; color: var(--tt-t3); font-size: 9px; padding: 2px 8px 7px; background: var(--tt-card); }
 .tt-agent-axis > span:nth-child(2), .tt-agent-axis > span:nth-child(3) { text-align: right; }
 .tt-agent-axis-dates { display: grid; grid-template-columns: repeat(var(--timeline-columns),minmax(0,1fr)); }
 .tt-agent-axis-dates small { font: 8px var(--font-mono); white-space: nowrap; }
@@ -1088,11 +1091,12 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-legend-totals button { display: grid; grid-template-columns: 6px minmax(0,1fr); gap: 2px 4px; width: 110px; }
 .tt-legend-totals b { grid-column: 2; font: 500 10px var(--font-mono); color: var(--tt-t1); text-align: left; }
 .tt-dist-row,.tt-dist-head { display: grid; grid-template-columns: minmax(80px,1fr) 56px 56px minmax(80px,1.8fr); gap: 8px; align-items: center; min-width: 0; overflow: hidden; }
-.tt-dist-head { color: var(--tt-t3); font-size: 9px; flex: 0 0 auto; padding: 3px 0; }
+.tt-dist-head { color: var(--tt-t3); font-size: 9px; flex: 0 0 auto; padding: 3px 8px; }
 .tt-dist-list { flex: 1 1 0; min-height: 0; overflow-y: auto; scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent; }
-.tt-dist-row { width: 100%; min-height: 30px; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--tt-b3); padding: 3px 0; text-align: left; font: 10px var(--font-sans); cursor: pointer; }
+.tt-dist-row { width: 100%; min-height: 30px; color: inherit; background: none; border: 0; border-bottom: 1px solid var(--tt-b3); border-radius: 6px; padding: 3px 8px; text-align: left; font: 10px var(--font-sans); cursor: pointer; }
 .tt-dist-row:hover { background: var(--tt-row-hover); }
-/* 多选之后可能同时选中好几行：hover 那层浅底不够分辨，选中给一道左侧竖条加选中底色。 */
+/* 多选之后可能同时选中好几行：hover 那层浅底不够分辨，选中给一道左侧竖条加选中底色。
+   左右各留 8px（见上面行的 padding），竖条与文字之间才有呼吸。 */
 .tt-agent-row[aria-pressed="true"], .tt-dist-row[aria-pressed="true"] {
   background: var(--tt-select-bg);
   box-shadow: inset 2px 0 0 var(--tt-select-b);
