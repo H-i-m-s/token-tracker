@@ -29,7 +29,9 @@ function svg(width, height, label) {
 const title = text => node('title', {}, [text]);
 function panel(label, caption, className = '') {
   const body = h('div', { className: 'tt-board-body' });
-  const el = h('section', { className: `tt-board-panel ${className}` },
+  // 带图表的卡片整体算“读物”，不参与换页拖拽：里面任何地方按住都能选字。
+  // 卡里真正要拖的区域（工作空间活跃分布的整张表、热力图）自己再标 data-tt-pan，更近的那个赢。
+  const el = h('section', { className: `tt-board-panel ${className}`, 'data-tt-select': '' },
     h('header', {}, h('h2', {}, label), h('span', {}, caption)), body);
   return { el, body };
 }
@@ -193,7 +195,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
   const canvas = h('div', { className: 'tt-flow-canvas' });
   const foot = h('footer', {}, '');
   body.append(canvas, foot);
-  const el = h('section', { className: 'tt-board-panel tt-flow-panel' },
+  const el = h('section', { className: 'tt-board-panel tt-flow-panel', 'data-tt-select': '' },
     h('header', {}, h('h2', {}, '用量总览'), sw), body);
 
   // Agent 一律显它的中文名（缓存里带 agentNames 映射）；回落到 id 只是兜底。
@@ -395,7 +397,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
       }, t.text)));
     // 轴标签层和浮层都塞进 plot。plot 只包 SVG，百分比才以图区为基准，
     // 否则按整块画布（还含图例）算，标签会落到底下的图例上。
-    const plot = h('div', { className: 'tt-flow-plot' }, chart, axes, hud);
+    const plot = h('div', { className: 'tt-flow-plot', 'data-tt-select': '' }, chart, axes, hud);
     canvas.append(plot);
     const grand = (splittable ? [...totals.values()].reduce((s, v) => s + v, 0) : cellsTotal) || 1;
     canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
@@ -455,8 +457,10 @@ export function renderAnalytics(container, dashboard, state, patch) {
     ['缓存命中率', fmtPct(summary.cacheHitRate, 1), '缓存读取 Token / 总 Token，沿用插件统计口径'],
     ['预估费用 · USD', total > 0 && !summary.estimatedCost ? '未完整定价' : fmtCost(summary.estimatedCost), '按已配置价格估算；不是供应商结算账单'],
   ];
+  // KPI 块（合计 Token、日均…）也属于“读数”：里面要能选字，所以一块一块标上，
+  // 块与块之间的缝不标 —— 那点缝是看板上剩下不多的拖拽落脚点。
   container.append(h('div', { className: 'tt-board-kpis' }, ...tiles.map(([label, value, hint]) =>
-    h('div', { title: hint }, h('span', {}, label), h('strong', {}, value)))));
+    h('div', { title: hint, 'data-tt-select': '' }, h('span', {}, label), h('strong', {}, value)))));
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
   container.append(renderFlowPanel(a, days, dashboard.agentNames || {}));
@@ -495,25 +499,27 @@ export function renderAnalytics(container, dashboard, state, patch) {
     h('span', {}, `${unit}用量`), h('span', {}, '无'),
     ...intensityLabels.map((label, level) => h('i', { 'data-intensity': level, title: `${label}；同屏最高${unit}用量 ${compact(activityPeak)} Token`, style: `background:var(--tt-activity-${level})` })), h('span', {}, '高'),
     h('span', { className: 'tt-agent-scale-note' }, '同屏统一标尺')));
-  const agentList = h('div', { className: 'tt-agent-list', style: `--timeline-columns:${Math.max(1, agentSlots.length)}` }); agent.body.append(agentList);
+  // 整张表按“块”标成可拖：手的落点大多不在那一条条小色块上，标细了就会“拖不动”。
+  // 真正要选字的几列（名称/Token/占比）在下面单独标 data-tt-select，更近的那个赢。
+  const agentList = h('div', { className: 'tt-agent-list', 'data-tt-pan': '', style: `--timeline-columns:${Math.max(1, agentSlots.length)}` }); agent.body.append(agentList);
   agentList.append(h('div', { className: 'tt-agent-axis' }, h('span', {}, '名称'), h('span', {}, 'Token'), h('span', {}, '占比'),
-    h('span', { className: 'tt-agent-axis-dates' }, ...agentSlots.map((s, i) => h('small', { title: s.label }, slotLabel(s, i, agentSlots.length, agentScale))))));
+    h('span', { className: 'tt-agent-axis-dates', 'data-tt-pan': '' }, ...agentSlots.map((s, i) => h('small', { title: s.label }, slotLabel(s, i, agentSlots.length, agentScale))))));
   for (const item of a.agents) {
     const name = dashboard.agents.find(x => x.id === item.id)?.name || item.id;
-    const cells = h('span', { className: 'tt-agent-cells', style: `grid-template-columns:repeat(${Math.max(1, agentSlots.length)},minmax(2px,1fr))` },
+    const cells = h('span', { className: 'tt-agent-cells', 'data-tt-pan': '', style: `grid-template-columns:repeat(${Math.max(1, agentSlots.length)},minmax(2px,1fr))` },
       ...agentSlots.map(s => {
         const value = agentValue(item, s), level = activityLevel(value, activityPeak);
         return h('i', { 'data-intensity': level, title: `${s.label} · ${compact(value)} Token · ${intensityLabels[level]}`, style: `background:var(--tt-activity-${level})` });
       }));
-    agentList.append(h('button', { className: 'tt-agent-row', type: 'button', title: name,
+    agentList.append(h('button', { className: 'tt-agent-row', type: 'button', title: name, 'data-tt-pan': '',
       'aria-label': `筛选 Agent ${name}`, 'aria-pressed': String(asList(state.agent).includes(item.id)),
       onClick: (event) => {
         const picked = pickValues(state.agent, item.id, agentIds, modsOf(event), anchors.agent);
         anchors.agent = item.id;
         patch({ agent: picked });
       } },
-      h('span', { className: 'tt-agent-name' }, name), h('b', {}, compact(item.totalTokens)),
-      h('small', {}, `${(item.totalTokens / Math.max(1,total) * 100).toFixed(1)}%`), cells));
+      h('span', { className: 'tt-agent-name', 'data-tt-select': '' }, name), h('b', { 'data-tt-select': '' }, compact(item.totalTokens)),
+      h('small', { 'data-tt-select': '' }, `${(item.totalTokens / Math.max(1,total) * 100).toFixed(1)}%`), cells));
   }
   agent.body.append(h('footer', {}, !days.length ? '暂无记录'
     : `${days[0]} — ${days.at(-1)} · ${agentScale === 'hour' ? '每小时一条' : '每日一条'}${scale === 'hour' && agentScale === 'day' ? ' · 该筛选下无小时级 Agent 拆分' : ''}`));
@@ -530,7 +536,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
     // 方块：这个面板是横长的，格子一旦被拉成细长条，深浅就看不出差别了。
     const byCell = new Map(a.heatmap.map(c => [`${c.date}/${c.hour}`, c.totalTokens]));
     const max = Math.max(1, ...a.heatmap.map(c => c.totalTokens));
-    const grid = h('div', { className: 'tt-heat-grid' }, h('span', { className: 'tt-heat-corner' }),
+    const grid = h('div', { className: 'tt-heat-grid', 'data-tt-pan': '' }, h('span', { className: 'tt-heat-corner' }),
       ...Array.from({ length: 24 }, (_, hour) => h('span', { className: 'tt-heat-hour' }, hour % 3 === 0 ? String(hour).padStart(2, '0') : '')));
     for (const date of [...days].reverse()) {
       grid.append(h('span', { className: 'tt-heat-day' }, date.slice(5)));
@@ -542,7 +548,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
           title: `${date} ${String(hour).padStart(2, '0')}:00–${String(hour + 1).padStart(2, '0')}:00 · ${compact(n)} Token` }));
       }
     }
-    heat.body.append(h('div', { className: 'tt-heat-scroll' }, grid));
+    heat.body.append(h('div', { className: 'tt-heat-scroll', 'data-tt-pan': '' }, grid));
   }
   heat.body.append(h('footer', {}, `小时记录覆盖 ${fmtPct(a.hourlyTotal / Math.max(1,a.dailyTotal) * 100,1)} · ${a.timeZone || '日志本地时间'} · ${days.length} 天 · 最新在上`));
 

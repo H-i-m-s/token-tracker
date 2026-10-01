@@ -11,6 +11,7 @@ import { h, RANGES, fmt, formatDateTime, renderPills, selectOptions, timeAgo } f
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
 import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRate, decodeRows } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
+import { createViewGestures } from "./view-track.mjs";
 import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
 
 const PAGE_SIZE = 50;
@@ -133,6 +134,7 @@ export class WorkspaceApp {
 
   dispose() {
     this.disposed = true;
+    this.trackDrag?.dispose?.();
     this.stopPolling();
     this.clearBusyTimer();
     for (const d of this.disposers) {
@@ -249,7 +251,7 @@ export class WorkspaceApp {
     this.boardControls = h("div", { className: "tt-board-controls" });
     this.appearanceControls = h("div", { className: "tt-appearance-controls" });
     const chrome = h("header", { className: "tt-chrome" },
-      h("div", { className: "tt-board-heading" }, h("h1", {}, "Token 消耗看板"), h("p", {}, "本地日志汇总 · Agent 归属 · 会话轮次口径")),
+      h("div", { className: "tt-board-heading", "data-tt-select": "" }, h("h1", {}, "Token 消耗看板"), h("p", {}, "本地日志汇总 · Agent 归属 · 会话轮次口径")),
       this.boardControls,
     );
     // 上次停在哪个界面，这次就回到哪个界面（跨实例记住，存在固定 key 里）
@@ -283,6 +285,18 @@ export class WorkspaceApp {
       this.trackEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
     }
     this.mainEl.append(this.trackEl);
+    // 拖拽切换：判定全在 view-track.mjs 的纯函数里（那边有单测），
+    // 这里只告诉它「现在是第几块」和「要切到第几块」——切换依旧只走 selectView 一条路。
+    // 图表里标了 data-tt-pan / data-tt-select 的区域不归它管（见 analytics.mjs 的标记）。
+    this.trackDrag = createViewGestures({
+      mainEl: this.mainEl,
+      trackEl: this.trackEl,
+      count: VIEW_ORDER.length,
+      getIndex: () => Math.max(0, VIEW_ORDER.indexOf(this.view)),
+      onChange: (index) => this.selectView(VIEW_ORDER[Math.min(VIEW_ORDER.length - 1, Math.max(0, index))]),
+      // 接管手势时把还开着的浮层收掉：拖动会让触发器跟着走，浮层留在原地会看着漂。
+      onClaim: () => { closeOpenSelect(); closeOpenDate(); },
+    });
     this.selectView(this.view);
   }
 
@@ -303,12 +317,13 @@ export class WorkspaceApp {
       const owner = still && typeof still.closest === "function" ? still.closest(".tt-track > section") : null;
       if (owner && owner.id !== `${view}-module`) this.viewTabs.querySelector(`#tab-${from}`)?.focus();
     }
-    // 真滑轨：一块一屏，切到第 N 块就是整条轨道往左挪 N 屏（translateX 百分比相对轨道自身宽度）。
+    // 真滑轨：一块一屏再加间距，切到第 N 块就是整条轨道往左挪 N 步。
+    // 步长写进 calc，引用同一个 CSS 变量（--tt-track-gap），宽度一变也不用改代码。
     const track = this.trackEl;
     if (track) {
       const glide = animate && changed && !this.prefersReducedMotion();
       track.classList.toggle("tt-no-anim", !glide);
-      track.style.transform = `translateX(${-index * 100}%)`;
+      track.style.transform = `translateX(calc(${-index} * (100% + var(--tt-track-gap, 0px))))`;
       // 首帧/减少动效：这帧先不动，下一帧再把过渡交还给 CSS，以后切换才有动画。
       if (!glide) requestAnimationFrame(() => track.classList.remove("tt-no-anim"));
     }
@@ -687,7 +702,7 @@ export class WorkspaceApp {
     }
 
     const rows = this.balances || [];
-    const body = h("div", { className: "tt-module-bd dense" });
+    const body = h("div", { className: "tt-module-bd dense", "data-tt-select": "" });
     const ds = this.dsSeries();
 
     if (!rows.length) {
@@ -720,7 +735,7 @@ export class WorkspaceApp {
 
     el.innerHTML = "";
     el.append(
-      h("div", { className: "tt-module-hd" }, h("span", { className: "tt-module-title" }, "余额与额度")),
+      h("div", { className: "tt-module-hd", "data-tt-select": "" }, h("span", { className: "tt-module-title" }, "余额与额度")),
       body,
     );
 
@@ -828,7 +843,7 @@ export class WorkspaceApp {
     const keepScroll = preserveScroll ? el.scrollTop : 0;
     el.innerHTML = "";
     el.append(
-      h("div", { className: "tt-module-hd" },
+      h("div", { className: "tt-module-hd", "data-tt-select": "" },
         h("span", { className: "tt-module-title" }, "消费明细"),
         h("div", { className: "tt-module-actions" },
           h("span", { className: "tt-module-meta" }, `共 ${total.toLocaleString()} 条 · 合计 ${fmt(sum)} tok`),
@@ -1331,14 +1346,14 @@ export class WorkspaceApp {
     const diag = el.querySelector("#realtime-diag");   // 体检不是实时数据：重建时把它排到最后就好
     el.innerHTML = "";
     el.append(
-      h("div", { className: "tt-module-hd" },
+      h("div", { className: "tt-module-hd", "data-tt-select": "" },
         h("span", { className: "tt-module-title" }, "实时监控"),
         h("div", { style: "display:flex;gap:6px;align-items:center" },
           h("span", { className: "tt-live-dot" }),
           h("span", { style: "font-size:9px;font-weight:600;color:var(--tt-green)" }, rt.connected ? "LIVE" : "等待用量"),
         ),
       ),
-      h("div", { className: "tt-module-bd dense" },
+      h("div", { className: "tt-module-bd dense", "data-tt-select": "" },
         h("div", { className: "tt-ring-wrap" },
           h("div", { id: "realtime-ring", className: "tt-ring" }),
           h("div", { className: "tt-rt-metrics" },
