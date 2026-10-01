@@ -116,6 +116,18 @@ body {
   flex-direction: column;
 }
 
+/* 切页签时给新露出的卡片一个 120ms 淡入 + 3px 上移：只是让“换内容”有个着落，不是加载动画。
+   首屏不跑（selectView 首次拿到的 view 没变），尊重系统的减少动效设置。
+   注：动画不能只靠 hidden 切换自动重跑，需要调用方强制回流后加上 .tt-enter（见 selectView）。 */
+.tt-module.tt-enter { animation: tt-module-in 120ms ease-out; }
+@keyframes tt-module-in {
+  from { opacity: 0; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tt-module.tt-enter { animation: none; }
+}
+
 .tt-module-hd {
   display: flex;
   align-items: center;

@@ -16,8 +16,14 @@ const livePanels = new Set();
 
 // 关闭当前所有打开（或等待摘除）的自绘下拉：立即移除面板并解绑 document/window 监听。
 // 供会替换触发器宿主容器的渲染入口（renderDetails / renderBoardControls）在重建前调用。
-export function closeOpenSelect() {
-  for (const instance of [...livePanels]) instance.closeNow();
+export function closeOpenSelect(within = null) {
+  // 传了 within 就只关触发器在这一块里的：
+  // 重画明细模块时不该把顶部筛选条那三颗下拉一并关掉（它们在模块外面，重画不影响它们）。
+  const scope = within && typeof within.contains === "function" ? within : null;
+  for (const instance of [...livePanels]) {
+    if (scope && !(instance.trigger && scope.contains(instance.trigger))) continue;
+    instance.closeNow();
+  }
 }
 
 export function mountSelect(select, options = {}) {

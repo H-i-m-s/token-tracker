@@ -1,7 +1,7 @@
 import { applyAppearance } from "./appearance.mjs";
 import { applyBoardLayout } from "./board-layout.mjs";
 import { renderAnalytics } from "./analytics.mjs";
-import { renderFilterStatus as renderFilterChips } from "./filter-chips.mjs";
+import { createFilterStatus } from "./filter-chips.mjs";
 import { asList, selectionKey } from "./selection.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
@@ -97,6 +97,9 @@ export class WorkspaceApp {
     this.visible = true;
     this.eventController = null;
     this.filterKey = "";
+    // 顶部那排控件（范围 pills / 日期 / 显示设置）与筛选条各自记住“上一次画成什么样”。
+    // 切页签也会走 onStateChange，若无条件重建，点一次页签就把这两块换一遍 —— 页签切换的“闪”就出在这里。
+    this.chromeKey = "";
     this.detailsPage = 1;
     // 明细的“看”法：默认跟后端一样的时间倒序；考古时改成按用量倒序 + 设门槛。
     this.detailsSort = "time";
@@ -265,21 +268,37 @@ export class WorkspaceApp {
     const nav = h("div", { className: "tt-board-nav" }, this.viewTabs,
       h("div", { className: "tt-toolbar" }, refreshBtn, this.appearanceControls));
     this.mainEl = h("main", { className: "tt-main", "data-view": this.view });
-    this.filterStatus = h("div", { className: "tt-filter-status", role: "region", "aria-label": "当前筛选状态" });
+    // 筛选条只建一次（createFilterStatus 返回 root + update），之后一律原地更新：
+    // 顶部那排状态因此不会在每次筛选/每次看板重画时被整条换掉，下拉也不会被连带关掉。
+    this.filterChips = createFilterStatus({ state: this.state.get(), onPatch: (patchObj) => this.state.patch(patchObj) });
+    this.filterStatus = this.filterChips.root;
     this.container.append(chrome, nav, this.filterStatus, this.statusEl, this.mainEl);
     this.renderBoardControls();
     for (const id of ["overview", "balance", "details", "realtime"]) this.mainEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
     this.selectView(this.view);
   }
 
-  selectView(view, { persist = true } = {}) {
+  selectView(view, { persist = true, animate = true } = {}) {
     if (!VALID_VIEWS.includes(view)) view = "overview";
+    const changed = view !== this.view;
     this.view = view;
     this.mainEl.dataset.view = view;
     for (const section of this.mainEl.children) section.hidden = section.id !== `${view}-module`;
     for (const tab of this.viewTabs.children) {
       tab.setAttribute("aria-selected", String(tab.dataset.view === view));
       tab.tabIndex = tab.dataset.view === view ? 0 : -1;
+    }
+    // 切过去的那块淡入 120ms（首屏不算：selectView 一开始拿到的 view 就等于 this.view，changed 为假）。
+    // 类靠 animationend 摘，再配一个定时器兼底：开了“减少动效”或标签页在后台时动画可能压根不跑，
+    // 那样 animationend 永远不会来，类就留在节点上（重切时会先 remove 再加，所以不会出错，但没必要留着）。
+    const section = this.mainEl.querySelector(`#${view}-module`);
+    if (animate && changed && section) {
+      section.classList.remove("tt-enter");
+      void section.offsetWidth; // 强制回流：animation 不会因为 hidden 切换自己重跑
+      section.classList.add("tt-enter");
+      const drop = () => { clearTimeout(timer); section.classList.remove("tt-enter"); };
+      const timer = setTimeout(drop, 200);
+      section.addEventListener("animationend", drop, { once: true });
     }
     // 体检挂在实时监控页底部（不占页签位）：只有真的切到这一页才去取一次。
     if (view === "realtime") {
@@ -502,7 +521,12 @@ export class WorkspaceApp {
   }
 
   onStateChange(state) {
-    this.renderBoardControls();
+    // 只在真的变了才重建顶部那排控件：范围、日期、主题。切页签会带着同一个值进来，这时什么都不必重建。
+    const chromeKey = JSON.stringify([state.range, state.from, state.to, state.appearance]);
+    if (chromeKey !== this.chromeKey) {
+      this.chromeKey = chromeKey;
+      this.renderBoardControls();
+    }
     this.startPolling();
     applyBoardLayout(this.container, state);
     // 界面选择可能来自别处（比如另一张卡改了共享偏好）：跟着切，但不再回写。
@@ -514,18 +538,19 @@ export class WorkspaceApp {
     if (key === this.filterKey) return;
     this.filterKey = key;
     this.detailsPage = 1;
-    this.dashboard = null;
     this.clearError();
-    this.renderOverview();
-    this.renderDetails();
+    // 这里不再先把看板置空、用空数据画一遍：那正是“整个界面消失再出现”里“消失”的那一下
+    // （取数期间会露出一段“正在读取用量统计…”的空白）。旧内容留着，等 loadDashboard 取回新数据一次画成。
+    this.renderFilterStatus();
     this.loadDashboard(true);
   }
 
   // ---------- overview module ----------
 
   renderBoardControls() {
-    // 本函数会重建 .tt-board-controls，日期字段随之被替换：先把已打开的浮层摘干净。
-    closeOpenSelect();
+    // 本函数会重建 .tt-board-controls，其中的日期字段随之被替换：先摘掉它自己的浮层。
+    // 只关这一块里的：筛选条那三颗下拉不在里面，不该被牵连关掉。
+    closeOpenSelect(this.boardControls);
     closeOpenDate();
     if (!this.boardControls) return;
     const state = this.state.get();
@@ -598,24 +623,17 @@ export class WorkspaceApp {
   }
 
   renderFilterStatus() {
-    if (!this.filterStatus) return;
-    // 自绘下拉 / 日历浮层挂在 body 上，而 loadDashboard() 会直接调用这里（不经过
-    // renderBoardControls）：模块内部重建前也会 closeOpen*，这里再兜一道，双保险。
-    closeOpenSelect();
-    closeOpenDate();
+    if (!this.filterStatus || !this.filterChips) return;
     const state = this.state.get();
     this.stripPlaceholderFilters(state);
-    // 时间范围已交由看板右上角那排统一负责，这里只管 Agent / 供应商 / 模型。
-    const next = renderFilterChips({
+    // 时间范围已交由看板右上角那排统一负责，这里只管 Agent / 供应商 / 模型（以及类型）。
+    // 这里不再 closeOpen*：原地更新不会扔下孤儿浮层，也没有需要重建的宿主容器。
+    this.filterChips.update({
       state,
-      agentLabel: asList(state.agent).map((id) => this.agentNames.get(id) || id).join(" · "),
       agentOptions: this.agentOptions(),
       providerOptions: this.providerOptions(),
       modelOptions: this.modelOptions(),
-      onPatch: (patch) => this.state.patch(patch),
     });
-    this.filterStatus.replaceWith(next);
-    this.filterStatus = next;
   }
 
   renderOverview({ preserveScroll = false } = {}) {
@@ -759,12 +777,13 @@ export class WorkspaceApp {
     // 范围与筛选由页面顶部那两排统一负责（顶右的范围行 + 「当前范围」筛选行），这里只留表格、排序/门槛与翻页。
     // 同一个 state 摆两套控件只会互相打架：顶部选「全部历史」时，这一排的 pills 一个都不亮。
     // 下面两个下拉会让模块重建，钳住已经摊开的浮层，避免面板变孤儿。
-    closeOpenSelect();
+    // 只钳这一块里的：顶部筛选条那三颗下拉在模块之外，不能因为这里重画就被关掉。
     let el = this.container.querySelector("#details-module");
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
       this.mainEl.appendChild(el);
     }
+    closeOpenSelect(el);
 
     // 两条路：引擎给了 details 就用它（排序/门槛/分页都在数据层做完了，这里只渲染这一页），
     // 拿不到 details（mock 预览、或引擎没拿到 SQLite 驱动）才退回本地这套，语义相同。
