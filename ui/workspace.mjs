@@ -425,7 +425,7 @@ export class WorkspaceApp {
     }
   }
 
-  async loadDashboard(force = false, { silent = false } = {}) {
+  async loadDashboard(force = false, { silent = false, keepScroll = silent } = {}) {
     if (!force && this.dashboard) return;
     this.setLoading(1, { silent });
     const request = ++this.dashboardRequest;
@@ -448,7 +448,10 @@ export class WorkspaceApp {
       this.renderFilterStatus();
       // A background refresh must not send the reader back to page one.
       if (!silent) this.detailsPage = 1;
-      this.renderOverview({ preserveScroll: silent });
+      // 概览要不要保住读者的位置：静默刷新本来就保（keepScroll 默认跟 silent 走）；
+      // 用户在筛选里点了一个模型 / Agent 也要保 —— 他是在看下面的图才点的，
+      // 重画完把他送回顶部等于把他正在看的那块抽走（见 onStateChange 的调用）。
+      this.renderOverview({ preserveScroll: keepScroll });
       this.renderDetails({ preserveScroll: silent });
     } catch (err) {
       if (request === this.dashboardRequest && !this.disposed) {
@@ -619,7 +622,8 @@ export class WorkspaceApp {
     // 这里不再先把看板置空、用空数据画一遍：那正是“整个界面消失再出现”里“消失”的那一下
     // （取数期间会露出一段“正在读取用量统计…”的空白）。旧内容留着，等 loadDashboard 取回新数据一次画成。
     this.renderFilterStatus();
-    this.loadDashboard(true);
+    // 筛选变了（点模型、点 Agent、改范围、改供应商）不是后台刷新，但同样不该把读者送回顶部：把位置保住。
+    this.loadDashboard(true, { keepScroll: true });
   }
 
   // 顶部控件“上一次画成什么样”的摘要。输入栏开关也算进去：它一变，菜单就得跟着重建。
