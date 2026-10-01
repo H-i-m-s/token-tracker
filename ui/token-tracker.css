@@ -1494,6 +1494,7 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 
 .tt-turn-file { display: flex; align-items: center; gap: 6px; min-width: 0; }
 .tt-turn-file-tag { flex: 0 0 auto; font-size: 9.5px; color: var(--tt-t4); }
+.tt-turn-file-meta { flex: 0 0 auto; font-size: 10px; color: var(--tt-t4); white-space: nowrap; font-variant-numeric: tabular-nums; }
 .tt-turn-path {
   flex: 1 1 auto;
   min-width: 0;
@@ -1521,3 +1522,54 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 .tt-turn-note { font-size: 11px; color: var(--tt-t3); display: flex; align-items: center; gap: 8px; }
 .tt-turn-foot { font-size: 9.5px; color: var(--tt-t4); }
 .tt-turn-body .tt-btn { padding: 2px 7px; font-size: 10px; }
+
+/* ── 体检（只读） ──
+   平时收着，点开才取数。放主列最下面：它回答的是「有没有白干」，不该抢主图的注意力。 */
+.tt-diag { padding-bottom: 4px; }
+.tt-diag-hd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--tt-t2);
+  cursor: pointer;
+  text-align: left;
+}
+.tt-diag-hd:hover { background: var(--tt-row-hover); }
+.tt-diag-caret { flex: 0 0 auto; width: 11px; font-size: 10px; color: var(--tt-t4); }
+.tt-diag-hint { margin-left: auto; font-size: 9.5px; color: var(--tt-t4); }
+
+.tt-diag-bd { padding: 2px 10px 8px; }
+.tt-diag-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1px 18px;
+}
+.tt-diag-row { display: flex; align-items: baseline; gap: 7px; padding: 3px 0; min-width: 0; border-bottom: 1px solid var(--tt-b2); }
+.tt-diag-label { flex: 0 0 auto; font-size: 10.5px; color: var(--tt-t3); }
+.tt-diag-value {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--tt-num);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.tt-diag-sub { flex: 0 0 auto; max-width: 58%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 9.5px; color: var(--tt-t4); }
+
+.tt-diag-payload { margin-top: 8px; }
+.tt-diag-payload-hd { display: flex; align-items: baseline; gap: 8px; padding-bottom: 4px; }
+.tt-diag-payload-hd .tt-diag-value { margin-left: auto; }
+.tt-diag-bars { display: flex; flex-direction: column; gap: 2px; }
+.tt-diag-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.tt-diag-bar-name { flex: 0 0 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--tt-t3); }
+.tt-diag-bar-track { flex: 1 1 auto; height: 5px; border-radius: 3px; background: var(--tt-b2); overflow: hidden; }
+.tt-diag-bar-track i { display: block; height: 100%; border-radius: 3px; background: var(--tt-blue); opacity: .55; }
+.tt-diag-bar-bytes { flex: 0 0 auto; font-size: 10px; color: var(--tt-num); font-variant-numeric: tabular-nums; }
+.tt-diag-bar-bytes em { margin-left: 5px; font-style: normal; color: var(--tt-t4); }
+.tt-diag-note { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--tt-t3); }
+.tt-diag-note .tt-btn { padding: 2px 7px; font-size: 10px; }
+.tt-diag-foot { margin-top: 5px; font-size: 9.5px; color: var(--tt-t4); }

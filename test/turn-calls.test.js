@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { readTurnCalls } from "../runtime/engine/services/turn-calls.js";
+import { readTurnCalls, memoStats } from "../runtime/engine/services/turn-calls.js";
 
 // ── 造会话文件的工具 ──
 const usage = (input, output, cacheRead, cacheWrite, reasoning) => ({
@@ -242,4 +242,63 @@ test("callList 上限 400：超出时截前 400 条并标 truncated", () => {
   assert.equal(t.truncated, true);
   assert.equal(t.callList.length, 400);
   assert.equal(t.calls, 405, "合计仍按全部有效调用计");
+});
+
+// ── memo：同一份文件不重复解析，文件一变必须重读 ──
+test("memo：连读同一会话走缓存，文件改了立刻重读", () => {
+  const { session, file } = writeSession([
+    line("2026-09-30T12:00:00.000Z", { role: "user", content: "A" }),
+    line("2026-09-30T12:00:05.000Z", { role: "assistant", model: "A", provider: "P", usage: usage(100, 10, 0, 0, 0) }),
+  ]);
+  const s0 = memoStats();
+  const t1 = readTurnCalls({ session, seq: 1 });
+  assert.equal(t1.turnCount, 1, "回带轮数");
+  assert.equal(t1.fileSize, fs.statSync(file).size, "回带文件大小");
+  const s1 = memoStats();
+  assert.equal(s1.misses, s0.misses + 1, "第一次是未命中（要真解析）");
+
+  // 再读同一轮（模拟连点相邻几行）：结果逐项相同，而且不该再解析
+  const t2 = readTurnCalls({ session, seq: 1 });
+  const s2 = memoStats();
+  assert.equal(s2.misses, s1.misses, "第二次不该再解析");
+  assert.equal(s2.hits, s1.hits + 1);
+  assert.deepEqual(t2, t1);
+
+  // 文件变了（model 换了数字、末尾多一轮）：key 变，必须重读到新内容
+  fs.writeFileSync(file, [
+    line("2026-09-30T12:00:00.000Z", { role: "user", content: "A" }),
+    line("2026-09-30T12:00:05.000Z", { role: "assistant", model: "A", provider: "P", usage: usage(777, 10, 0, 0, 0) }),
+    line("2026-09-30T12:03:00.000Z", { role: "user", content: "B" }),
+  ].join("\n") + "\n");
+  const t3 = readTurnCalls({ session, seq: 1 });
+  assert.equal(t3.input, 777, "不能拿旧结果");
+  assert.equal(t3.turnCount, 2, "新加的那一轮也要看得见");
+  assert.equal(memoStats().misses, s2.misses + 1);
+
+  // 缺文件时 fileSize / turnCount 是 null，不用 0 冒充
+  const gone = readTurnCalls({ session: { type: "desktop", filePath: file + ".gone" }, seq: 1 });
+  assert.equal(gone.fileExists, false);
+  assert.equal(gone.fileSize, null);
+  assert.equal(gone.turnCount, null);
+});
+
+test("memo：只留最近 MEMO_MAX 份，超了丢最旧（但结果照样对）", () => {
+  const max = memoStats().max;
+  assert.equal(max > 0, true);
+  const sessions = [];
+  for (let i = 0; i < max + 2; i++) {
+    const { session } = writeSession([
+      line("2026-09-30T12:00:00.000Z", { role: "user", content: "A" }),
+      line("2026-09-30T12:00:05.000Z", { role: "assistant", model: "A", provider: "P", usage: usage(10 + i, 1, 0, 0, 0) }),
+    ]);
+    sessions.push(session);
+  }
+  for (const s of sessions) readTurnCalls({ session: s, seq: 1 });
+  assert.equal(memoStats().size, max, "不会无限攒");
+  // 最旧的那份已被挤掉：再读是未命中，但内容仍对
+  const before = memoStats().misses;
+  const t = readTurnCalls({ session: sessions[0], seq: 1 });
+  assert.equal(t.ok, true);
+  assert.equal(t.callList[0].input, 10, "第 0 份的用量");
+  assert.equal(memoStats().misses, before + 1, "被挤掉的会重新解析");
 });

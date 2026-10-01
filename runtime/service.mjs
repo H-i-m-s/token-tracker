@@ -59,6 +59,23 @@ async function request(method, payload = {}) {
     view.summary.highUsageThreshold = handlers.get('token-tracker.settings.read')().highUsageThreshold;
     return view;
   }
+  // details：只取「消费明细」这一块（界面翻页/换排序/换门槛时用），不重算整份看板。
+  // 挂法与 dashboard 同：直接调挂在 ctx 上的函数（_buildDetailsOnly），不经过 bus handler 表。
+  if (method === 'details') {
+    const fn = engine.ctx._buildDetailsOnly;
+    if (typeof fn !== 'function') throw Object.assign(new Error('消费明细服务未就绪（等待路由注册）'), { code: 'NOT_READY' });
+    const raw = await fn(payload);
+    if (raw.error || raw.notReady) throw Object.assign(new Error(raw.error || '数据扫描中，请稍后刷新'), { code: 'NOT_READY' });
+    // highUsageThreshold 必须带上：界面靠它给高用量行加底色，缺了行高亮会消失。
+    return { details: raw.details ?? null, summary: { highUsageThreshold: handlers.get('token-tracker.settings.read')().highUsageThreshold } };
+  }
+  // diagnostics：体检（只读）。挂法与 dashboard 同：直接调挂在 ctx 上的函数（_buildDiagnostics）。
+  // bytes=1 时引擎会重算一遍整份看板拆字节，所以界面把它做成单独一次点击，不跟着打开面板一起做。
+  if (method === 'diagnostics') {
+    const fn = engine.ctx._buildDiagnostics;
+    if (typeof fn !== 'function') throw Object.assign(new Error('体检服务未就绪（等待路由注册）'), { code: 'NOT_READY' });
+    return await fn(payload && typeof payload === 'object' ? payload : {});
+  }
   // turn：轮次详情（「点得开」）。挂法与 dashboard 同：直接调挂在 ctx 上的函数（_readTurnCalls），
   // 不经过 bus handler 表。gate 与 dashboard 同源（都要缓存里有会话）。
   if (method === 'turn') {

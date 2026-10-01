@@ -248,6 +248,34 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   }
 
+  // 只取「消费明细」这一块：界面翻页/换排序/换门槛时只重取这一块，不再把整份看板搬一遍。
+  // range/筛选/分页排序门槛原样转给引擎；mock 路径没有引擎，details 给 null，让前端用它自己那套回落
+  // （别在插件里另写一份明细计算）。
+  async function handleDetails(c) {
+    const payload = {
+      range: c.req.query("range") || "today",
+      from: c.req.query("from") || "",
+      to: c.req.query("to") || "",
+      agent: c.req.query("agent") || "",
+      model: c.req.query("model") || "",
+      provider: c.req.query("provider") || "",
+      type: c.req.query("type") || "",
+      page: c.req.query("page") || "",
+      pageSize: c.req.query("pageSize") || "",
+      sortKey: c.req.query("sortKey") || "",
+      order: c.req.query("order") || "",
+      minTokens: c.req.query("minTokens") || "",
+    };
+    if (isMock(c)) return jsonResponse(c, okResponse({ details: null }));
+    try {
+      const out = await busClient.request("token-tracker.details", payload);
+      return jsonResponse(c, okResponse(out));
+    } catch (err) {
+      log("error", "GET /details error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "DETAILS_FAILED", err?.message || "获取消费明细失败"), err?.code === "INVALID_SETTINGS" ? 400 : 503);
+    }
+  }
+
   async function handleBalance(c) {
     try {
       const raw = await busClient.request("token-tracker.balance", {}, { mock: isMock(c) });
@@ -274,6 +302,20 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     } catch (err) {
       log("error", "GET /ds-usage error:", err?.message || err);
       return jsonResponse(c, errResponse(err?.code || "DS_USAGE_FAILED", err?.message || "获取官网用量失败"), err?.code === "INVALID_SETTINGS" ? 400 : 503);
+    }
+  }
+
+  // 体检（只读）：库/表规模、落盘统计、账本来源；bytes=1 时另外拆一份整份看板的字节。
+  // 预览模式没有引擎、也就没有库要读，直接说清楚，不编数字。
+  async function handleDiagnostics(c) {
+    if (isMock(c)) return jsonResponse(c, errResponse("NO_ENGINE", "预览模式没有体检数据（要读引擎的缓存库）"));
+    const payload = { bytes: c.req.query("bytes") === "1", range: c.req.query("range") || "all" };
+    try {
+      const diagnostics = await busClient.request("token-tracker.diagnostics", payload);
+      return jsonResponse(c, okResponse({ diagnostics }));
+    } catch (err) {
+      log("error", "GET /diagnostics error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "DIAGNOSTICS_FAILED", err?.message || "获取体检数据失败"), err?.code === "INVALID_SETTINGS" ? 400 : 503);
     }
   }
 
@@ -319,7 +361,9 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       app.get("/snapshot", handleSnapshot);
       app.get("/dashboard", handleDashboard);
       app.get("/details.csv", handleDetailsCsv);
+      app.get("/details", handleDetails);
       app.get("/turn", handleTurn);
+      app.get("/diagnostics", handleDiagnostics);
       app.get("/balance", handleBalance);
       app.get("/ds-usage", handleDsUsage);
       app.post("/refresh", handleRefresh);
@@ -342,7 +386,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     throw err;
   }
 
-  log("info", "routes registered: /snapshot /dashboard /details.csv /turn /balance /ds-usage /refresh /settings /events");
+  log("info", "routes registered: /snapshot /dashboard /details.csv /details /turn /diagnostics /balance /ds-usage /refresh /settings /events");
 
   let disposed = false;
   return async () => {

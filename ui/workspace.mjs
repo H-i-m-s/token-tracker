@@ -25,6 +25,14 @@ function clockOf(iso) {
   const p = (n) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+// 文件大小：MB 以上才像会话文件该有的量级（70.6 MB 这种数要看得见）
+function fmtBytes(n) {
+  const v = Number(n);
+  if (!Number.isFinite(v) || v <= 0) return "—";
+  if (v >= 1048576) return (v / 1048576).toFixed(1) + " MB";
+  if (v >= 1024) return (v / 1024).toFixed(0) + " KB";
+  return v + " B";
+}
 // 当前选中的字符数（拿不到就当 0）。只用来比较「这一次手势有没有选出新文字」。
 function selectedLength() {
   try { return typeof window.getSelection === "function" ? String(window.getSelection() || "").length : 0; } catch { return 0; }
@@ -78,6 +86,7 @@ export class WorkspaceApp {
     this.error = "";
     this.notReady = false;
     this.dashboardRequest = 0;
+    this.detailsRequest = 0;   // 单独的计数器：翻页只动明细，不能让先发出的整份请求把它盖回去
     this.disposed = false;
     this.visible = true;
     this.eventController = null;
@@ -93,10 +102,16 @@ export class WorkspaceApp {
 
     this.pollTimer = null;
     this.disposers = [];
+    // 体检（只读）：默认收着，点开才去取一次；载荷分解要重算一遍看板，所以再单独点一次才量。
+    this.diagOpen = false;
+    this.diagData = null;
+    this.diagError = "";
+    this.diagLoading = false;
   }
 
   async init() {
     this.renderShell();
+    this.renderDiagnostics();
     const initial = this.state.get();
     this.filterKey = JSON.stringify([initial.range, initial.from, initial.to, initial.agent, initial.model, initial.provider, initial.type]);
     this.disposers.push(
@@ -312,6 +327,7 @@ export class WorkspaceApp {
     if (!force && this.dashboard) return;
     this.setLoading(1, { silent });
     const request = ++this.dashboardRequest;
+    this.detailsRequest++;   // 作废还在路上的「只取明细」请求：它带回的可能是旧页旧排序
     try {
       // 明细已服务端分页：页码/排序/门槛跟着一起发；后台静默刷新用当前页，别把读者送回第一页。
       const filters = {
@@ -339,6 +355,36 @@ export class WorkspaceApp {
       }
     } finally {
       this.setLoading(-1, { silent });
+    }
+  }
+
+  // 只看明细这一块。翻个页/换个排序/换个门槛只会动明细，没必要把整份看板（全历史时 329 KB，
+  // 其中 analytics.heatmap 占 72%）重取一遍，更不该让引擎把图的数据重算、让前端把概览重画。
+  // 拿不到这一块（旧引擎、路由没就绪、网络抖）就退回整份看板，行为与以前完全一致。
+  async loadDetails({ silent = true } = {}) {
+    if (this.mock || typeof this.api.getDetails !== "function") { await this.loadDashboard(true, { silent }); return; }
+    const request = ++this.detailsRequest;
+    if (!silent) this.setLoading(1);
+    try {
+      const filters = {
+        ...this.state.get(),
+        page: this.detailsPage, pageSize: PAGE_SIZE,
+        sortKey: this.detailsSort, order: "desc", minTokens: this.detailsMin,
+      };
+      const part = await this.api.getDetails(filters, { mock: this.mock });
+      if (request !== this.detailsRequest || this.disposed) return;
+      // 连整份看板都还没拿到（刚打开、后端刚重启）：退回整份，别把明细留在半路上。
+      if (!this.dashboard || !part?.details) { await this.loadDashboard(true, { silent }); return; }
+      // 行仍是数组编码，交给 renderDetails 里的 decodeRows 解一次（与整份那条路完全一样）。
+      this.dashboard.details = part.details;
+      if (part.summary) this.dashboard.summary = { ...this.dashboard.summary, ...part.summary };
+      this.renderDetails({ preserveScroll: true });
+    } catch {
+      if (request !== this.detailsRequest || this.disposed) return;
+      // 单独取这一块失败不该让明细卡在半路：退回整份（那条路本来就有完整的错误处理）。
+      await this.loadDashboard(true, { silent });
+    } finally {
+      if (!silent) this.setLoading(-1);
     }
   }
 
@@ -706,6 +752,10 @@ export class WorkspaceApp {
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
       this.mainEl.appendChild(el);
+      // 体检块固定在主列最下面：它可能比明细模块先建出来，这里把顺序理顺一次
+      // （appendChild 对已在树上的节点是「移动」，不是插一份新的）。
+      const diag = this.mainEl.querySelector("#diagnostics-module");
+      if (diag) this.mainEl.appendChild(diag);
     }
 
     // 两条路：引擎给了 details 就用它（排序/门槛/分页都在数据层做完了，这里只渲染这一页），
@@ -749,7 +799,9 @@ export class WorkspaceApp {
     // 服务端分页时，排序/门槛都得重新取一次（语义在后端）；本地退回那套就地重渲染。
     const refresh = () => {
       this.detailsPage = 1;
-      if (this.dashboard?.details) this.loadDashboard(true);
+      // 服务端分页时，排序/门槛都得重新取一次（语义在后端）；本地退回那套就地重渲染。
+      // 只碰得到明细这一块，所以走轻量路；概览不重算也不重画。
+      if (this.dashboard?.details) this.loadDetails();
       else this.renderDetails();
     };
     this.container.querySelector("#details-sort")?.addEventListener("change", (e) => {
@@ -863,8 +915,8 @@ export class WorkspaceApp {
     const go = (next) => {
       const target = Math.min(totalPages, Math.max(1, next));
       this.detailsPage = Number.isFinite(target) ? target : 1;
-      // 服务端分页：页码在后端生效，重新取一次这一页（静默，别把整页控件重建一遍）；本地模式就地重渲染。
-      if (server) this.loadDashboard(true, { silent: true });
+      // 服务端分页：页码在后端生效，只重取明细这一页（静默，不重建整页控件）；本地模式就地重渲染。
+      if (server) this.loadDetails({ silent: true });
       else this.renderDetails();
     };
     this.container.querySelectorAll("[data-page]").forEach((btn) => {
@@ -901,6 +953,111 @@ export class WorkspaceApp {
     } catch (err) {
       this.setError(`导出失败：${err.message}`);
     }
+  }
+
+  // ---------- 体检（只读） ----------
+  // 平时收着，点开才取。扫描/落盘/库规模这些数字以前只有拿脚本翻 sqlite 才看得到，
+  // 而它们正是「有没有白干、有没有静默兜底」的证据 —— 放在界面上，问题自己会说出来。
+  renderDiagnostics() {
+    let el = this.container.querySelector("#diagnostics-module");
+    if (!el) {
+      el = h("section", { id: "diagnostics-module", className: "tt-module tt-diag" });
+      this.mainEl.appendChild(el);
+    }
+    const open = !!this.diagOpen;
+    el.innerHTML = "";
+    el.appendChild(h("button", {
+      type: "button", className: "tt-diag-hd", "aria-expanded": open ? "true" : "false",
+      onClick: () => this.toggleDiagnostics(),
+    },
+      h("span", { className: "tt-diag-caret" }, open ? "▾" : "▸"),
+      h("span", { className: "tt-module-title" }, "体检"),
+      open ? null : h("span", { className: "tt-diag-hint" }, "扫描 · 落盘 · 库规模 · 载荷"),
+    ));
+    if (open) el.appendChild(this.buildDiagnostics());
+  }
+
+  async toggleDiagnostics() {
+    this.diagOpen = !this.diagOpen;
+    this.renderDiagnostics();
+    if (this.diagOpen && !this.diagData && !this.diagLoading) await this.loadDiagnostics();
+  }
+
+  // bytes=true 时后端会把整份看板重算一遍再拆字节，所以那一下单独点，不跟着打开面板一起做。
+  async loadDiagnostics({ bytes = false } = {}) {
+    this.diagLoading = true;
+    this.renderDiagnostics();
+    try {
+      this.diagData = await this.api.getDiagnostics({ bytes, mock: this.mock });
+      this.diagError = "";
+    } catch (err) {
+      this.diagError = err?.message || "取不到体检数据";
+    } finally {
+      this.diagLoading = false;
+      this.renderDiagnostics();
+    }
+  }
+
+  buildDiagnostics() {
+    const box = h("div", { className: "tt-diag-bd" });
+    if (this.diagError) {
+      box.appendChild(h("div", { className: "tt-diag-note" }, "取不到体检数据：" + this.diagError,
+        h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: !!this.diagData?.payload }) }, "重试")));
+      return box;
+    }
+    const d = this.diagData;
+    if (!d) { box.appendChild(h("div", { className: "tt-diag-note" }, "正在取…")); return box; }
+
+    // 一行一条，label 在左、数字在右、后面跟一句它是从哪来的（数字没有出处就等于没有可信度）。
+    const row = (label, value, note) => h("div", { className: "tt-diag-row" },
+      h("span", { className: "tt-diag-label" }, label),
+      h("span", { className: "tt-diag-value" }, value),
+      note ? h("span", { className: "tt-diag-sub" }, note) : null,
+    );
+    const t = d.tables || {}, db = d.db || {}, c = d.cache || {}, lg = d.ledger || {}, p = d.persist || null;
+    box.appendChild(h("div", { className: "tt-diag-grid" },
+      row("sessions 行", fmt(t.sessions), "整表，含下面的账本行"),
+      row("轮次行", fmt(t.turns), "turns 表（明细的来源）"),
+      row("账本行", fmt(t.ledger), "宿主账本按天聚合"),
+      row("库文件", fmtBytes(db.bytes), db.walBytes ? "另有 WAL " + fmtBytes(db.walBytes) : "含空闲页"),
+      row("缓存版本", c.version != null ? "v" + c.version : "—", c.scanning ? "正在扫描" : (c.ready === false ? "未就绪" : "已就绪")),
+      row("最近扫描", c.lastScan ? formatDateTime(c.lastScan) : "—", this.snapshot?.updatedAt ? "快照 " + clockOf(this.snapshot.updatedAt) : ""),
+      row("账本来源", lg.source || "—", lg.entries != null ? fmt(lg.entries) + " 条" : ""),
+      p
+        ? row("累计写入", fmt(p.writes) + " 次 / " + fmtBytes(p.bytes), "今天 " + fmt(p.dayWrites) + " 次 / " + fmtBytes(p.dayBytes))
+        : row("落盘统计", "—", "引擎还没落过盘"),
+      p ? row("最近一次落盘", p.lastReason || "—", [
+        p.lastRows != null ? fmt(p.lastRows) + " 行 / " + fmtBytes(p.lastBytes) : "",
+        p.lastMs != null ? p.lastMs + " ms" : "",
+        p.lastDetail || "",
+        p.lastScope || "",
+      ].filter(Boolean).join(" · ")) : null,
+    ));
+
+    box.appendChild(h("div", { className: "tt-diag-payload" },
+      h("div", { className: "tt-diag-payload-hd" },
+        h("span", { className: "tt-diag-label" }, "整份看板载荷"),
+        d.payload ? h("span", { className: "tt-diag-value" }, fmtBytes(d.payload.totalBytes)) : null,
+        h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: true }) }, d.payload ? "重量一次" : "量一次"),
+      ),
+      d.payload
+        ? h("div", { className: "tt-diag-bars" }, ...this.buildPayloadBars(d.payload))
+        : h("div", { className: "tt-diag-note" }, "量这一下会把整份看板重算一遍（几十毫秒），所以不跟着面板常驻。"),
+      d.payload ? h("div", { className: "tt-diag-foot" }, "analytics.xxx 是 analytics 内部的细分，不另计；百分比都是占整份的比例。") : null,
+    ));
+    return box;
+  }
+
+  buildPayloadBars(payload) {
+    const parts = (Array.isArray(payload.parts) ? payload.parts.slice() : []).sort((a, b) => (b.bytes || 0) - (a.bytes || 0));
+    const max = Math.max(...parts.map((x) => x.bytes || 0), 1);
+    const total = payload.totalBytes || parts.reduce((s, x) => s + (x.bytes || 0), 0) || 1;
+    return parts.map((x) => h("div", { className: "tt-diag-bar" },
+      h("span", { className: "tt-diag-bar-name", title: x.key }, x.key),
+      h("div", { className: "tt-diag-bar-track" }, h("i", { style: `width:${(((x.bytes || 0) / max) * 100).toFixed(1)}%` })),
+      h("span", { className: "tt-diag-bar-bytes" }, fmtBytes(x.bytes),
+        h("em", {}, ((x.bytes || 0) / total * 100).toFixed(0) + "%")),
+    ));
   }
 
   // ---------- 「点得开」：某一轮的调用拆解 ----------
@@ -1033,6 +1190,11 @@ export class WorkspaceApp {
     body.appendChild(h("div", { className: "tt-turn-file" },
       h("span", { className: "tt-turn-file-tag" }, t.fileExists === false ? "文件已不在" : "会话文件"),
       filePath ? h("code", { className: "tt-turn-path", title: filePath }, filePath) : h("span", { className: "tt-turn-path" }, "—"),
+      // 文件多大、一共多少轮：70 MB 的会话为什么第一下慢、这一轮排在文件里第几位，看这两个数。
+      t.fileSize != null || t.turnCount != null
+        ? h("span", { className: "tt-turn-file-meta", title: "会话文件大小 · 这份文件里的总轮数" },
+            `${fmtBytes(t.fileSize)} · 共 ${t.turnCount != null ? fmt(t.turnCount) : "—"} 轮`)
+        : null,
       filePath ? h("button", { type: "button", className: "tt-btn ghost", onClick: (e) => this.copyText(filePath, e.currentTarget) }, "复制路径") : null,
     ));
 

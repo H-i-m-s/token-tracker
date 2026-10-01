@@ -90,6 +90,29 @@ export class AppApi {
     return data.turn;
   }
 
+  // 只看明细这一块：翻页/换排序/换门槛用它，免得为了一页明细把概览的图也重算重画一遗。
+  // 参数与 getDashboard 同源，免得两处口径漂移。
+  async getDetails(filters = {}, { mock = false } = {}) {
+    const qs = new URLSearchParams();
+    for (const k of ["range", "from", "to", "agent", "model", "provider", "type", "sortKey", "order"]) {
+      if (filters[k]) qs.set(k, String(filters[k]));
+    }
+    if (filters.page) qs.set("page", String(filters.page));
+    if (filters.pageSize) qs.set("pageSize", String(filters.pageSize));
+    if (filters.minTokens) qs.set("minTokens", String(filters.minTokens));
+    const data = await this.fetchJson(`/details?${qs}${mock ? "&mock=1" : ""}`);
+    return { details: data.details ?? null, summary: data.summary || {} };
+  }
+
+  // 体检：库/表规模、落盘统计、账本来源，以及（bytes=1 时）整份看板的逐块字节分解。
+  async getDiagnostics({ bytes = false, mock = false } = {}) {
+    const qs = new URLSearchParams();
+    if (bytes) qs.set("bytes", "1");
+    if (mock) qs.set("mock", "1");
+    const data = await this.fetchJson(`/diagnostics?${qs}`);
+    return data.diagnostics || {};
+  }
+
   async getBalances({ mock = false } = {}) {
     const data = await this.fetchJson(`/balance${this._mockQs(mock)}`);
     return data.balances;

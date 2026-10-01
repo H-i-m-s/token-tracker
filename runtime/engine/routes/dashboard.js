@@ -829,6 +829,98 @@ export default function (app, ctx) {
     return { rows: objectRows };
   };
 
+  // 只取「消费明细」这一块：界面翻页/换排序/换门槛时只重取明细，不再把整份看板
+  // （analytics/heatmap/daily/hourly/agents/models/providers/summary 那些聚合）跟着重算重传。
+  // 范围/筛选解析、明细口径都与 _buildDashboardData 共用同一套，差别只在载荷：只回 details。
+  ctx._buildDetailsOnly = async (params = {}) => {
+    const cache = ctx._tokenCache;
+    if (!cache?.data || !cache.data.sessions) return { notReady: true, error: "数据未就绪" };
+    const view = { ...cache.data, dataDir: cache.dataDir, turnsStore: cache.turnsStore };
+    const filters = {
+      agent: params.agent || "", model: params.model || "", type: params.type || "", provider: params.provider || "",
+      from: params.from || "", to: params.to || "",
+      page: params.page, pageSize: params.pageSize, sortKey: params.sortKey, order: params.order, minTokens: params.minTokens,
+    };
+    const { dateFilter, from: dayFrom, to: dayTo } = resolveDateRange(params.range || "all", filters);
+    let sessions = filterSessions(Object.values(view.sessions), filters);
+    if (filters.model) sessions = sessions.filter(s => s.models?.[filters.model]);
+    const sessionKeys = new Map();
+    for (const [k, v] of Object.entries(view.sessions)) sessionKeys.set(v, k);
+    const { details } = collectDetails({
+      cache: view, sessions, sessionKeys, dateFilter, dayFrom, dayTo, filters, turnsStore: cache.turnsStore,
+    });
+    return { details };
+  };
+
+  // 体检（只读）：把「有没有白干」变成看得见的数字。
+  // 这些值以前只有拿脚本翻 cache.sqlite 才看得到，而出问题时第一个要问的就是它们。
+  // 它不挂在看板那条路上：只有界面点开体检、或点「量一次」时才会被调到。
+  // params.bytes=true 时才去重算一遍整份看板拆字节 —— 那一下有代价，所以单独一次点击。
+  ctx._buildDiagnostics = async (params = {}) => {
+    const cache = ctx._tokenCache;
+    const data = cache?.data || null;
+    const out = {
+      tables: { sessions: null, turns: null, ledger: null },
+      db: { bytes: null, walBytes: null, file: null },
+      cache: { version: data?.version ?? null, lastScan: data?.lastScan ?? null, ready: !!cache?.ready },
+      ledger: { rows: null, entries: null, file: null },
+      persist: cache?.persist?.stats || data?.persist || null,
+      payload: null,
+    };
+
+    // 表行数走真 SQL：turns 那条连接已经在手（与缓存同一个库文件），顺手把 sessions 也数了。
+    // 数不出来（没有 SQLite 驱动 / 还没建表）就不给数字，不用内存里的键数冒充表行数。
+    let db = null;
+    try { db = cache?.turnsStore?.open?.() || null; } catch { db = null; }
+    const countOf = (sql) => {
+      try { const row = db.prepare(sql).get(); return row ? Number(Object.values(row)[0]) : null; } catch { return null; }
+    };
+    if (db) {
+      out.tables.sessions = countOf("SELECT COUNT(*) FROM sessions");
+      out.tables.turns = countOf("SELECT COUNT(*) FROM turns");
+    }
+    if (out.tables.turns == null && typeof cache?.turnsStore?.count === "function") {
+      try { out.tables.turns = cache.turnsStore.count(); } catch {}
+    }
+
+    // 库文件：优先认 SQLite（含 WAL），拿不到就报那道追加日志。不存在的就不报。
+    const sqliteFile = cache?.cachePath ? path.join(path.dirname(cache.cachePath), "cache.sqlite") : null;
+    const pick = [sqliteFile, cache?.cachePath].find((f) => f && fs.existsSync(f)) || null;
+    if (pick) {
+      out.db.file = pick;
+      try { out.db.bytes = fs.statSync(pick).size; } catch {}
+      try { out.db.walBytes = fs.existsSync(pick + "-wal") ? fs.statSync(pick + "-wal").size : 0; } catch {}
+    }
+
+    // 账本行：没有文件，身份就是它的内容（指纹在 size 上），所以另外给出它从哪个文件读来的。
+    if (data?.sessions) {
+      const rows = Object.keys(data.sessions).filter((k) => k.startsWith("__ledger__"));
+      out.tables.ledger = rows.length;
+      out.ledger.rows = rows.length;
+      out.ledger.entries = rows.reduce((sum, k) => sum + (Number(data.sessions[k]?.msgCount) || 0), 0);
+      out.ledger.file = data.sessions[rows[0]]?.fileName || null;
+    }
+
+    if (params.bytes) {
+      try {
+        const raw = await ctx._buildDashboardData({ range: params.range || "all" }, { skipBalances: true });
+        const size = (v) => Buffer.byteLength(JSON.stringify(v ?? null), "utf8");
+        // 下划线开头的是路由自己用的残余（价格表、余额配置…），不过桥，不拿它们冒充载荷。
+        const parts = Object.keys(raw || {})
+          .filter((k) => !k.startsWith("_"))
+          .map((k) => ({ key: k, bytes: size(raw[k]) }));
+        // 第二层也得看一眼：整份里最大的一块（热力图）藏在 analytics 里面。
+        if (raw?.analytics && typeof raw.analytics === "object") {
+          for (const k of Object.keys(raw.analytics)) parts.push({ key: "analytics." + k, bytes: size(raw.analytics[k]) });
+        }
+        out.payload = { totalBytes: size(raw), parts };
+      } catch (e) {
+        out.payloadError = e.message;
+      }
+    }
+    return out;
+  };
+
   // 「点得开」：明细里的一行 → 该轮的会话文件与逐次调用拆解。
   // 与 _buildDashboardData 一样挂在 ctx 上（HTTP RPC / 离线对拍共用同一实例）。
   // 路径安全：只拿 sessionKey 在缓存里索引会话、取它自己的 filePath；绝不接受调用方传来的路径。

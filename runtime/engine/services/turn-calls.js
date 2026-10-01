@@ -11,6 +11,37 @@ import { readTextFile } from "./platform.js";
 
 const CALL_LIMIT = 400;
 
+// ── 会话级 memo ──
+// 点开一行要把整个会话文件重读一遍：70 MB 的会话是 0.5–1.3 秒。同一会话的相邻几行往往是
+// 连着点的，而这时文件根本没动。按（路径 + mtime + size）记住拆好的轮次：文件没变就直接复用，
+// 变了就是另一个 key，不必再判过期。（理论上「同一毫秒改、且长度也一样」会漏判，但文件只会被追加，
+// 内容一变长度就变，不为此再引入哈希。）
+// 只留 MEMO_MAX 份，超了丢最旧的一份：拆完的轮次都带着 callList，不能无限攒。
+const MEMO_MAX = 4;
+const memoCache = new Map();   // filePath -> { key, fileSize, turns }
+let memoHits = 0, memoMisses = 0;
+
+function turnsOf(fp) {
+  const st = fs.statSync(fp);
+  const key = `${st.mtimeMs}:${st.size}`;
+  const hit = memoCache.get(fp);
+  if (hit && hit.key === key) {
+    memoHits++;
+    memoCache.delete(fp); memoCache.set(fp, hit);   // 命中即挪到队尾，丢最旧的时候才丢得对
+    return hit;
+  }
+  memoMisses++;
+  const rec = { key, fileSize: st.size, turns: splitTurns(readTextFile(fp)) };
+  memoCache.set(fp, rec);
+  while (memoCache.size > MEMO_MAX) memoCache.delete(memoCache.keys().next().value);
+  return rec;
+}
+
+// 只给测试与排查用：memo 的规模与命中次数。生产路径不读它。
+export function memoStats() {
+  return { size: memoCache.size, max: MEMO_MAX, hits: memoHits, misses: memoMisses };
+}
+
 // 与 index.js 顶部的 tokVal 同口径：数字原样、对象取 .totalTokens、其余 0。
 // 不导出，但必须与 scanDir 保持一致——这是拆轮口径的一部分。
 function tokVal(v) {
@@ -123,6 +154,7 @@ function finalizeTurn(t) {
 }
 
 // 空壳（缺文件 / 账本行）：形状齐全，数字归零，不抛。
+// fileSize / turnCount 给 null：没读到文件，就是「不知道」，不能拿 0 冒充。
 function emptyShell(seq, kind, filePath, fileExists) {
   return {
     ok: true,
@@ -138,6 +170,7 @@ function emptyShell(seq, kind, filePath, fileExists) {
     elapsedMs: null,
     truncated: false,
     callList: [],
+    fileSize: null, turnCount: null,
   };
 }
 
@@ -158,13 +191,16 @@ export function readTurnCalls({ session, seq, log = () => {} } = {}) {
       return emptyShell(seq, "session", fp, false);
     }
 
-    const turns = splitTurns(readTextFile(fp));
+    const rec = turnsOf(fp);
+    const turns = rec.turns;
     if (!Number.isFinite(seq) || seq < 1 || seq > turns.length) {
       return { ok: false, code: "TURN_NOT_FOUND", message: `该会话没有第 ${seq} 轮（共 ${turns.length} 轮）` };
     }
     const out = finalizeTurn(turns[seq - 1]);
     out.seq = seq;
     out.filePath = fp;
+    out.fileSize = rec.fileSize;    // 面板上写「文件 70.6 MB · 共 586 轮」
+    out.turnCount = turns.length;
     return out;
   } catch (e) {
     try { log.warn("[token-tracker] readTurnCalls 读取失败：", e.code || "", e.message); } catch {}
@@ -172,4 +208,4 @@ export function readTurnCalls({ session, seq, log = () => {} } = {}) {
   }
 }
 
-export default { readTurnCalls };
+export default { readTurnCalls, memoStats };
