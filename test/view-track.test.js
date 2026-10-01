@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   decideAxis, blockingReason, scrollableX, scrollableAny, nearestScroller, gestureMode, isControl,
-  dragOffset, settleTarget, settleDuration, FLICK_EASING, SETTLE_BASE_MS,
+  dragOffset, settleTarget, settleDuration, smoothStep, FLICK_EASING, SETTLE_BASE_MS,
+  SMOOTH_MAX_LAG,
   DRAG_START_PX,
 } from "../ui/view-track.mjs";
 
@@ -112,6 +113,35 @@ test("settleDuration：手越快、要走的距离越短，这段过渡就越短
   const tiny = settleDuration({ step: 700, distance: 700, velocity: 400 });
   assert.ok(tiny >= 110 && tiny <= 320, `极端值不越界（${tiny}）`);
   assert.ok(FLICK_EASING.startsWith("cubic-bezier"), "快甩用一条单独的陡曲线");
+});
+
+test("smoothStep：把指针的抖动压平，匀速部分的速度却保留", () => {
+  const dt = 16.7;
+  const maxStepDiff = (a) => { let m = 0; for (let i = 1; i < a.length; i++) m = Math.max(m, Math.abs(a[i] - a[i - 1])); return m; };
+  // ① 目标在 200±8 来回抖：输入的最大步差 16，画面应当远小于它
+  let shown = 0, target = 0;
+  const inp = [], out = [];
+  for (let i = 0; i < 60; i++) {
+    target = 200 + (i % 2 ? 8 : -8);
+    inp.push(target);
+    shown = smoothStep({ shown, target, dt });
+    out.push(shown);
+  }
+  const jIn = maxStepDiff(inp.slice(10)), jOut = maxStepDiff(out.slice(10));
+  assert.ok(jOut < jIn / 4, `抖动被压平（输入 ${jIn.toFixed(2)} → 输出 ${jOut.toFixed(2)}）`);
+  // ② 匀速前进：稳态下输出的步长与输入一致（速度保留，只是晚一点）
+  let s = 0;
+  for (let i = 0; i < 40; i++) s = smoothStep({ shown: s, target: i * 10, dt });
+  const before = s;
+  s = smoothStep({ shown: s, target: 400, dt });
+  assert.ok(Math.abs(s - before - 10) < 1, `稳态步长≈输入步长（${(s - before).toFixed(2)} ≈ 10）`);
+  // ③ 滞后有硬上限，不会越拖越远
+  assert.ok(400 - s <= SMOOTH_MAX_LAG + 0.01, `滞后不超上限（${(400 - s).toFixed(2)} ≤ ${SMOOTH_MAX_LAG}）`);
+  assert.equal(smoothStep({ shown: 0, target: 500, dt }), 500 - SMOOTH_MAX_LAG);
+  // ④ 停了一会儿（dt 很大）几乎追上，不把人卡在后面
+  assert.ok(Math.abs(smoothStep({ shown: 100, target: 200, dt: 500 }) - 200) < 0.05, "dt 很大时基本追上");
+  // ⑤ dt≤0（同一瞬间的多个事件）不推进，但也不许越界
+  assert.equal(smoothStep({ shown: 0, target: 0, dt: 0 }), 0);
 });
 
 test("nearestScroller：往上找最近的可滚容器（图表平移的落点）", () => {

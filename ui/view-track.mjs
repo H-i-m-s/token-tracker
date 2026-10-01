@@ -170,6 +170,35 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
   // 顶部控件区（范围胶囊、筛选排、页签）在滑轨区**外面**，只挂 mainEl 的话在那边按下根本收不到事件。
   const surfaceEl = bindEl || mainEl;
   let drag = null;
+  // 跟手平滑的状态：画面当前用的位移、上一次推进的时刻。
+  let shownOffset = 0;
+  let lastStepAt = 0;
+  let smoothRaf = 0;
+  const clock = () => (typeof win.performance?.now === "function" ? win.performance.now() : Date.now());
+
+  // 把“画面实际用的位移”往目标推进一格（time-based，不依赖帧率也不依赖指针事件密度）。
+  function advanceSmoothing() {
+    if (!drag || !drag.claimed || drag.mode !== GESTURE.view) return;
+    const now = clock();
+    const dt = now - lastStepAt;
+    lastStepAt = now;
+    shownOffset = smoothStep({ shown: shownOffset, target: drag.targetOffset, dt });
+    const x = Math.round(dragOffset({ index: drag.index, count, step: drag.step, dx: shownOffset, from: drag.from }));
+    if (drag.wrote !== x) {
+      drag.wrote = x;
+      writeJob({ kind: "view", x });
+    }
+  }
+
+  // 指针停着不动时不会再有事件，所以拖动期间额外用一个 rAF 循环继续收敛（指事件本身就够密的场合它是空转）。
+  function loop() {
+    smoothRaf = 0;
+    if (!drag || !drag.claimed || drag.mode !== GESTURE.view) return;
+    advanceSmoothing();
+    smoothRaf = typeof win.requestAnimationFrame === "function" ? win.requestAnimationFrame(loop) : 0;
+  }
+  function startLoop() { if (!smoothRaf) loop(); }
+  function stopLoop() { if (smoothRaf && typeof win.cancelAnimationFrame === "function") win.cancelAnimationFrame(smoothRaf); smoothRaf = 0; }
 
   // 轨道当前“眼睛看到”的位移（过渡跑到一半时就是中间值）。
   function currentTranslate(el) {
@@ -280,6 +309,10 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
       drag.originX = dx;
       drag.originY = dy;
       drag.wrote = null;
+      drag.targetOffset = 0;
+      shownOffset = 0;
+      lastStepAt = clock();
+      startLoop();
       trackEl.classList.add("tt-no-anim");   // 拖动期间关掉过渡，位移由我们逐帧写
       mainEl.classList.add("tt-dragging");
       onClaim?.();                            // 收掉还开着的浮层（文字选中由 CSS 管）
@@ -291,17 +324,16 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
     drag.lastX = e.clientX;
     drag.lastT = e.timeStamp;
     drag.dx = dx - drag.originX;
-    const x = Math.round(dragOffset({ index: drag.index, count, step: drag.step, dx: drag.dx, from: drag.from }));
-    if (drag.wrote !== x) {
-      drag.wrote = x;
-      writeJob({ kind: "view", x });
-    }
+    // 画面不去死跟指针：先把“目标位移”记下，实际写的位置由 advanceSmoothing 逐步追上去。
+    drag.targetOffset = drag.dx;
+    advanceSmoothing();
   }
 
   function onUp(e) {
     if (!drag || e.pointerId !== drag.id) return;
     const current = drag;
     drag = null;
+    stopLoop();
     listen(false);
     if (!current.claimed) return;         // 没接管：点击照旧
     swallowNextClick();                   // 拖完手一松补的那个 click 不算“点了落点上的东西”
@@ -312,8 +344,8 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
     mainEl.classList.remove("tt-dragging");
     trackEl.classList.remove("tt-no-anim");   // 交回过渡，下面这次的位移就是吸附动画
     const target = settleTarget({ index: current.index, count, dx: current.dx, velocity: current.velocity, step: current.step });
-    // 抬手后还要走多远：从“眼睛看到的位置”到吸附点。
-    const distance = -target * current.step - (current.from + current.dx);
+    // 抬手后还要走多远：从“画面现在实际在的位置”到吸附点（不是指针位置 —— 平滑让它略落后）。
+    const distance = -target * current.step - (current.from + shownOffset);
     const duration = settleDuration({ velocity: current.velocity, distance, step: current.step });
     const easing = Math.abs(current.velocity) > SNAP_VELOCITY ? FLICK_EASING : "";
     onChange(target, { duration, easing });
@@ -323,6 +355,7 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
   return {
     dispose() {
       drag = null;
+      stopLoop();
       listen(false);
       surfaceEl.removeEventListener("pointerdown", onDown, true);
     },
