@@ -998,6 +998,10 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-view-tabs { display: flex; gap: 17px; }
 .tt-view-tabs button { border: 0; border-bottom: 2px solid transparent; color: var(--tt-t2); background: transparent; padding: 0 0 5px; font: 11px var(--font-sans); cursor: pointer; }
 .tt-view-tabs button[aria-selected="true"] { color: var(--tt-select-fg); border-bottom-color: var(--tt-blue); }
+/* 标签条上焦点永远跟着选中项走（Tab 落在当前标签，方向键同时移焦点和切视图），
+   通用按钮规则再画一圈 outline 只是把同一件事说两遍，深色底上尤其显眼。 */
+.tt-dashboard-app .tt-view-tabs button:focus,
+.tt-dashboard-app .tt-view-tabs button:focus-visible { outline: none; }
 .tt-appearance-controls { display: flex; align-items: center; gap: 7px; }
 .tt-dashboard-app .tt-icon-btn { width: 28px; height: 28px; font-size: 15px; padding: 0; border: 1px solid var(--tt-b1); border-radius: 6px; }
 .tt-dashboard-app .tt-main { flex: 1 1 0; min-height: 0; padding: 0; display: block; overflow: hidden; }
@@ -1619,8 +1623,15 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
    入口就是行本身（没有角标）；这一块接在表格规则之后，靠“后来者胜”盖住 .tt-table tr:hover td 的底色。 */
 tr[data-turn-row] { cursor: pointer; }
 tr[data-turn-row] > td:first-child { white-space: nowrap; }
-.tt-table tr.tt-turn-open > td { background: var(--tt-select-bg); }
-.tt-table tr.tt-turn-open:hover > td { background: var(--tt-select-bg); }
+.tt-table tr.tt-turn-open > td {
+  /* 开着的这一行要一眼认出来：底色改用强调色混一档，比那层几乎看不出变化的选中底重得多
+     （同一套混色写法见上面的 .tt-high-usage）；顺手抹掉自身下边框，让它和下面的抽屉连成一整块。 */
+  background: color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+  border-bottom-color: transparent;
+}
+/* 左侧竖条只画第一格，避免每格各画一道。 */
+.tt-table tr.tt-turn-open > td:first-child { box-shadow: inset 2px 0 0 var(--tt-select-b); }
+.tt-table tr.tt-turn-open:hover > td { background: color-mix(in srgb, var(--tt-select-b) 30%, transparent); }
 
 /* 抽屉行：关着就整行不占位 */
 .tt-table tr.tt-turn-drawer > td {
