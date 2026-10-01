@@ -261,9 +261,14 @@ function renderFlowPanel(a, days, agentNames = {}) {
 
     const W = 1000, H = 300, PAD_L = 90, PAD_B = 40, PAD_T = 8;
     const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
-    const max = solo
-      ? Math.max(...solo.values, 0.01)
-      : (flowScale === 'pct' ? 1 : Math.max(1, ...cells.map((c) => c.totalTokens)));
+    // 纵轴上限 = 画面上真实存在的最高点，只算画出来的这几层。
+    // 以前绝对量取的是「各层叠起来的日总量」，于是聚焦选谁都不影响纵轴：只选小层时轴还挂在
+    // 全体叠起来的高度上（本机数据 23.52 亿，由 08-13 一天撑着），小层就被压成一条线。
+    // 占比模式仍旧固定 1（每列归一才有意义），单选仍是它自己的尺度。
+    const shownMax = Math.max(0.01, ...shown.flatMap((l) => l.values));
+    const max = flowScale === 'pct'
+      ? (solo ? Math.max(...solo.values, 0.01) : 1)
+      : Math.max(1, shownMax);
     // 绝对量用叠加（复刻「0–24 时分布」的观感），占比用堆叠（归一到 100% 才有意义）。
     const overlaid = flowScale === 'abs';
     const paths = overlaid
@@ -403,7 +408,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
     canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
       ...ids.map((id, i) => h('button', {
         type: 'button',
-        title: `${nameOf(id)}${splittable ? ' · 点一下只看这一层；Shift / Ctrl 点可多看几层，再点取消' : ''}`,
+        // 不用原生 title：它长得跟这套深色玻璃不搭，改用自带样式的说明（见 .tt-legend-tip）
         'aria-pressed': String(flowFocus.includes(id)),
         onClick: (event) => {
           flowFocus = pickValues(flowFocus, id, ids, modsOf(event), anchors.focus);
@@ -414,7 +419,14 @@ function renderFlowPanel(a, days, agentNames = {}) {
         h('span', { className: 'tt-legend-name' },
           h('i', { style: `background:${COLORS[i % COLORS.length]}` }),
           h('span', {}, nameOf(id))),
-        h('b', {}, `${compact(totalOf(id))} · ${((totalOf(id) / grand) * 100).toFixed(1)}%`)))));
+        h('b', {}, compact(totalOf(id))),
+        h('span', { className: 'tt-legend-tip' },
+          h('span', { className: 'tt-tip-head' },
+            h('b', {}, nameOf(id)),
+            splittable
+              ? h('small', {}, `占总量 ${((totalOf(id) / grand) * 100).toFixed(1)}%`)
+              : h('small', {}, '只有总量')),
+          splittable ? h('small', {}, '点一下只看这一层 · Shift / Ctrl 点可多看几层 · 再点取消') : null)))));
     // 叠加模式下各层独立成线，叠满不等于总量，页脚不能再那么写。
     const scaleNote = !splittable
       ? '按模型或供应商筛选时只显示总量'
@@ -422,7 +434,11 @@ function renderFlowPanel(a, days, agentNames = {}) {
         ? `只看「${nameOf(solo.id)}」，纵轴已按这层重新缩放`
         : flowDimension === 'model' && ids.length === 1
           ? '只看所选模型自己的用量'
-          : (flowScale === 'pct' ? '每列归一到 100%，看构成' : '各层独立成线，重叠处自然加深');
+          : (flowScale === 'pct'
+            ? '每列归一到 100%，看构成'
+            : (flowFocus.length > 1
+              ? `各层独立成线，纵轴按所选的 ${flowFocus.length} 层里最高的一条缩放`
+              : '各层独立成线，重叠处自然加深'));
     const lastCell = cells[cells.length - 1];
     foot.textContent = useHour
       ? `按小时 · ${cells[0].date}${lastCell.date === cells[0].date ? '' : ' → ' + lastCell.date} · 共 ${cells.length} 小时 · ${scaleNote}`

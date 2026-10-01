@@ -1088,6 +1088,33 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
   text-overflow: clip;
 }
 .tt-flow-panel .tt-legend-totals button > b { text-align: center; font-size: 12px; }
+/* 图例悬停说明：原来用浏览器自带的 title（一个灰框，跟这套深色玻璃不搭），
+   改成跟同一块里的读数浮层同一套底子：同样的圆角、描边、字号与底色。
+   占比从行里搬到这儿。位置用纯 CSS 挂在按钮上方，不走脚本定位，不会被裁。 */
+.tt-flow-panel .tt-legend-totals button { position: relative; }
+.tt-flow-panel .tt-legend-totals .tt-legend-tip {
+  position: absolute; left: 50%; bottom: calc(100% + 7px); transform: translateX(-50%);
+  display: flex; flex-direction: column; gap: 3px; z-index: 4;
+  padding: 7px 10px; width: max-content; max-width: 260px; text-align: left;
+  border: 1px solid var(--tt-b2); border-radius: 9px;
+  background: color-mix(in srgb, var(--tt-card) 94%, transparent);
+  box-shadow: 0 8px 22px rgba(0, 0, 0, .3);
+  color: var(--tt-t2); font: 11px/1.5 var(--font-sans);
+  white-space: normal; overflow: visible; text-overflow: clip;
+  pointer-events: none;
+  /* 停一会儿再出现：悬停后先等 0.6s 再淡入；离开时立即收，不等。 */
+  opacity: 0; visibility: hidden;
+  transition: opacity 120ms ease, visibility 0s linear 120ms;
+}
+.tt-flow-panel .tt-legend-totals button:hover .tt-legend-tip,
+.tt-flow-panel .tt-legend-totals button:focus-visible .tt-legend-tip {
+  opacity: 1; visibility: visible;
+  transition: opacity 160ms ease 600ms, visibility 0s linear 600ms;
+}
+.tt-flow-panel .tt-legend-totals .tt-legend-tip > .tt-tip-head { display: flex; align-items: baseline; gap: 6px; }
+.tt-flow-panel .tt-legend-totals .tt-legend-tip > .tt-tip-head > b { color: var(--tt-t1); font: 600 12px var(--font-sans); text-align: left; }
+.tt-flow-panel .tt-legend-totals .tt-legend-tip > .tt-tip-head > small { color: var(--tt-t1); font: 500 12px var(--font-mono); }
+.tt-flow-panel .tt-legend-totals .tt-legend-tip > small { color: var(--tt-t3); font: 11px var(--font-sans); }
 /* 悬停读数浮层：字号抬一档，跟这张图的其他文字同档。 */
 /* transform 必须清掉：公共规则用它把 left 当中心点，脚本传的是左边缘像素。 */
 .tt-flow-panel .tt-flow-hud { font: 12px var(--font-sans); padding: 8px 12px; gap: 3px; transform: none; }
