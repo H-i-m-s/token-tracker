@@ -1,3 +1,8 @@
+import { selectionParam } from "./selection.mjs";
+
+// 多选筛选字段：值要按「URI 编码后逗号连接」写信，其余字段仍是单值。
+const LIST_FILTER_KEYS = ["agent", "model", "provider", "type"];
+
 export class AppApiError extends Error {
   constructor(code, message) {
     super(message);
@@ -48,6 +53,19 @@ export class AppApi {
     return mock ? "?mock=1" : "";
   }
 
+  // 把筛选写进 query：四个多选字段按「URI 编码 + 逗号连接」写，其余按单值原样写。
+  // 空集合（数组为空 / 空串 / 未给）就不发这个参数 —— 引擎侧「不发」与「空」同义，都是不筛。
+  _applyFilters(qs, filters, keys) {
+    for (const k of keys) {
+      if (LIST_FILTER_KEYS.includes(k)) {
+        const v = selectionParam(filters[k]);
+        if (v) qs.set(k, v);
+      } else if (filters[k]) {
+        qs.set(k, String(filters[k]));
+      }
+    }
+  }
+
   async getSnapshot({ mock = false } = {}) {
     const data = await this.fetchJson(`/snapshot${this._mockQs(mock)}`);
     return data.snapshot;
@@ -55,13 +73,7 @@ export class AppApi {
 
   async getDashboard(filters = {}, { mock = false } = {}) {
     const qs = new URLSearchParams();
-    if (filters.range) qs.set("range", filters.range);
-    if (filters.from) qs.set("from", filters.from);
-    if (filters.to) qs.set("to", filters.to);
-    if (filters.agent) qs.set("agent", filters.agent);
-    if (filters.model) qs.set("model", filters.model);
-    if (filters.provider) qs.set("provider", filters.provider);
-    if (filters.type) qs.set("type", filters.type);
+    this._applyFilters(qs, filters, ["range", "from", "to", "agent", "model", "provider", "type"]);
     // 明细已服务端分页：页码、排序、门槛都要带上去，否则拿回来的永远是第一页的默认排序。
     if (filters.page) qs.set("page", String(filters.page));
     if (filters.pageSize) qs.set("pageSize", String(filters.pageSize));
@@ -75,9 +87,7 @@ export class AppApi {
   // 明细导出：拿引擎按「当前筛选 + 当前排序」拼好的 CSV 文本（明细分页后前端只有一页）。
   async getDetailsCsv(filters = {}, { mock = false } = {}) {
     const qs = new URLSearchParams();
-    for (const k of ["range", "from", "to", "agent", "model", "provider", "type", "sortKey", "order"]) {
-      if (filters[k]) qs.set(k, String(filters[k]));
-    }
+    this._applyFilters(qs, filters, ["range", "from", "to", "agent", "model", "provider", "type", "sortKey", "order"]);
     if (filters.minTokens) qs.set("minTokens", String(filters.minTokens));
     const data = await this.fetchJson(`/details.csv?${qs}${mock ? "&mock=1" : ""}`);
     return data.csv;
@@ -94,9 +104,7 @@ export class AppApi {
   // 参数与 getDashboard 同源，免得两处口径漂移。
   async getDetails(filters = {}, { mock = false } = {}) {
     const qs = new URLSearchParams();
-    for (const k of ["range", "from", "to", "agent", "model", "provider", "type", "sortKey", "order"]) {
-      if (filters[k]) qs.set(k, String(filters[k]));
-    }
+    this._applyFilters(qs, filters, ["range", "from", "to", "agent", "model", "provider", "type", "sortKey", "order"]);
     if (filters.page) qs.set("page", String(filters.page));
     if (filters.pageSize) qs.set("pageSize", String(filters.pageSize));
     if (filters.minTokens) qs.set("minTokens", String(filters.minTokens));

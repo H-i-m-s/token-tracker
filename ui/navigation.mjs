@@ -3,6 +3,7 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { decodeRows } from "./details-view.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { h, RANGES, fmt, fmtCost, fmtPct, renderPills, rankAgents } from "./components.mjs";
+import { selectionKey } from "./selection.mjs";
 
 export class NavigationApp {
   constructor({ hana, api, state, container, mock = false }) {
@@ -55,7 +56,7 @@ export class NavigationApp {
 
   currentFilterKey() {
     const s = this.state.get();
-    return JSON.stringify([s.range, s.from, s.to, s.agent, s.model, s.provider, s.type]);
+    return JSON.stringify([s.range, s.from, s.to, selectionKey(s.agent), selectionKey(s.model), selectionKey(s.provider), selectionKey(s.type)]);
   }
 
   async loadAll() {

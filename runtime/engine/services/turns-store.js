@@ -48,6 +48,18 @@ const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 1000;
 const BACKFILL_CHUNK = 200;
 
+// 筛选列匹配：非空数组 → col IN (?,?,…)（字段内 OR，多值）；单值字符串仍走 col = ?（原路径不变）。
+// 空数组 / 空串 / null / undefined / 其它类型都不产生条件，与「不筛」同义（不是「筛成空」）。
+function pushEq(where, params, col, v) {
+  if (Array.isArray(v)) {
+    if (!v.length) return;
+    where.push(col + " IN (" + v.map(() => "?").join(",") + ")");
+    for (const x of v) params.push(x);
+    return;
+  }
+  if (typeof v === "string" && v !== "") { where.push(col + " = ?"); params.push(v); }
+}
+
 // 本地时区取日，写法与 scanDir/scanLedger 里的那行一模一样（避免 UTC 日期错位）。
 // 时间戳缺失或非法时归到 "unknown"（day 是 NOT NULL，而且要给筛选一个可用的桶）。
 function localDay(ts) {
@@ -215,7 +227,7 @@ export function createSqliteTurnsStore({ DatabaseSync, file, log = () => {} }) {
     const d = open();
     const where = [];
     const params = [];
-    const eq = (col, v) => { if (typeof v === "string" && v !== "") { where.push(col + " = ?"); params.push(v); } };
+    const eq = (col, v) => pushEq(where, params, col, v);
     if (typeof o.from === "string" && o.from !== "") { where.push("day >= ?"); params.push(o.from); }
     if (typeof o.to === "string" && o.to !== "") { where.push("day <= ?"); params.push(o.to); }
     eq("agent", o.agent);
@@ -262,7 +274,7 @@ export function createSqliteTurnsStore({ DatabaseSync, file, log = () => {} }) {
     const d = open();
     const where = [];
     const params = [];
-    const eq = (col, v) => { if (typeof v === "string" && v !== "") { where.push(col + " = ?"); params.push(v); } };
+    const eq = (col, v) => pushEq(where, params, col, v);
     if (typeof o.from === "string" && o.from !== "") { where.push("day >= ?"); params.push(o.from); }
     if (typeof o.to === "string" && o.to !== "") { where.push("day <= ?"); params.push(o.to); }
     eq("agent", o.agent);

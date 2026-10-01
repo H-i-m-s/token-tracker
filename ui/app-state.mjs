@@ -2,10 +2,11 @@ export const DEFAULT_APP_STATE = {
   range: "today",
   from: "",
   to: "",
-  agent: "",
-  model: "",
-  provider: "",
-  type: "",
+  // 四个筛选都是多选：一律数组，空数组 = 不筛。旧版本存的是字符串，读到时归一成一项（见 normalizeFilterLists）。
+  agent: [],
+  model: [],
+  provider: [],
+  type: [],
   autoRefresh: true,
   lastError: null,
   view: "overview",
@@ -20,6 +21,21 @@ export const SHARED_PREFS_KEY = "token-tracker-app:prefs";
 export const SHARED_KEYS = ["view", "appearance", "cardActive", "cardTabs"];
 export const VALID_VIEWS = ["overview", "balance", "details", "realtime"];
 export const VALID_APPEARANCES = ["dark", "light", "system", ""];
+
+// 多选筛选的四个字段。旧版本把它们存成字符串，升级后一律是数组；
+// 字符串哪怕是逗号分隔的也只当一项——一个 id 里本来就可能带逗号，拆开反而会筛错。
+export const FILTER_LIST_KEYS = ["agent", "model", "provider", "type"];
+
+export function normalizeFilterLists(src) {
+  const out = { ...(src || {}) };
+  for (const key of FILTER_LIST_KEYS) {
+    const v = out[key];
+    if (Array.isArray(v)) out[key] = v.filter((x) => x !== null && x !== undefined && String(x) !== "").map(String);
+    else if (typeof v === "string" && v !== "") out[key] = [v];
+    else out[key] = [];
+  }
+  return out;
+}
 
 function pickShared(src) {
   const out = {};
@@ -64,7 +80,7 @@ export class AppState {
     const stored = await this._storageGet(this.storageKey, null);
     const shared = sanitizeShared(await this._storageGet(this.prefsKey, null));
     // 先实例状态，后共享偏好：共享的 view / appearance 盖在上面
-    this.cache = { ...DEFAULT_APP_STATE, ...(stored || {}), ...shared };
+    this.cache = normalizeFilterLists({ ...DEFAULT_APP_STATE, ...(stored || {}), ...shared });
 
     if (this.hana?.storage?.global?.onChanged) {
       this.unsubscribeStorage = this.hana.storage.global.onChanged((keys) => {

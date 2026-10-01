@@ -3,6 +3,7 @@ import { bootstrap } from './bootstrap.mjs';
 import { applyAppearance } from './appearance.mjs';
 import { renderAnalytics } from './analytics.mjs';
 import { h, RANGES, selectOptions } from './components.mjs';
+import { asList } from './selection.mjs';
 import { enhanceSelects } from './custom-select.mjs';
 import { closeAllPickers } from './custom-pickers.mjs';
 import { cardIcon } from './card-icons.mjs';
@@ -81,11 +82,13 @@ export class CardApp extends WorkspaceApp {
       const option = this.menu.querySelector(`[data-option="${focusedOption}"]`);
       if (option && !option.disabled) option.focus(); else this.moreButton.focus();
     }
+    // 多选之后这几个字段是数组；筛选标示按选中的值把名字列出来，别只显示「已筛选」。
+    const activeLabels = [...asList(state.agent), ...asList(state.model), ...asList(state.provider)];
     this.filterBar.replaceChildren(...[
       h('select', { 'aria-label': '卡片时间范围', onChange: e => this.state.patch({ range: e.target.value, from: '', to: '' }) },
         ...selectOptions([...(state.from ? [{ value: 'all', label: `${state.from} — ${state.to}` }] : []), ...RANGES.map(v => ({ value: v.key, label: v.label }))], state.range)),
-      h('span', { className: 'tt-card-filter-label', title: [state.agent, state.model, state.provider].filter(Boolean).join(' · ') }, state.agent || state.model || state.provider ? '已筛选' : '全部用量'),
-      state.agent || state.model || state.provider || state.from ? h('button', { type: 'button', className: 'tt-btn ghost', onClick: () => this.state.patch({ agent: '', model: '', provider: '', type: '', from: '', to: '', ...(state.from ? { range: 'today' } : {}) }) }, '清除') : null,
+      h('span', { className: 'tt-card-filter-label', title: activeLabels.join(' · ') }, activeLabels.length ? '已筛选' : '全部用量'),
+      activeLabels.length || state.from ? h('button', { type: 'button', className: 'tt-btn ghost', onClick: () => this.state.patch({ agent: [], model: [], provider: [], type: [], from: '', to: '', ...(state.from ? { range: 'today' } : {}) }) }, '清除') : null,
       h('button', { type: 'button', className: 'tt-card-more', title: '刷新', 'aria-label': '刷新', onClick: () => this.onRefresh() }, cardIcon('refresh')),
       h('button', { type: 'button', className: 'tt-card-more', title: '打开完整看板', 'aria-label': '打开完整看板', onClick: async () => { try { await this.hana.cards.open('workspace'); } catch (e) { this.setError(`打开看板失败：${e.message}`); } } }, cardIcon('expand')),
     ].filter(Boolean));

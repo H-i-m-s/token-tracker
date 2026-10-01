@@ -2,6 +2,7 @@ import { applyAppearance } from "./appearance.mjs";
 import { applyBoardLayout } from "./board-layout.mjs";
 import { renderAnalytics } from "./analytics.mjs";
 import { renderFilterStatus as renderFilterChips } from "./filter-chips.mjs";
+import { asList, selectionKey } from "./selection.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
@@ -116,7 +117,7 @@ export class WorkspaceApp {
   async init() {
     this.renderShell();
     const initial = this.state.get();
-    this.filterKey = JSON.stringify([initial.range, initial.from, initial.to, initial.agent, initial.model, initial.provider, initial.type]);
+    this.filterKey = JSON.stringify([initial.range, initial.from, initial.to, selectionKey(initial.agent), selectionKey(initial.model), selectionKey(initial.provider), selectionKey(initial.type)]);
     this.disposers.push(
       this.state.subscribe((s) => this.onStateChange(s)),
       this.subscribeLifecycle(),
@@ -509,7 +510,7 @@ export class WorkspaceApp {
     // 顶部范围变了，账单图也跟着换时间窗
     const w = this.dsWindowFromState(state);
     if (`${w.from}:${w.to}` !== this.dsKey) this.loadDsUsage(false, { silent: true, window: w });
-    const key = JSON.stringify([state.range, state.from, state.to, state.agent, state.model, state.provider, state.type]);
+    const key = JSON.stringify([state.range, state.from, state.to, selectionKey(state.agent), selectionKey(state.model), selectionKey(state.provider), selectionKey(state.type)]);
     if (key === this.filterKey) return;
     this.filterKey = key;
     this.detailsPage = 1;
@@ -559,7 +560,10 @@ export class WorkspaceApp {
   stripPlaceholderFilters(state) {
     const dirty = {};
     for (const key of ["agent", "model", "provider", "type"]) {
-      if (PLACEHOLDER_VALUES.has(state[key])) dirty[key] = "";
+      // 现在是多值：只把混进值里的占位项（如“全部模型”那类）摸掉，其余保留。
+      const list = asList(state[key]);
+      const kept = list.filter((v) => !PLACEHOLDER_VALUES.has(v));
+      if (kept.length !== list.length) dirty[key] = kept;
     }
     if (Object.keys(dirty).length) this.state.patch(dirty);
   }
@@ -604,7 +608,7 @@ export class WorkspaceApp {
     // 时间范围已交由看板右上角那排统一负责，这里只管 Agent / 供应商 / 模型。
     const next = renderFilterChips({
       state,
-      agentLabel: this.agentNames.get(state.agent) || state.agent,
+      agentLabel: asList(state.agent).map((id) => this.agentNames.get(id) || id).join(" · "),
       agentOptions: this.agentOptions(),
       providerOptions: this.providerOptions(),
       modelOptions: this.modelOptions(),

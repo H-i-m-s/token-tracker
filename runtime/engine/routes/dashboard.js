@@ -331,12 +331,12 @@ export default function (app, ctx) {
       // 直接拿它先渲染，扫描完成后 SSE 会把最新状态推上去。
       if (!cache?.data || !cache.data.sessions) return { notReady: true, error: "数据未就绪" };
       const range = params.range || "all";
-      const agent = params.agent || "";
-      const model = params.model || "";
-      const type = params.type || "";
+      const agent = toList(params.agent);
+      const model = toList(params.model);
+      const type = toList(params.type);
       const from = params.from || "";
       const to = params.to || "";
-      const provider = params.provider || "";
+      const provider = toList(params.provider);
       // 明细分页/排序参数（服务端分页）：page/pageSize/sortKey/order/minTokens，一律由 build 内部白名单化。
       const detailsParams = { page: params.page, pageSize: params.pageSize, sortKey: params.sortKey, order: params.order, minTokens: params.minTokens };
       // 确保汇率可用（内部统一美元口径计算用）；opts.fxRate 供测试注入
@@ -814,13 +814,13 @@ export default function (app, ctx) {
     if (!cache?.data || !cache.data.sessions) return { notReady: true, error: "数据未就绪" };
     const view = { ...cache.data, dataDir: cache.dataDir, turnsStore: cache.turnsStore };
     const filters = {
-      agent: params.agent || "", model: params.model || "", type: params.type || "", provider: params.provider || "",
+      agent: toList(params.agent), model: toList(params.model), type: toList(params.type), provider: toList(params.provider),
       from: params.from || "", to: params.to || "",
       sortKey: params.sortKey, order: params.order, minTokens: params.minTokens,
     };
     const { dateFilter, from: dayFrom, to: dayTo } = resolveDateRange(params.range || "all", filters);
     let sessions = filterSessions(Object.values(view.sessions), filters);
-    if (filters.model) sessions = sessions.filter(s => s.models?.[filters.model]);
+    if (filters.model?.length) sessions = sessions.filter(s => filters.model.some(m => s.models?.[m]));
     const sessionKeys = new Map();
     for (const [k, v] of Object.entries(view.sessions)) sessionKeys.set(v, k);
     const { objectRows } = collectDetails({
@@ -837,13 +837,13 @@ export default function (app, ctx) {
     if (!cache?.data || !cache.data.sessions) return { notReady: true, error: "数据未就绪" };
     const view = { ...cache.data, dataDir: cache.dataDir, turnsStore: cache.turnsStore };
     const filters = {
-      agent: params.agent || "", model: params.model || "", type: params.type || "", provider: params.provider || "",
+      agent: toList(params.agent), model: toList(params.model), type: toList(params.type), provider: toList(params.provider),
       from: params.from || "", to: params.to || "",
       page: params.page, pageSize: params.pageSize, sortKey: params.sortKey, order: params.order, minTokens: params.minTokens,
     };
     const { dateFilter, from: dayFrom, to: dayTo } = resolveDateRange(params.range || "all", filters);
     let sessions = filterSessions(Object.values(view.sessions), filters);
-    if (filters.model) sessions = sessions.filter(s => s.models?.[filters.model]);
+    if (filters.model?.length) sessions = sessions.filter(s => filters.model.some(m => s.models?.[m]));
     const sessionKeys = new Map();
     for (const [k, v] of Object.entries(view.sessions)) sessionKeys.set(v, k);
     const { details } = collectDetails({
@@ -1116,6 +1116,35 @@ const DETAIL_PAGE_DEFAULT = 50;
 const DETAIL_PAGE_MAX = 200;
 const DETAIL_SORT_KEYS = new Set(["time", "tokens", "uncached", "hit"]);
 
+// 多值筛选的归一（只在这一处做）：线格式是「URI 编码后的多个值用半角逗号连接」的单个查询串参数
+// （如 model=DeepSeek-V3.1%2CQwen3-Coder-480B 表示两个值；单值仍是单个且编码；空串 = 不筛）。
+// 归一后 filters.agent/model/provider/type 一律是 string[]（长度 0 = 不筛）。
+//   - 数组：逐项 String() → decodeURIComponent（解不开就保留原样，绝不抛）→ trim → 丢空串
+//   - 字符串：先按半角逗号切分再同上（这样「值里带逗号」用 %2C 表达时不会被切错）
+//   - 其它类型：[]（不筛）
+export function toList(v) {
+  const out = [];
+  const push = (raw) => {
+    let s;
+    try { s = decodeURIComponent(String(raw)); } catch { s = String(raw); }
+    s = s.trim();
+    if (s !== "") out.push(s);
+  };
+  if (Array.isArray(v)) {
+    for (const item of v) push(item);
+  } else if (typeof v === "string") {
+    for (const part of v.split(",")) push(part);
+  } else {
+    return [];
+  }
+  return out;
+}
+
+// 已是 string[] 就原样用（不重复解码），否则走 toList。下游拿到的永远是数组。
+function asList(v) {
+  return Array.isArray(v) ? v : toList(v);
+}
+
 const maxDay = (a, b) => (!a ? b : !b ? a : (a > b ? a : b));
 const minDay = (a, b) => (!a ? b : !b ? a : (a < b ? a : b));
 
@@ -1161,10 +1190,14 @@ function resolveDateRange(range, filters = {}) {
 
 // 会话级筛选（Agent / Provider / Type）。明细两条路与汇总口径都吃它，抽出来避免两处漂移。
 function filterSessions(list, filters) {
+  // 字段内 OR（任一命中），字段间 AND。filters.* 已归一为 string[]（长度 0 = 不筛）。
+  const agents = asList(filters.agent);
+  const providers = asList(filters.provider);
+  const types = asList(filters.type);
   let out = list;
-  if (filters.agent) out = out.filter(s => s.agent === filters.agent);
-  if (filters.provider) out = out.filter(s => s.providers && Object.keys(s.providers).some(pk => pk.startsWith(filters.provider + "/")));
-  if (filters.type) out = out.filter(s => s.type === filters.type);
+  if (agents.length) out = out.filter(s => agents.includes(s.agent));
+  if (providers.length) out = out.filter(s => s.providers && Object.keys(s.providers).some(pk => providers.some(p => pk.startsWith(p + "/"))));
+  if (types.length) out = out.filter(s => types.includes(s.type));
   return out;
 }
 
@@ -1215,7 +1248,8 @@ function collectDetails({ cache, sessions, sessionKeys, dateFilter, dayFrom, day
   const order = filters.order === "asc" ? "asc" : "desc";
   const minRaw = Number(filters.minTokens);
   const minTokens = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : 0;
-  const where = { from: dayFrom || "", to: dayTo || "", agent: filters.agent || "", model: filters.model || "", provider: filters.provider || "", type: filters.type || "" };
+  // 四个筛选列原样交给 turns-store（已归一为 string[]；空数组/undefined = 不筛）。from/to 仍是单值 day 端点。
+  const where = { from: dayFrom || "", to: dayTo || "", agent: filters.agent, model: filters.model, provider: filters.provider, type: filters.type };
 
   let useTable = false;
   if (turnsStore && typeof turnsStore.count === "function") {
@@ -1244,8 +1278,8 @@ function collectDetails({ cache, sessions, sessionKeys, dateFilter, dayFrom, day
       const convs = s.conversations || [];
       for (let i = 0; i < convs.length; i++) {
         const c = convs[i];
-        if (filters.model && c.model !== filters.model) continue;
-        if (filters.provider && c.provider !== filters.provider) continue;
+        if (filters.model?.length && !filters.model.includes(c.model)) continue;
+        if (filters.provider?.length && !filters.provider.includes(c.provider)) continue;
         const timestamp = c.time ? new Date(c.time) : null;
         const day = c.time && Number.isFinite(timestamp.getTime()) ? CN_DAY.format(timestamp) : "";
         if (dateFilter && (!day || !dateFilter(day))) continue;
@@ -1286,14 +1320,15 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
   const { dateFilter, from: dayFrom, to: dayTo } = resolveDateRange(range, filters);
 
   // ── Agent / Provider / Type 筛选 ──
-  const { model: filterModel, provider: filterProvider } = filters;
+  const filterModel = asList(filters.model);
+  const filterProvider = asList(filters.provider);
   sessions = filterSessions(sessions, filters);
 
   // 保存一份不含模型筛选的 sessions，用于前端下拉选项
   const sessionPool = sessions;
 
-  if (filterModel) {
-    sessions = sessions.filter(s => s.models?.[filterModel]);
+  if (filterModel.length) {
+    sessions = sessions.filter(s => filterModel.some(m => s.models?.[m]));
   }
 
   // ── 统一汇总（无论什么维度都从 dailyBreakdown 取值） ──
@@ -1318,30 +1353,33 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
     for (const [day, d] of Object.entries(s.dailyBreakdown || {})) {
       if (dateFilter && !dateFilter(day)) continue;
       let di, dout, dcr, dtot, dasst;
-      if (filterProvider && filterModel) {
-        // 精确：优先用 providerTotals（仅 totalTokens 精确）
-        const provPk = filterProvider + "/" + filterModel;
-        const pt = d.providerTotals?.[provPk];
-        if (pt !== undefined) {
-          dtot = pt.totalTokens; di = pt.input; dout = pt.output; dcr = pt.cacheRead; dasst = pt.assistantCount || 0;
-        } else {
-          di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
-        }
-      } else if (filterProvider && !filterModel) {
+      if (filterProvider.length && filterModel.length) {
+        // 供应商+模型：取「供应商 ∈ 选中 且 模型 ∈ 选中」的 provider/model 组合之和（选中集合的交集）
         di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
-        if (d.providerTotals) {
-          for (const [pk, pt] of Object.entries(d.providerTotals)) {
-            if (pk.startsWith(filterProvider + "/")) {
-              dtot += pt.totalTokens; di += pt.input; dout += pt.output; dcr += pt.cacheRead; dasst += pt.assistantCount || 0;
-            }
+        for (const [pk, pt] of Object.entries(d.providerTotals || {})) {
+          const sep = pk.indexOf("/");
+          const p = sep > 0 ? pk.slice(0, sep) : "";
+          const m = sep > 0 ? pk.slice(sep + 1) : "";
+          if (filterProvider.includes(p) && filterModel.includes(m)) {
+            dtot += pt.totalTokens; di += pt.input; dout += pt.output; dcr += pt.cacheRead; dasst += pt.assistantCount || 0;
           }
         }
-      } else if (filterModel) {
-        if (d.models?.[filterModel]) {
-          const md = d.models[filterModel];
-          di = md.input || 0; dout = md.output || 0; dcr = md.cacheRead || 0; dtot = md.totalTokens || 0; dasst = md.assistantCount || 0;
-        } else {
-          di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
+      } else if (filterProvider.length) {
+        // 只选供应商：该供应商下所有 provider/model 项之和
+        di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
+        for (const [pk, pt] of Object.entries(d.providerTotals || {})) {
+          const sep = pk.indexOf("/");
+          const p = sep > 0 ? pk.slice(0, sep) : "";
+          if (filterProvider.includes(p)) {
+            dtot += pt.totalTokens; di += pt.input; dout += pt.output; dcr += pt.cacheRead; dasst += pt.assistantCount || 0;
+          }
+        }
+      } else if (filterModel.length) {
+        // 只选模型：各选中模型之和
+        di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
+        for (const m of filterModel) {
+          const md = d.models?.[m];
+          if (md) { di += md.input || 0; dout += md.output || 0; dcr += md.cacheRead || 0; dtot += md.totalTokens || 0; dasst += md.assistantCount || 0; }
         }
       } else {
         di = d.input || 0; dout = d.output || 0; dcr = d.cacheRead || 0; dtot = d.totalTokens || 0; dasst = d.assistantCount || 0;
@@ -1378,8 +1416,8 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
 
       // 模型精确统计（按日级数据，不按比例推算）
       for (const [mn, mv] of Object.entries(d.models || {})) {
-        if (filterModel && mn !== filterModel) continue;
-        if (filterProvider && !filterModel && provModels[mn] !== filterProvider) continue;
+        if (filterModel.length && !filterModel.includes(mn)) continue;
+        if (filterProvider.length && !filterModel.length && !filterProvider.includes(provModels[mn])) continue;
         if (!modelMap[mn]) modelMap[mn] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, assistantCount: 0, totalTokens: 0 };
         modelMap[mn].input += mv.input || 0;
         modelMap[mn].output += mv.output || 0;
@@ -1412,7 +1450,7 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
     for (const [day, d] of Object.entries(s.dailyBreakdown || {})) {
       if (dateFilter && !dateFilter(day)) continue;
       for (const mn of Object.keys(d.models || {})) {
-        if (filterProvider && pmo[mn] !== filterProvider) continue;
+        if (filterProvider.length && !filterProvider.includes(pmo[mn])) continue;
         modelOptMap[mn] = (modelOptMap[mn] || 0) + (d.models[mn].totalTokens || 0);
       }
     }
@@ -1456,21 +1494,27 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
             hMMap[hour][mn].cacheRead += mv.cacheRead || 0;
           }
         }
-        if (filterProvider && filterModel) {
-          const pk = filterProvider + "/" + filterModel;
-          const vt = v.providerTotals?.[pk];
-          if (vt !== undefined) {
-            hMap[hour].totalTokens += vt.totalTokens;
-            hMap[hour].desktop += vt.desktop || 0;
-            hMap[hour].channel += vt.channel || 0;
-            hMap[hour].cacheRead += vt.cacheRead;
-            hMap[hour].assistantCount += vt.assistantCount || 0;
+        if (filterProvider.length && filterModel.length) {
+          // 供应商+模型：providerTotals 里「供应商 ∈ 选中 且 模型 ∈ 选中」的组合之和
+          for (const [pk, vt] of Object.entries(v.providerTotals || {})) {
+            const sep = pk.indexOf("/");
+            const p = sep > 0 ? pk.slice(0, sep) : "";
+            const m = sep > 0 ? pk.slice(sep + 1) : "";
+            if (filterProvider.includes(p) && filterModel.includes(m)) {
+              hMap[hour].totalTokens += vt.totalTokens;
+              hMap[hour].desktop += vt.desktop || 0;
+              hMap[hour].channel += vt.channel || 0;
+              hMap[hour].cacheRead += vt.cacheRead;
+              hMap[hour].assistantCount += vt.assistantCount || 0;
+            }
           }
-        } else if (filterProvider && !filterModel) {
+        } else if (filterProvider.length) {
           if (v.providerTotals) {
             // totalTokens 精确，desktop/channel/cacheRead 从 model 级推算
             for (const [pk, pt] of Object.entries(v.providerTotals)) {
-              if (pk.startsWith(filterProvider + "/")) {
+              const sep = pk.indexOf("/");
+              const p = sep > 0 ? pk.slice(0, sep) : "";
+              if (filterProvider.includes(p)) {
                 hMap[hour].totalTokens += pt.totalTokens;
                 hMap[hour].desktop += pt.desktop || 0;
                 hMap[hour].channel += pt.channel || 0;
@@ -1479,7 +1523,7 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
               }
             }
             for (const [mn, mv] of Object.entries(v.models || {})) {
-              if (hp[mn] === filterProvider) {
+              if (filterProvider.includes(hp[mn])) {
                 hMap[hour].desktop += mv.desktop || 0;
                 hMap[hour].channel += mv.channel || 0;
                 hMap[hour].cacheRead += mv.cacheRead || 0;
@@ -1487,16 +1531,18 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
             }
           } else if (v.models) {
             for (const [mn, mv] of Object.entries(v.models)) {
-              if (hp[mn] === filterProvider) {
+              if (filterProvider.includes(hp[mn])) {
                 hMap[hour].totalTokens += mv.totalTokens || 0; hMap[hour].desktop += mv.desktop || 0;
                 hMap[hour].channel += mv.channel || 0; hMap[hour].cacheRead += mv.cacheRead || 0;
               }
             }
           }
-        } else if (filterModel) {
-          if (v.models?.[filterModel]) {
-            const vm = v.models[filterModel];
-            hMap[hour].totalTokens += vm.totalTokens || 0; hMap[hour].desktop += vm.desktop || 0; hMap[hour].channel += vm.channel || 0; hMap[hour].cacheRead += vm.cacheRead || 0; hMap[hour].assistantCount += vm.assistantCount || 0;
+        } else if (filterModel.length) {
+          for (const m of filterModel) {
+            const vm = v.models?.[m];
+            if (vm) {
+              hMap[hour].totalTokens += vm.totalTokens || 0; hMap[hour].desktop += vm.desktop || 0; hMap[hour].channel += vm.channel || 0; hMap[hour].cacheRead += vm.cacheRead || 0; hMap[hour].assistantCount += vm.assistantCount || 0;
+            }
           }
         } else {
           hMap[hour].totalTokens += v.totalTokens; hMap[hour].desktop += v.desktop; hMap[hour].channel += v.channel; hMap[hour].bridge += v.bridge||0; hMap[hour].background += v.background||0; hMap[hour].sub += v.sub||0; hMap[hour].ledger += v.ledger||0; hMap[hour].cacheRead += (v.cacheRead || 0); hMap[hour].assistantCount += (v.assistantCount || 0);
@@ -1539,8 +1585,8 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
     for (const [day, d] of Object.entries(s.dailyBreakdown || {})) {
       if (dateFilter && !dateFilter(day)) continue;
       for (const [mn, mv] of Object.entries(d.models || {})) {
-        if (filterModel && mn !== filterModel) continue;
-        if (filterProvider && provModels[mn] !== filterProvider) continue;
+        if (filterModel.length && !filterModel.includes(mn)) continue;
+        if (filterProvider.length && !filterProvider.includes(provModels[mn])) continue;
         const prov = provModels[mn];
         if (!prov) continue;
         const price = priceTable[prov + "/" + mn];
@@ -1551,7 +1597,7 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
       }
       if (d.mediaGen) {
         for (const [mk, mg] of Object.entries(d.mediaGen)) {
-          if (filterProvider && mg.provider !== filterProvider) continue;
+          if (filterProvider.length && !filterProvider.includes(mg.provider)) continue;
           if (!mediaGenMap[mk]) mediaGenMap[mk] = { provider: mg.provider, model: mg.model, kind: mg.kind, callCount: 0, successCount: 0 };
           mediaGenMap[mk].callCount += mg.callCount || 0;
           mediaGenMap[mk].successCount += mg.successCount || 0;

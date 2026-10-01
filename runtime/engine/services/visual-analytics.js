@@ -1,21 +1,24 @@
 // Read existing daily/hourly cache only. No inferred request times or cache migration.
 const value = v => Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : 0;
-function modelsFor(bucket, { model, provider }) {
+function modelsFor(bucket, { model, provider } = {}) {
+  // model / provider 可能是选中值的数组（多值 OR），也兼容单值字符串。空 = 不筛。
+  const models = Array.isArray(model) ? model : (model ? [model] : []);
+  const providers = Array.isArray(provider) ? provider : (provider ? [provider] : []);
   const result = new Map();
   const add = (id, row) => {
-    if (model && id !== model) return;
+    if (models.length && !models.includes(id)) return;
     const old = result.get(id) || { totalTokens: 0, count: 0 };
     old.totalTokens += value(row.totalTokens); old.count += value(row.assistantCount);
     result.set(id, old);
   };
-  if (provider) {
+  if (providers.length) {
     for (const [key, row] of Object.entries(bucket.providerTotals || {})) {
       const sep = key.indexOf('/');
-      if (key.slice(0, sep) === provider) add(key.slice(sep + 1), row);
+      if (providers.includes(key.slice(0, sep))) add(key.slice(sep + 1), row);
     }
   } else {
     for (const [id, row] of Object.entries(bucket.models || {})) add(id, row);
-    if (!model) {
+    if (!models.length) {
       const gap = value(bucket.totalTokens) - [...result.values()].reduce((sum, row) => sum + row.totalTokens, 0);
       if (gap > 0) result.set('未归属', { totalTokens: gap, count: 0 });
     }
@@ -66,14 +69,15 @@ export function buildVisualAnalytics(sessions, dateFilter, filters = {}, rows = 
   // 按「来源」拆分（对话 / 子代理 / 频道 / 后台 / 账本）只在没有模型、供应商筛选时成立：
   // dailyBreakdown 里这几个分项是不分模型的，一旦按模型筛选，各分项之和就不再等于
   // 筛选后的总量，硬画出来是假的。这种情况就退回单层总量。
-  const canSplit = !filters.model && !filters.provider;
+  // 数组都为空才算「能分层」：![] 是 false，直接写 !filters.model 会把来源分层永久关掉。
+  const canSplit = !(filters.model?.length) && !(filters.provider?.length);
   const kindsOf = (b) => canSplit ? {
     desktop: value(b.desktop), sub: value(b.sub), bridge: value(b.bridge),
     background: value(b.background), ledger: value(b.ledger), channel: value(b.channel),
   } : null;
   for (const session of sessions) {
-    if (filters.agent && session.agent !== filters.agent) continue;
-    if (filters.type && session.type !== filters.type) continue;
+    if (filters.agent?.length && !filters.agent.includes(session.agent)) continue;
+    if (filters.type?.length && !filters.type.includes(session.type)) continue;
     let active = false;
     for (const [date, bucket] of Object.entries(session.dailyBreakdown || {})) {
       if (dateFilter && !dateFilter(date)) continue;

@@ -1,5 +1,6 @@
 import { splitRow } from './board-layout.mjs';
 import { h, fmtCost, fmtPct } from './components.mjs';
+import { asList, pickValues, modsOf } from './selection.mjs';
 
 const COLORS = ['#d1b477', '#7ea3cf', '#81b4a1', '#c68487', '#aa97c8', '#a7b779', '#bd987b', '#8897aa'];
 
@@ -71,9 +72,10 @@ function enumerate(start, end) {
   return out;
 }
 function legend(models, color, selected, onSelect, totals) {
+  const sel = asList(selected);
   return h('div', { className: `tt-board-legend${totals ? ' tt-legend-totals' : ''}` }, ...models.map(id => h('button', {
-    type: 'button', title: id, className: selected === id ? 'selected' : '',
-    'aria-pressed': String(selected === id), onClick: () => onSelect(id),
+    type: 'button', title: id, className: sel.includes(id) ? 'selected' : '',
+    'aria-pressed': String(sel.includes(id)), onClick: (event) => onSelect(id, event),
   }, h('i', { style: `background:${color(id)}` }), h('span', {}, id), totals ? h('b', {}, compact(totals.get(id) || 0)) : null)));
 }
 
@@ -86,7 +88,10 @@ const KIND_ORDER = ['desktop', 'sub', 'bridge', 'background', 'ledger', 'channel
 const TOTAL_LAYER = '__total';
 let flowDimension = 'kind'; // 模块级：重绘后仍记得用户上次选的是哪个维度
 let flowScale = 'abs';      // 'abs' 绝对量 | 'pct' 每列归一成占比（小层才看得见）
-let flowFocus = '';         // 非空时只显示这一层，纵轴按这层重新缩放；再点图例恢复
+let flowFocus = [];         // 选中的层 id（可多层）：非空时只显示这几层，纵轴按它们重新缩放；全取消即恢复
+// 多选的锚点：Shift 点的时候从这里到目标项之间整段加选。
+// 它只关系到本次会话的点选手感，不是用户的筛选状态，所以不进 state、不落盘。
+const anchors = { model: null, agent: null, focus: null };
 
 // 中点插值的平滑曲线段（不含起笔的 M）。上下边界用同一套算法，层与层之间才不露缝。
 function curve(pts) {
@@ -247,10 +252,10 @@ function renderFlowPanel(a, days, agentNames = {}) {
         return flowScale === 'pct' ? v / colTotals[i2] : v;
       }),
     }));
-    // 聚焦：点图例只留一层。纵轴改成按这层自己的量算，否则小层被大层一并压平看不见。
-    let shown = flowFocus ? layers.filter((l) => l.id === flowFocus) : layers;
-    if (flowFocus && !shown.length) { flowFocus = ''; shown = layers; }
-    const solo = shown.length === 1 && flowFocus ? shown[0] : null;
+    // 聚焦：点图例只留选中的几层（可多层）。纵轴按这几层自己的量算，否则小层被大层一并压平看不见。
+    let shown = flowFocus.length ? layers.filter((l) => flowFocus.includes(l.id)) : layers;
+    if (flowFocus.length && !shown.length) { flowFocus = []; shown = layers; }
+    const solo = shown.length === 1 && flowFocus.length ? shown[0] : null;
 
     const W = 1000, H = 300, PAD_L = 90, PAD_B = 40, PAD_T = 8;
     const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
@@ -396,9 +401,13 @@ function renderFlowPanel(a, days, agentNames = {}) {
     canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
       ...ids.map((id, i) => h('button', {
         type: 'button',
-        title: `${nameOf(id)}${splittable ? ' · 点击只看这一层，再点恢复' : ''}`,
-        'aria-pressed': String(flowFocus === id),
-        onClick: () => { flowFocus = flowFocus === id ? '' : id; draw(); },
+        title: `${nameOf(id)}${splittable ? ' · 点一下只看这一层；Shift / Ctrl 点可多看几层，再点取消' : ''}`,
+        'aria-pressed': String(flowFocus.includes(id)),
+        onClick: (event) => {
+          flowFocus = pickValues(flowFocus, id, ids, modsOf(event), anchors.focus);
+          anchors.focus = id;
+          draw();
+        },
       },
         h('span', { className: 'tt-legend-name' },
           h('i', { style: `background:${COLORS[i % COLORS.length]}` }),
@@ -455,7 +464,11 @@ export function renderAnalytics(container, dashboard, state, patch) {
   for (const day of a.daily) for (const [id, n] of Object.entries(day.models)) totals.set(id, (totals.get(id) || 0) + n);
   const allModels = [...totals].sort((x,y) => y[1]-x[1]).map(([id]) => id);
   const color = id => COLORS[Math.max(0, allModels.indexOf(id)) % COLORS.length];
-  const selectModel = id => patch({ model: state.model === id ? '' : id });
+  const selectModel = (id, event, ordered = allModels) => {
+    const picked = pickValues(state.model, id, ordered, modsOf(event), anchors.model);
+    anchors.model = id;
+    patch({ model: picked });
+  };
   const grid = h('div', { className: 'tt-board-grid' }); container.append(grid);
   const scale = scaleFor(days);
   const agent = panel('工作空间活跃分布', '当前按 Agent 归属 · 点击筛选', 'tt-agent-panel');
@@ -475,6 +488,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
     ? (agentHours.get(`${item.id}/${s.key}`) || 0)
     : (item.days[s.date] || 0));
   const activityPeak = a.agents.reduce((peak, item) => agentSlots.reduce((max, s) => Math.max(max, agentValue(item, s)), peak), 0);
+  const agentIds = a.agents.map((x) => x.id);   // Shift 整段加选的顺序：按这张表里从上到下的排列
   const intensityLabels = ['无用量', '低：低于峰值 1%', '较低：峰值 1%–5%', '中：峰值 5%–20%', '较高：峰值 20%–50%', '高：峰值 50% 及以上'];
   const unit = agentScale === 'hour' ? '小时' : '日';
   agent.body.append(h('div', { className: 'tt-agent-intensity-key', 'aria-label': `每${unit}用量强度图例：无用量和五档蓝色，同屏统一标尺` },
@@ -492,8 +506,12 @@ export function renderAnalytics(container, dashboard, state, patch) {
         return h('i', { 'data-intensity': level, title: `${s.label} · ${compact(value)} Token · ${intensityLabels[level]}`, style: `background:var(--tt-activity-${level})` });
       }));
     agentList.append(h('button', { className: 'tt-agent-row', type: 'button', title: name,
-      'aria-label': `筛选 Agent ${name}`, 'aria-pressed': String(state.agent === item.id),
-      onClick: () => patch({ agent: state.agent === item.id ? '' : item.id }) },
+      'aria-label': `筛选 Agent ${name}`, 'aria-pressed': String(asList(state.agent).includes(item.id)),
+      onClick: (event) => {
+        const picked = pickValues(state.agent, item.id, agentIds, modsOf(event), anchors.agent);
+        anchors.agent = item.id;
+        patch({ agent: picked });
+      } },
       h('span', { className: 'tt-agent-name' }, name), h('b', {}, compact(item.totalTokens)),
       h('small', {}, `${(item.totalTokens / Math.max(1,total) * 100).toFixed(1)}%`), cells));
   }
@@ -535,10 +553,14 @@ export function renderAnalytics(container, dashboard, state, patch) {
   else {
     dist.body.append(h('div',{className:'tt-dist-head'},h('span',{},'模型 / 轮次'),h('span',{},'P50'),h('span',{},'P90'),h('span',{},'分布 · 横轴为 Token 对数')));
     const list = h('div', { className: 'tt-dist-list' }); dist.body.append(list);
-    for (const sample of samples.slice(0,8)) {
+    const shownSamples = samples.slice(0, 8);
+    const shownIds = shownSamples.map((s) => s.id);   // Shift 整段加选的顺序：按这张表里从上到下的排列
+    for (const sample of shownSamples) {
       const chart=svg(240,38,`${sample.id} 会话轮次分布`), d=pathFor(sample.bins,240,34,false,true);
       chart.append(node('path',{d:`${d} L240,38 L0,38 Z`,fill:color(sample.id),'fill-opacity':.23,stroke:color(sample.id),'stroke-width':1},[title(`${sample.count} 轮 · P50 ${compact(sample.p50)} · P90 ${compact(sample.p90)}`)]));
-      list.append(h('button',{type:'button',className:'tt-dist-row',title:sample.id,onClick:()=>selectModel(sample.id)},
+      list.append(h('button',{type:'button',className:'tt-dist-row',title:sample.id,
+        'aria-pressed': String(asList(state.model).includes(sample.id)),
+        onClick:(event)=>selectModel(sample.id,event,shownIds)},
         h('span',{},h('b',{},sample.id),h('small',{},`${sample.count.toLocaleString()} 轮`)),h('b',{},compact(sample.p50)),h('b',{},compact(sample.p90)),chart));
     }
   }
@@ -551,9 +573,11 @@ export function renderAnalytics(container, dashboard, state, patch) {
   else {
     const chart=svg(500,114,'各模型小时用量曲线');
     for (let i=0;i<=4;i++) { const x=12+i*118; chart.append(node('line',{x1:x,x2:x,y1:4,y2:90,stroke:'var(--tt-b2)','stroke-dasharray':'2 4'}));chart.append(node('text',{x,y:109,class:'tt-axis'},[String(i*6)])); }
+    const ridgeIds = hourModels.map(m => m.id);   // Shift 整段加选的顺序：按曲线上画的顺序
     for (const model of hourModels) {
-      const path=node('path',{d:`${pathFor(model.hours,472,84,false,true)} L472,88 L0,88 Z`,transform:'translate(12,2)',fill:color(model.id),'fill-opacity':.15,stroke:color(model.id),'stroke-width':1.4,tabindex:0,role:'button','aria-label':`筛选模型 ${model.id}`},[title(`${model.id} · ${compact(model.totalTokens)} Token`)]);
-      path.addEventListener('click',()=>selectModel(model.id));path.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectModel(model.id);}});chart.append(path);
+      const on = asList(state.model).includes(model.id);   // 选中的曲线加粗加重，多选后一眼看得出选了哪几条
+      const path=node('path',{d:`${pathFor(model.hours,472,84,false,true)} L472,88 L0,88 Z`,transform:'translate(12,2)',fill:color(model.id),'fill-opacity':on?.3:.15,stroke:color(model.id),'stroke-width':on?2.2:1.4,tabindex:0,role:'button','aria-label':`筛选模型 ${model.id}`},[title(`${model.id} · ${compact(model.totalTokens)} Token`)]);
+      path.addEventListener('click',(e)=>selectModel(model.id,e,ridgeIds));path.addEventListener('keydown',e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();selectModel(model.id,e,ridgeIds);}});chart.append(path);
     }
     ridge.body.append(chart,legend(hourModels.map(m=>m.id),color,state.model,selectModel));
   }

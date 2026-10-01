@@ -1,9 +1,12 @@
 // 自绘下拉（HanaSelect 风格，配色全部走 --tt-* 变量，随宿主与三态外观变化）。
 //
-// 关键契约：原生 <select> 原地保留、仅视觉隐藏，仍是唯一状态源。
+// 关键契约：原生 <select> 原地保留、仅视觉隐藏。单选时它仍是唯一状态源；
+// 多选（options.multiple）时它退为「选项清单」的来源，选中集合由调用方持有
+// （getValues 读、onPick 写），因为一个 select.value 装不下多个值。
 // 触发器只负责展示与交互，选中后写回 select.value 并派发原生 change 事件，
 // 因此所有既有读取方式（querySelector(...).value / addEventListener("change") /
 // onChange 回调）无需任何改动，行为与原生一致。
+import { asList } from "./selection.mjs";
 
 // 同一时刻只开一个下拉；换成日历弹层时也应各自持有自己的“当前打开者”。
 let activeCloser = null;
@@ -23,6 +26,13 @@ export function mountSelect(select, options = {}) {
   const win = doc.defaultView || window;
   const showDelay = 130; // 与 CSS 淡出时长对齐，动画走完再摘除面板
 
+  // 多选模式：选中集合由调用方持有（getValues 读、onPick 写），原生 select 只当选项清单用。
+  const multiple = options.multiple === true;
+  const valuesOf = () => (multiple
+    ? (typeof options.getValues === "function" ? asList(options.getValues()) : [])
+    : (select.value ? [select.value] : []));
+  const isOn = (v) => valuesOf().includes(v);
+
   // 触发器：沿用原 className（例如明细筛选处的 "tt-pill"）以保持外观。
   const trigger = doc.createElement("div");
   trigger.className = [select.className, options.triggerClass, "tt-select"]
@@ -33,6 +43,8 @@ export function mountSelect(select, options = {}) {
   trigger.setAttribute("aria-expanded", "false");
   const aria = select.getAttribute("aria-label");
   if (aria) trigger.setAttribute("aria-label", aria);
+  const title = select.getAttribute("title");   // 完整选中清单挂在 title 上，触发器文案放不下时能悬停看全
+  if (title) trigger.setAttribute("title", title);
   const labelEl = doc.createElement("span");
   labelEl.className = "tt-select-label";
   trigger.append(labelEl);
@@ -48,6 +60,12 @@ export function mountSelect(select, options = {}) {
   clearBtn.hidden = true;
   clearBtn.addEventListener("click", (event) => {
     event.stopPropagation();
+    if (multiple) {
+      if (!valuesOf().length) return;
+      if (typeof options.onPick === "function") options.onPick("", event);
+      renderLabel();
+      return;
+    }
     if (select.value === "") return;
     select.value = "";
     select.dispatchEvent(new Event("change", { bubbles: true }));
@@ -66,6 +84,7 @@ export function mountSelect(select, options = {}) {
   const panel = doc.createElement("div");
   panel.className = "tt-select-panel";
   panel.setAttribute("role", "listbox");
+  if (multiple) panel.setAttribute("aria-multiselectable", "true");
   if (aria) panel.setAttribute("aria-label", aria);
 
   let open = false;
@@ -88,11 +107,19 @@ export function mountSelect(select, options = {}) {
   }
 
   function renderLabel() {
-    labelEl.textContent = composeLabel(select.value);
+    const vals = valuesOf();
+    if (multiple) {
+      labelEl.textContent = typeof options.labelForValues === "function"
+        ? options.labelForValues(vals, plainLabel)
+        : (vals.length ? vals.map(plainLabel).join("、") : composeLabel(""));
+    } else {
+      labelEl.textContent = composeLabel(select.value);
+    }
     // 占位项（如“全部 Agent”）用弱化色，看起来更像触发器而不是已选中的值。
-    trigger.classList.toggle("empty", select.value === "");
+    const isEmpty = vals.length === 0;
+    trigger.classList.toggle("empty", isEmpty);
     // 没值就没东西可清：× 只在选中了具体项时出现。
-    if (options.clearable) clearBtn.hidden = select.value === "";
+    if (options.clearable) clearBtn.hidden = isEmpty;
   }
 
   function buildOptions() {
@@ -101,10 +128,10 @@ export function mountSelect(select, options = {}) {
         const opt = doc.createElement("div");
         opt.className = "tt-select-option";
         opt.setAttribute("role", "option");
-        opt.setAttribute("aria-selected", String(o.value === select.value));
+        opt.setAttribute("aria-selected", String(multiple ? isOn(o.value) : o.value === select.value));
         opt.dataset.value = o.value;
         opt.textContent = o.textContent;
-        opt.addEventListener("click", (e) => { e.stopPropagation(); choose(o.value); });
+        opt.addEventListener("click", (e) => { e.stopPropagation(); pick(o.value, e); });
         opt.addEventListener("pointerenter", () => setActive(i, false));
         return opt;
       }),
@@ -126,6 +153,16 @@ export function mountSelect(select, options = {}) {
     }
     renderLabel();
     close();
+  }
+
+  // 多选：点一项加/减一项，面板保持打开（连着点几项不用反复展开），由调用方决定怎么合并。
+  // 占位项（“全部 X”，value 为空串）在多选里表示全清，选完就收起来。
+  function pick(value, event) {
+    if (!multiple) return choose(value);
+    if (typeof options.onPick === "function") options.onPick(value, event);
+    if (value === "") { renderLabel(); close(); return; }
+    buildOptions();
+    renderLabel();
   }
 
   function openPanel() {
@@ -166,7 +203,9 @@ export function mountSelect(select, options = {}) {
     panel.classList.add("open");
     trigger.classList.add("open");
     trigger.setAttribute("aria-expanded", "true");
-    const selected = nodes().findIndex((o) => o.value === select.value);
+    const selected = multiple
+      ? nodes().findIndex((o) => isOn(o.value))
+      : nodes().findIndex((o) => o.value === select.value);
     setActive(selected >= 0 ? selected : 0, false);
 
     activeCloser = close;
@@ -246,13 +285,21 @@ export function mountSelect(select, options = {}) {
         e.preventDefault();
         if (!open) { openPanel(); break; }
         const target = panel.children[activeIndex];
-        if (target) choose(target.dataset.value);
+        if (target) pick(target.dataset.value, e);
         break;
       }
-      case " ":
+      case " ": {
         e.preventDefault();
-        if (open) close(); else openPanel();
+        if (!open) { openPanel(); break; }
+        // 多选时空格也用来加/减一项（跟文件管理器里的习惯一致），不关面板
+        if (multiple) {
+          const target = panel.children[activeIndex];
+          if (target) pick(target.dataset.value, e);
+          break;
+        }
+        close();
         break;
+      }
       case "ArrowDown":
         e.preventDefault();
         if (!open) openPanel(); else setActive(activeIndex + 1, true);
@@ -272,18 +319,13 @@ export function mountSelect(select, options = {}) {
     }
   });
 
-  const instance = { closeNow };
+  // 同一份 API 同时挂在原生 select 与触发器上：重建筛选条后，调用方拿得到触发器（它是新的那份），
+  // 需要能直接把它重新打开（多选要连着点）。
+  const instance = { trigger, panel, open: openPanel, close, closeNow, sync: renderLabel, refresh: renderLabel };
+  trigger._ttSelect = instance;
   renderLabel();
 
-  select._ttSelect = {
-    trigger,
-    panel,
-    open: openPanel,
-    close,
-    closeNow,
-    sync: renderLabel,
-    refresh: renderLabel,
-  };
+  select._ttSelect = instance;
   return select;
 }
 
