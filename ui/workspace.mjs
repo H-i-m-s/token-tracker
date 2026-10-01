@@ -115,7 +115,6 @@ export class WorkspaceApp {
 
   async init() {
     this.renderShell();
-    this.renderDiagnostics();
     const initial = this.state.get();
     this.filterKey = JSON.stringify([initial.range, initial.from, initial.to, initial.agent, initial.model, initial.provider, initial.type]);
     this.disposers.push(
@@ -251,7 +250,7 @@ export class WorkspaceApp {
     const rememberedView = this.state.get().view;
     this.view = VALID_VIEWS.includes(rememberedView) ? rememberedView : "overview";
     this.viewTabs = h("div", { className: "tt-view-tabs", role: "tablist", "aria-label": "用量视图" },
-      ...[["overview", "数据大屏"], ["balance", "余额与额度"], ["details", "消费明细"], ["realtime", "实时监控"], ["diagnostics", "体检"]].map(([key,label]) =>
+      ...[["overview", "数据大屏"], ["balance", "余额与额度"], ["details", "消费明细"], ["realtime", "实时监控"]].map(([key,label]) =>
         h("button", { type: "button", role: "tab", id: `tab-${key}`, "data-view": key, "aria-controls": `${key}-module`, "aria-selected": String(key === this.view), onClick: () => this.selectView(key) }, label)),
     );
     this.viewTabs.addEventListener("keydown", event => {
@@ -268,7 +267,7 @@ export class WorkspaceApp {
     this.filterStatus = h("div", { className: "tt-filter-status", role: "region", "aria-label": "当前筛选状态" });
     this.container.append(chrome, nav, this.filterStatus, this.statusEl, this.mainEl);
     this.renderBoardControls();
-    for (const id of ["overview", "balance", "details", "realtime", "diagnostics"]) this.mainEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
+    for (const id of ["overview", "balance", "details", "realtime"]) this.mainEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
     this.selectView(this.view);
   }
 
@@ -281,8 +280,8 @@ export class WorkspaceApp {
       tab.setAttribute("aria-selected", String(tab.dataset.view === view));
       tab.tabIndex = tab.dataset.view === view ? 0 : -1;
     }
-    // 体检是只读、而且要读引擎的库：切到这一页才取一次，不进来看就一点代价都不花。
-    if (view === "diagnostics") {
+    // 体检挂在实时监控页底部（不占页签位）：只有真的切到这一页才去取一次。
+    if (view === "realtime") {
       if (!this.diagData && !this.diagLoading) this.loadDiagnostics();
       else this.renderDiagnostics();
     }
@@ -962,23 +961,29 @@ export class WorkspaceApp {
 
   // ---------- 体检（只读） ----------
   // 它是「这台机器自己」的状态（扫描 / 落盘 / 库规模 / 载荷），不是用量数据的一个视图，
-  // 所以自成一个页签：切到这一页才取一次，没进来看就一点代价都不花。
+  // 所以挂在实时监控页底部、不占页签位：切到这一页才取一次，没进来看就一点代价都不花。
+  // 那一页每 5 秒重画一次，这个块由 renderRealtime 搬过去、不重建（见那里的注释）。
+  // 用词：这里的「写入」指把会话扫描结果写进本地库（派生数据，写入量跟变化量走），
+  // 跟模型侧的提示缓存不是一回事——界面里提到「缓存」时默认指后者，别撞名。
   renderDiagnostics() {
-    const el = this.container.querySelector("#diagnostics-module");
-    if (!el) return;
-    const keepScroll = el.scrollTop;
+    const mod = this.container.querySelector("#realtime-module");
+    if (!mod) return;
+    let el = mod.querySelector("#realtime-diag");
+    if (!el) {
+      el = h("section", { id: "realtime-diag" });
+      mod.appendChild(el);
+    }
+    const keepScroll = mod.scrollTop;
     el.innerHTML = "";
     el.append(
-      h("div", { className: "tt-module-hd" },
+      h("div", { className: "tt-diag-head" },
         h("span", { className: "tt-module-title" }, "体检"),
-        h("div", { className: "tt-module-actions" },
-          h("span", { className: "tt-module-meta" }, "只读 · 数字来自引擎的缓存库与缓存 meta"),
-          h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: !!this.diagData?.payload }) }, "刷新"),
-        ),
+        h("span", { className: "tt-module-meta", title: "这里的写入是把会话扫描结果写进本地库的写入量，与模型侧的提示缓存命中无关" }, "只读 · 本地扫描结果的库与落盘统计"),
+        h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: !!this.diagData?.payload }) }, "刷新"),
       ),
-      h("div", { className: "tt-module-bd dense" }, this.buildDiagnostics()),
+      this.buildDiagnostics(),
     );
-    el.scrollTop = keepScroll;
+    mod.scrollTop = keepScroll;
   }
 
   // bytes=true 时后端会把整份看板重算一遍再拆字节，所以那一下就单独点，不跟着这一页一起做。
@@ -1010,7 +1015,8 @@ export class WorkspaceApp {
     const row = (label, value, note) => h("div", { className: "tt-diag-row" },
       h("span", { className: "tt-diag-label" }, label),
       h("span", { className: "tt-diag-value" }, value),
-      note ? h("span", { className: "tt-diag-sub" }, note) : null,
+      // 这一行窄下来会被省略号截断，所以把全文挂在 title 上，悬停能看完整
+      note ? h("span", { className: "tt-diag-sub", title: note }, note) : null,
     );
     const t = d.tables || {}, db = d.db || {}, c = d.cache || {}, lg = d.ledger || {}, p = d.persist || null;
     box.appendChild(h("div", { className: "tt-diag-grid" },
@@ -1020,11 +1026,12 @@ export class WorkspaceApp {
       row("库文件", fmtBytes(db.bytes), db.walBytes ? "另有 WAL " + fmtBytes(db.walBytes) : "含空闲页"),
       row("缓存版本", c.version != null ? "v" + c.version : "—", c.scanning ? "正在扫描" : (c.ready === false ? "未就绪" : "已就绪")),
       row("最近扫描", c.lastScan ? formatDateTime(c.lastScan) : "—", this.snapshot?.updatedAt ? "快照 " + clockOf(this.snapshot.updatedAt) : ""),
-      row("账本来源", lg.source || "—", lg.entries != null ? fmtInt(lg.entries) + " 条" : ""),
+      row("账本来源", lg.file || lg.source || "—", lg.entries != null ? fmtInt(lg.entries) + " 条" : ""),
       p
         ? row("累计写入", fmtInt(p.writes) + " 次 / " + fmtBytes(p.bytes), "今天 " + fmtInt(p.dayWrites) + " 次 / " + fmtBytes(p.dayBytes))
         : row("落盘统计", "—", "引擎还没落过盘"),
       p ? row("最近一次落盘", p.lastReason || "—", [
+        p.lastAt ? timeAgo(new Date(p.lastAt).getTime()) : "",   // 多久之前：以前这行在实时那块，删了之后搬进来
         p.lastRows != null ? fmtInt(p.lastRows) + " 行 / " + fmtBytes(p.lastBytes) : "",
         p.lastMs != null ? p.lastMs + " ms" : "",
         p.lastDetail || "",
@@ -1271,22 +1278,8 @@ export class WorkspaceApp {
     const cpShow = rt.contextPercent > 100 ? "99+" : Math.round(rt.contextPercent).toString();
     const ttftShow = rt.ttft > 0 ? (rt.ttft / 1000).toFixed(1) + " s" : "—";
 
-    // 扫描结果写入统计：这份文件是派生数据，写入量该跟“变化量”走而不是“数据量”（见引擎里的落盘调度器）。
-    // 叫“扫描结果”而不是“缓存”：界面里其他地方的“缓存”都指模型侧的提示缓存，不要撞名。
-    const persistLine = (() => {
-      const p = this.snapshot?.persist;
-      if (!p) return null; // 旧引擎没这个字段 → 整行不显示
-      const bytes = (n) => n >= 1048576 ? (n / 1048576).toFixed(1) + " MiB" : n >= 1024 ? Math.round(n / 1024) + " KiB" : n + " B";
-      if (!p.lastAt) return "还没写（攒批中）";
-      return [
-        timeAgo(new Date(p.lastAt).getTime()),
-        p.lastBytes ? bytes(p.lastBytes) : null,
-        p.lastRows != null ? String(p.lastRows) + " 行" + (p.lastScope ? "（" + p.lastScope + "）" : "") : null,
-        p.lastReason || null,
-        p.dayBytes ? "今日 " + (p.dayWrites != null ? p.dayWrites + " 次 · " : "") + bytes(p.dayBytes) : null,
-      ].filter(Boolean).join(" · ");
-    })();
-
+    const keepScroll = el.scrollTop;   // 这一页底部还挂着体检块，重建别把人拽回顶部
+    const diag = el.querySelector("#realtime-diag");   // 体检不是实时数据：重建时把它排到最后就好
     el.innerHTML = "";
     el.append(
       h("div", { className: "tt-module-hd" },
@@ -1320,12 +1313,10 @@ export class WorkspaceApp {
           h("span", {}, "tps 趋势"),
           h("span", {}, `峰值 ${fmt(Math.max(...this.sparkHistory, 0))}`),
         ),
-        persistLine && h("div", { className: "tt-rt-cache" },
-          h("span", { title: "应用把会话扫描结果写进本地文件；与模型侧的缓存命中无关" }, "扫描结果写入"),
-          h("span", {}, persistLine),
-        ),
       ),
     );
+    if (diag) el.appendChild(diag);
+    el.scrollTop = keepScroll;
 
     const ringContainer = el.querySelector("#realtime-ring");
     if (ringContainer) {

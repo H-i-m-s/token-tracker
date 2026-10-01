@@ -275,14 +275,6 @@ body {
   color: var(--tt-t4);
 }
 
-/* 实时监控底部的缓存写入统计：与 .tt-spark-labels 同一套安静标注风格 */
-.tt-rt-cache {
-  display: flex;
-  justify-content: space-between;
-  font-size: 9px;
-  color: var(--tt-t4);
-}
-
 /* ── balance rows ── */
 .tt-bal-list {
   display: flex;
@@ -1525,13 +1517,29 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 
 /* ── 体检（只读） ──
    自成一个页签（跟其他四个一样是整屏 module、各自滚动），内容按「一行一条」排。 */
+/* ── 体检（只读） ──
+   挂在实时监控页底部：flex: 0 0 auto 保证它不被实时那块的伸缩压扁（放不下就整页滚动，
+   那个 module 自己是 overflow:auto）。 */
+#realtime-diag {
+  flex: 0 0 auto;
+  margin-top: 10px;
+  /* 它不在 .tt-module-bd 里，得自己把内边距补上与上面同一档：不然数字会贴着卡片边 */
+  padding: 12px 14px 14px;
+  border-top: 1px solid var(--tt-b1);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.tt-diag-head { display: flex; align-items: center; gap: 8px; }
+.tt-diag-head .tt-btn { margin-left: auto; }
+
 .tt-diag-bd { padding: 2px 0 8px; }
 .tt-diag-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-  gap: 1px 18px;
+  gap: 2px 20px;
 }
-.tt-diag-row { display: flex; align-items: baseline; gap: 7px; padding: 3px 0; min-width: 0; border-bottom: 1px solid var(--tt-b2); }
+.tt-diag-row { display: flex; align-items: baseline; gap: 7px; padding: 5px 0; min-width: 0; border-bottom: 1px solid var(--tt-b2); }
 .tt-diag-label { flex: 0 0 auto; font-size: 10.5px; color: var(--tt-t3); }
 .tt-diag-value {
   margin-left: auto;

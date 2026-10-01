@@ -18,7 +18,7 @@ export const DEFAULT_APP_STATE = {
 // 这些不跟 cardInstanceId 走——那个 id 每次打开卡片都可能变，跟着它存下次就找不回来了。
 export const SHARED_PREFS_KEY = "token-tracker-app:prefs";
 export const SHARED_KEYS = ["view", "appearance", "cardActive", "cardTabs"];
-export const VALID_VIEWS = ["overview", "balance", "details", "realtime", "diagnostics"];
+export const VALID_VIEWS = ["overview", "balance", "details", "realtime"];
 export const VALID_APPEARANCES = ["dark", "light", "system", ""];
 
 function pickShared(src) {
