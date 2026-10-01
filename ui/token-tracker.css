@@ -994,6 +994,19 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-display-menu { min-width: 135px; flex-direction: column; align-items: stretch; }
 .tt-display-menu button { text-align: left; border: 1px solid transparent; background: transparent; color: var(--tt-t2); font: 12px var(--font-sans); padding: 7px 9px; border-radius: 5px; cursor: pointer; }
 .tt-display-menu button[aria-pressed="true"] { background: var(--tt-select-bg); border-color: var(--tt-select-b); color: var(--tt-select-fg); }
+/* 显示设置：主题按钮与输入栏开关之间的分隔线（用内层边框色，深／浅主题都看得见）。 */
+.tt-display-sep { border-top: 1px solid var(--tt-b3); margin: 2px 0; }
+/* 输入栏卡片开关：一行一个，左标签右胶囊，字号与菜单里其它项同档（12px）。 */
+.tt-inputstatus-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 12px var(--font-sans); color: var(--tt-t2); }
+/* 开关本体：克制的小胶囊滑块，不是 iOS 大开关。选择器带上 .tt-display-menu 是为了压过上面那两条通用 button 规则。
+   开态学 git-save-load：强调色实心铺满，圆点纯白（用卡片色会在饱和底上发闷）。 */
+.tt-display-menu .tt-switch { position: relative; flex: 0 0 auto; width: 26px; height: 15px; padding: 0; border: 1px solid var(--tt-b1); border-radius: 999px; background: var(--tt-b1); cursor: pointer; transition: background .2s ease, border-color .2s ease, opacity .2s ease; }
+.tt-display-menu .tt-switch::after { content: ""; position: absolute; top: 1px; left: 1px; width: 11px; height: 11px; border-radius: 50%; background: #fff; transition: transform .2s ease; }
+.tt-display-menu .tt-switch[aria-pressed="true"] { background: var(--tt-select-b); border-color: var(--tt-select-b); }
+.tt-display-menu .tt-switch[aria-pressed="true"]::after { transform: translateX(11px); }
+.tt-display-menu .tt-switch:focus-visible { outline: 2px solid var(--tt-select-b); outline-offset: 1px; }
+/* card 关着时后三行置灰且不可点。 */
+.tt-display-menu .tt-switch:disabled { opacity: .4; cursor: default; }
 .tt-board-nav { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex: 0 0 auto; }
 .tt-view-tabs { display: flex; gap: 17px; }
 .tt-view-tabs button { border: 0; border-bottom: 2px solid transparent; color: var(--tt-t2); background: transparent; padding: 0 0 5px; font: 11px var(--font-sans); cursor: pointer; }

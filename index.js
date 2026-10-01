@@ -4,6 +4,7 @@ import { createEventStreams } from "./lib/event-stream.mjs";
 import { EventEmitter } from "node:events";
 import { LocalClient } from "./lib/local-client.mjs";
 import { SessionCacheStatus } from "./lib/session-cache.mjs";
+import { createInputStatusPrefs } from "./lib/input-status-prefs.mjs";
 import { shapeSnapshot, shapeBalances } from "./lib/snapshot-service.mjs";
 import { okResponse, errResponse } from "./lib/api-errors.mjs";
 // 明细导出：CSV 的拼装在引擎侧（前端分页后手里只有一页），mock 预览用同一份拼装器与同一份 mock 行。
@@ -46,6 +47,10 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     log("error", `dataDir 创建失败：${e?.message || e}`);
     return undefined;
   }) : Promise.resolve();
+
+  // 输入栏状态位卡片的四个开关（card/cache/speed/ttft）：真相落在 app 数据目录下的 input-status.json。
+  // 每次读取都反映落盘的最新值（getPrefs 是个即时读盘的口，不在启动时读一次就定格）。
+  const inputStatusPrefs = createInputStatusPrefs({ file: dataDir ? path.join(dataDir, "input-status.json") : null, log });
 
   const defaultMock = process.env.TOKEN_TRACKER_MOCK === "1";
   const busClient = clientFactory({ ctx, log, defaultMock });
@@ -139,7 +144,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       return [];
     }
   };
-  const sessionCache = new SessionCacheStatus({ bus: ctx.bus, inputStatus: ctx.inputStatus, log, speedQuery, listSessions });
+  const sessionCache = new SessionCacheStatus({ bus: ctx.bus, inputStatus: ctx.inputStatus, log, speedQuery, listSessions, getPrefs: () => inputStatusPrefs.read() });
   const unsubSessionCache = sessionCache.start();
 
   const updateEmitter = new EventEmitter();
@@ -354,6 +359,35 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   }
 
+  // 输入栏状态位卡片的四个开关：真相在插件侧（input-status.json），这里只负责读、写与生效。
+  async function handleInputStatusPrefsRead(c) {
+    return jsonResponse(c, okResponse({ prefs: inputStatusPrefs.read() }));
+  }
+
+  async function handleInputStatusPrefsWrite(c) {
+    let body = {};
+    try {
+      body = await c.req.json();
+    } catch { return jsonResponse(c, errResponse("INVALID_JSON", "请求体必须是 JSON"), 400); }
+    const before = inputStatusPrefs.read();
+    let prefs;
+    try {
+      // 只覆盖传进来的键；非法值/未知键由 store 忽略，不写进盘。
+      prefs = inputStatusPrefs.write(body);
+    } catch (err) {
+      log("error", "POST /input-status-prefs error:", err?.message || err);
+      return jsonResponse(c, errResponse("PREFS_SAVE_FAILED", err?.message || "保存输入栏偏好失败"), 503);
+    }
+    // card 由关变开：把卡片补回来（预热最近会话）；由开变关：立即把已挂的会话全部收起。
+    try {
+      if (!before.card && prefs.card) await sessionCache.warm();
+      else if (before.card && !prefs.card) await sessionCache.hideAll();
+    } catch (err) {
+      log("warn", `输入栏偏好生效失败：${err?.message || err}`);
+    }
+    return jsonResponse(c, okResponse({ prefs }));
+  }
+
   let unregisterRoutes = null;
   try {
     unregisterRoutes = ctx.routes.register((app) => {
@@ -369,6 +403,8 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       app.post("/refresh", handleRefresh);
       app.get("/settings", handleSettingsRead);
       app.post("/settings", handleSettingsWrite);
+      app.get("/input-status-prefs", handleInputStatusPrefsRead);
+      app.post("/input-status-prefs", handleInputStatusPrefsWrite);
       app.get("/events", (c) => {
         const stream = streams.open(c.req.raw.signal);
         if (!stream) return c.json(errResponse("STREAM_LIMIT", "事件连接已达上限"), 503);
@@ -386,7 +422,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     throw err;
   }
 
-  log("info", "routes registered: /snapshot /dashboard /details.csv /details /turn /diagnostics /balance /ds-usage /refresh /settings /events");
+  log("info", "routes registered: /snapshot /dashboard /details.csv /details /turn /diagnostics /balance /ds-usage /refresh /settings /input-status-prefs /events");
 
   let disposed = false;
   return async () => {

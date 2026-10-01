@@ -103,6 +103,9 @@ export class WorkspaceApp {
     // 顶部那排控件（范围 pills / 日期 / 显示设置）与筛选条各自记住“上一次画成什么样”。
     // 切页签也会走 onStateChange，若无条件重建，点一次页签就把这两块换一遍 —— 页签切换的“闪”就出在这里。
     this.chromeKey = "";
+    // 输入栏状态位卡片的四个开关（card/cache/speed/ttft）。真相在插件侧（input-status.json），
+    // 这里只是本地副本；默认全开，GET 回来之前菜单也画得对。
+    this.inputStatusPrefs = { card: true, cache: true, speed: true, ttft: true };
     // 范围那排是持久的（只建一次、之后原地更新）：点范围时整排不重建，
     // 底下那块高亮才能从旧位置滑过去。
     this.rangePills = null;
@@ -131,6 +134,7 @@ export class WorkspaceApp {
       this.state.subscribe((s) => this.onStateChange(s)),
       this.subscribeLifecycle(),
     );
+    await this.loadInputStatusPrefs();
     await this.initialLoad();
     this.startPolling();
   }
@@ -591,9 +595,9 @@ export class WorkspaceApp {
   }
 
   onStateChange(state) {
-    // 只在真的变了才重建顶部那排控件：范围、日期、主题。切页签会带着同一个值进来，这时什么都不必重建。
+    // 只在真的变了才重建顶部那排控件：范围、日期、主题（以及输入栏开关）。切页签会带着同一个值进来，这时什么都不必重建。
     // 范围那排不参与重建：from/to/主题变了只重建日期那块，胶囊整排原地更新。
-    const chromeKey = JSON.stringify([state.from, state.to, state.appearance]);
+    const chromeKey = this.chromeSignature(state);
     if (chromeKey !== this.chromeKey) {
       this.chromeKey = chromeKey;
       this.renderBoardControls();
@@ -618,6 +622,64 @@ export class WorkspaceApp {
     this.loadDashboard(true);
   }
 
+  // 顶部控件“上一次画成什么样”的摘要。输入栏开关也算进去：它一变，菜单就得跟着重建。
+  chromeSignature(state) {
+    return JSON.stringify([state.from, state.to, state.appearance, this.inputStatusPrefs]);
+  }
+
+  // 偏好变了要立刻重画这份菜单（只在初始化用；用户拨开关走原地更新，见 syncInputStatusSwitches）。
+  refreshPrefsMenu() {
+    this.chromeKey = this.chromeSignature(this.state.get());
+    this.renderBoardControls();
+  }
+
+  // 拨开关后原地改这几个控件的状态，不重建菜单：节点一换新，过渡就没了起点，滑块会直接
+  // 跳过去（之前就是这么被吞掉的）。顺手把 chromeKey 对齐，免得下一拍白重建一次。
+  syncInputStatusSwitches() {
+    const menu = this.appearanceControls?.querySelector(".tt-display-menu");
+    if (menu) {
+      for (const btn of menu.querySelectorAll(".tt-switch[data-pref]")) {
+        const key = btn.dataset.pref;
+        btn.setAttribute("aria-pressed", String(!!this.inputStatusPrefs[key]));
+        // card 关着时后三个不可点；只改可点状态，不动它们各自的开/关。
+        if (key !== "card") btn.disabled = !this.inputStatusPrefs.card;
+      }
+    }
+    this.chromeKey = this.chromeSignature(this.state.get());
+  }
+
+  // 初始化时拿一次插件侧的真实偏好；拿不到就按全开，不弹错（开关是锦上添花，不该拦住看板）。
+  async loadInputStatusPrefs() {
+    try {
+      const prefs = await this.api.getInputStatusPrefs();
+      if (prefs && typeof prefs === "object") {
+        this.inputStatusPrefs = {
+          card: prefs.card !== false, cache: prefs.cache !== false,
+          speed: prefs.speed !== false, ttft: prefs.ttft !== false,
+        };
+      }
+    } catch { /* 读不到就维持全开 */ }
+    this.refreshPrefsMenu();
+  }
+
+  // 拨一下开关：先乐观更新本地副本并原地刷新（动画与反馈都跟手），再 POST 落盘；回包里以服务端为准，失败则回滚。
+  async toggleInputStatusPref(key) {
+    const next = { ...this.inputStatusPrefs, [key]: !this.inputStatusPrefs[key] };
+    this.inputStatusPrefs = next;
+    this.syncInputStatusSwitches();
+    try {
+      const prefs = await this.api.saveInputStatusPrefs({ [key]: next[key] });
+      if (prefs && typeof prefs === "object") {
+        this.inputStatusPrefs = { ...this.inputStatusPrefs, ...prefs };
+        this.syncInputStatusSwitches();
+      }
+    } catch (err) {
+      this.setError(`输入栏卡片设置保存失败：${err.message}`);
+      this.inputStatusPrefs = { ...this.inputStatusPrefs, [key]: !next[key] };
+      this.syncInputStatusSwitches();
+    }
+  }
+
   // ---------- overview module ----------
 
   renderBoardControls() {
@@ -629,10 +691,34 @@ export class WorkspaceApp {
     const state = this.state.get();
     const appearance = applyAppearance(state.appearance);
     const isDark = appearance === "dark" || (appearance === "system" && document.documentElement.classList.contains("hana-dark"));
+    // 这份菜单会被重建（主题/输入栏开关一变就重来）：把上一次的展开状态记下来，重画完再撑开，
+    // 免得拨一下开关菜单自己就收了。
+    const wasOpen = !!this.appearanceControls?.querySelector(".tt-display-settings")?.open;
+    const prefs = this.inputStatusPrefs;
+    // 每行 = 标签 + 胶囊开关，开关用 aria-pressed 表示开/关（与主题按钮同一套写法）。
+    // card 关着时后三行不可点：那张卡片都不显示了，细分开关没有意义。
+    const prefRow = (key, label) => {
+      const disabled = key !== "card" && !prefs.card;
+      return h("div", { className: "tt-inputstatus-row" },
+        h("span", { className: "tt-inputstatus-label" }, label),
+        h("button", {
+          type: "button", className: "tt-switch", dataset: { pref: key },
+          "aria-pressed": String(!!prefs[key]), "aria-label": label,
+          ...(disabled ? { disabled: "" } : {}),
+          onClick: () => this.toggleInputStatusPref(key),
+        }));
+    };
     const settings = h("details", { className: "tt-display-settings" }, h("summary", { title: "显示设置" }, "显示设置"),
-      h("div", { className: "tt-display-menu", role: "group", "aria-label": "看板主题" },
+      h("div", { className: "tt-display-menu", role: "group", "aria-label": "看板显示设置" },
         ...[["dark", "深黑"], ["light", "浅色"], ["system", "Hana 原生"]].map(([key,label]) =>
-          h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label))));
+          h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label)),
+        h("div", { className: "tt-display-sep" }),
+        prefRow("card", "对话框卡片"),
+        prefRow("cache", "缓存"),
+        prefRow("speed", "速度"),
+        prefRow("ttft", "首字"),
+      ));
+    if (wasOpen) settings.open = true;
     this.appearanceControls?.replaceChildren(
       h("button", { type: "button", className: "tt-theme-toggle", "aria-label": isDark ? "切换浅色主题" : "切换深黑主题", onClick: () => this.state.patch({ appearance: isDark ? "light" : "dark" }) }, isDark ? "浅色" : "深黑"), settings);
     // 自绘日期字段：返回元素带 .value（YYYY-MM-DD，空串=未选），取值语义与原生日期输入一致。

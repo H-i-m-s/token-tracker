@@ -162,4 +162,19 @@ export class AppApi {
     });
     return data.settings;
   }
+
+  // 输入栏状态位卡片的四个开关（card/cache/speed/ttft）。真相在插件侧，这里只做透传。
+  async getInputStatusPrefs() {
+    const data = await this.fetchJson(`/input-status-prefs`);
+    return data.prefs;
+  }
+
+  async saveInputStatusPrefs(patch) {
+    const data = await this.fetchJson(`/input-status-prefs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    return data.prefs;
+  }
 }
