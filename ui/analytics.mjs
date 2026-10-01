@@ -111,24 +111,8 @@ function overlayPaths(layers, count, width, height, max) {
   });
 }
 
-// 堆叠：各层首尾相接，叠满即为总量。上下边界用同一套插值，层与层之间才不露缝。
-function stackedAreaPaths(layers, count, width, height, max) {
-  const X = (i) => axisX(i, count, width);
-  const Y = (v) => height - (v / max) * (height - 6);
-  const tops = [], bots = [];
-  let acc = new Array(count).fill(0);
-  for (const layer of layers) {
-    bots.push(acc.slice());
-    acc = acc.map((v, i) => v + layer.values[i]);
-    tops.push(acc.slice());
-  }
-  return layers.map((layer, li) => {
-    if (!count) return '';
-    const topPts = tops[li].map((v, i) => [X(i), Y(v)]);
-    const botPts = bots[li].map((v, i) => [X(i), Y(v)]).reverse();
-    return `M${topPts[0][0]},${topPts[0][1]}` + splineCurve(topPts) + ` L${botPts[0][0]},${botPts[0][1]}` + splineCurve(botPts) + ' Z';
-  });
-}
+// 堆叠图的其他用处（日模型占比柱）走各自的构造，这里不再需要 stackedAreaPaths：
+// 河流图的占比改成了“各层独立成线”，与绝对量共用同一套几何，两个模式之间才能逐点插值。
 
 // ── 时间刻度 ──
 // 顶部时间选项是唯一的尺子：跨度 ≤7 天按小时，其余按天。看板上所有时间序列图都走这里，
@@ -175,8 +159,11 @@ function createFlowPanel() {
   const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
   const chart = svg(W, H, '用量总览：各来源消耗随时间的变化');
   const gridLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
-  const pathsLayer = node('g', {});
-  const hoverLayer = node('g', {});
+  // 曲线与悬停标记必须跟网格用同一个坐标系。以前这两层忘了这个平移：
+  // path 从 viewBox 的 (0,0) 起算，于是曲线整体比网格高 8 个单位、左 90 个单位，
+  // 基线不落在 0 那条网格线上，第一个尖峰还压在纵轴文字的栏里。
+  const pathsLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
+  const hoverLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
   chart.append(gridLayer, pathsLayer, hoverLayer);   // 顺序不能乱：网格在下、曲线居中、悬停在上
   const hud = h('div', { className: 'tt-flow-hud' });
   const axesBox = h('div', { className: 'tt-flow-axes' });
@@ -300,11 +287,10 @@ function createFlowPanel() {
     max = flowScale === 'pct'
       ? (solo ? Math.max(...solo.values, 0.01) : 1)
       : Math.max(1, shownMax);
-    // 绝对量用叠加（复刻「0–24 时分布」的观感），占比用堆叠（归一到 100% 才有意义）。
-    const overlaid = flowScale === 'abs';
-    const paths = overlaid
-      ? overlayPaths(shown, cells.length, cw, ch, max)
-      : stackedAreaPaths(shown, cells.length, cw, ch, max);
+    // 两个模式共用同一套几何：占比只是把每层的值换成了“占当列的比例”（见上面 values 那段），
+    // 纵轴从 Token 绝对量变成 0–100%。同一批节点、同一套命令结构，切换时就能逐点插值，
+    // 是真正的形状变换，而不是两套图叠着淡入淡出。
+    const paths = overlayPaths(shown, cells.length, cw, ch, max);
     const g = gridLayer;
     // 轴标签不画进 SVG。SVG 随容器等比缩放，字会一起变大变小；
     // 改成叠一层 HTML，位置用百分比跟着图走，字号是普通 CSS px，永远不变。
@@ -315,38 +301,45 @@ function createFlowPanel() {
       yTicks.push({ y: PAD_T + y, text: flowScale === 'pct' ? Math.round(v * 1000) / 10 + '%' : compact(v) });
     }
     // ── 曲线 ──
-    // 叠加模式（绝对量）按层 id 复用同一批 path：重画只换 d 与颜色，浏览器就能插值过渡。
-    // 占比模式是堆叠，每条带的形状取决于上下相邻的层，按层各自插值没意义，照旧重建。
-    if (!overlaid) {
-      pathEls.clear();
-      pathsLayer.replaceChildren();
-      shown.forEach((layer, i) => {
-        const color = COLORS[layer.colorIndex % COLORS.length];
-        pathsLayer.append(node('path', { d: paths[i], fill: color, 'fill-opacity': .55, stroke: color, 'stroke-width': .8, 'stroke-opacity': .85 },
-          [title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]));
-      });
-    } else {
+    // 按层 id 复用同一批 path：重画只换 d 与颜色，浏览器就能插值过渡。
+    {
+      // 配对：先按层 id 认领上一帧的元素（筛选、聚焦时 id 不变，形状就地变化）。
+      // id 认不到的再按次序两两补位——典型是从「按来源」切到「按 Agent」，id 全换了，
+      // 但同一种颜色的那条河流应当直接流到目标形状，而不是先降成 0 再升回来。
       const keep = new Set(shown.map((l) => l.id));
-      // ① 这次不再画的层：先缓降到 0（保持自己的颜色），降完再淡掉、移除
-      for (const [id, rec] of [...pathEls]) {
-        if (keep.has(id)) continue;
+      const slots = shown.map((layer) => ({ layer, rec: pathEls.get(layer.id) || null }));
+      const idle = [...pathEls].filter(([id]) => !keep.has(id)).map(([id, rec]) => ({ id, rec, adopted: false }));
+      const free = slots.filter((s) => !s.rec);
+      free.forEach((s, k) => { if (idle[k]) { s.rec = idle[k].rec; idle[k].adopted = true; } });
+      // ① 真的不再画的层：先缓降到 0（保持自己的颜色），降完再淡掉、移除
+      for (const { rec, adopted } of idle) {
+        if (adopted) continue;                                  // 这具元素已被认领，别送走
         if (rec.columns !== cells.length) pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
         rec.el.setAttribute('d', buildOne(new Array(cells.length).fill(0), cells.length, max));
         rec.timer = setTimeout(() => {
           rec.el.setAttribute('opacity', '0');   // 淡出交给样式表，不写内联
-          rec.timer2 = setTimeout(() => { rec.el.remove(); pathEls.delete(id); }, 200);
+          rec.timer2 = setTimeout(() => {
+            rec.el.remove();
+            for (const [k2, v2] of pathEls) if (v2 === rec) pathEls.delete(k2);   // 被认领过的元素换了 key
+          }, 200);
         }, FLOW_MS);
       }
       // ② 这次要画的层：形态对齐 → 换新 d。列数没变就能直接插值；变了先把旧形状重采样钉住。
+      pathEls.clear();                                          // 下面按这一帧的 id 重新记账
       shown.forEach((layer, i) => {
         const color = COLORS[layer.colorIndex % COLORS.length];
-        let rec = pathEls.get(layer.id);
+        let rec = slots[i].rec;
         const fresh = !rec;
         if (fresh) {
           rec = { el: makePath(layer, ''), columns: cells.length, values: [], max: 1 };
-          pathEls.set(layer.id, rec);
-        } else if (rec.columns !== cells.length) {
-          pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
+        } else {
+          // 刚从占比切回来：这具节点是被寄存的。先接回文档，再把旧形状钉住，
+          // 顺序不能反——元素不在文档里时逼布局是没用的。
+          if (!rec.el.isConnected) {
+            pathsLayer.append(rec.el);
+            pin(rec.el, rec.held || buildOne(new Array(cells.length).fill(0), cells.length, max));
+          }
+          if (rec.columns !== cells.length) pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
         }
         // 次序：不动。同一帧里把节点摘下来重插（不管 append 还是 insertBefore），
         // 浏览器就把它当成新插入的元素，d 的过渡不会建立。而且叠放先后本来就不该每帧变。
@@ -371,9 +364,12 @@ function createFlowPanel() {
         rec.el.setAttribute('fill-opacity', '.15');
         rec.el.setAttribute('stroke-width', '1.4');
         rec.el.setAttribute('opacity', '1');
+        const tip = rec.el.querySelector('title');
+        if (tip) tip.textContent = `${nameOf(layer.id)} · ${compact(layer.total)} Token`;   // 换了身份的要改名
         rec.columns = cells.length;
         rec.values = layer.values;
         rec.max = max;
+        pathEls.set(layer.id, rec);
       });
     }
     // x 轴刻度按列中心摆（而不是数据点位置）：首尾两个刻度才不会把一半压在框外。
@@ -514,7 +510,7 @@ function createFlowPanel() {
         : flowDimension === 'model' && ids.length === 1
           ? '只看所选模型自己的用量'
           : (flowScale === 'pct'
-            ? '每列归一到 100%，看构成'
+            ? '每条线是这一层占当列的比例，纵轴 0–100%'
             : (flowFocus.length > 1
               ? `各层独立成线，纵轴按所选的 ${flowFocus.length} 层里最高的一条缩放`
               : '各层独立成线，重叠处自然加深'));
