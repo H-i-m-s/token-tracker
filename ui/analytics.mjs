@@ -1,6 +1,7 @@
 import { splitRow } from './board-layout.mjs';
 import { h, fmtCost, fmtPct } from './components.mjs';
 import { asList, pickValues, modsOf } from './selection.mjs';
+import { splineCurve, splineValueAt } from './curve.mjs';
 
 const COLORS = ['#d1b477', '#7ea3cf', '#81b4a1', '#c68487', '#aa97c8', '#a7b779', '#bd987b', '#8897aa'];
 
@@ -96,31 +97,7 @@ let flowFocus = [];         // 选中的层 id（可多层）：非空时只显�
 const anchors = { model: null, agent: null, focus: null };
 
 // 中点插值的平滑曲线段（不含起笔的 M）。上下边界用同一套算法，层与层之间才不露缝。
-function curve(pts) {
-  let d = '';
-  for (let i = 1; i < pts.length; i++) {
-    const [x, y] = pts[i], [px, py] = pts[i - 1], mx = (x + px) / 2;
-    d += ` C${mx},${py} ${mx},${y} ${x},${y}`;
-  }
-  return d;
-}
-
 const axisX = (i, count, width) => (count <= 1 ? width / 2 : (i * width) / (count - 1));
-
-// 求平滑曲线在某个浮点索引处的值。用的是与绘制完全相同的中点贝塞尔：
-// x 控制点落在两段中点，x(t) 单调，二分反解 t；y 控制点就是两端点，直接可算。
-// 这样鼠标停在两点之间时，读数对得上曲线上那一点，而不是生硬地卡到整列。
-function bezierYAt(i0, y0, i1, y1, target) {
-  const mx = (i0 + i1) / 2;
-  let lo = 0, hi = 1;
-  for (let k = 0; k < 20; k++) {
-    const t = (lo + hi) / 2;
-    const x = i0 * (1 - t) ** 3 + 3 * mx * (1 - t) ** 2 * t + 3 * mx * (1 - t) * t ** 2 + i1 * t ** 3;
-    if (x < target) lo = t; else hi = t;
-  }
-  const t = (lo + hi) / 2;
-  return y0 * (1 - t) ** 2 * (1 + 2 * t) + y1 * t ** 2 * (3 - 2 * t);
-}
 
 // 叠加：每条曲线各自从基线画起，互相重叠。
 // 这是「0–24 时分布」那张图的形状：填充很淡，重叠层数越多颜色越深，描边始终清楚。
@@ -129,7 +106,7 @@ function overlayPaths(layers, count, width, height, max) {
   return layers.map((layer) => {
     if (!count) return '';
     const pts = layer.values.map((v, i) => [axisX(i, count, width), Y(v)]);
-    return `M${pts[0][0]},${pts[0][1]}` + curve(pts)
+    return `M${pts[0][0]},${pts[0][1]}` + splineCurve(pts)
       + ` L${axisX(count - 1, count, width)},${height} L${axisX(0, count, width)},${height} Z`;
   });
 }
@@ -149,7 +126,7 @@ function stackedAreaPaths(layers, count, width, height, max) {
     if (!count) return '';
     const topPts = tops[li].map((v, i) => [X(i), Y(v)]);
     const botPts = bots[li].map((v, i) => [X(i), Y(v)]).reverse();
-    return `M${topPts[0][0]},${topPts[0][1]}` + curve(topPts) + ` L${botPts[0][0]},${botPts[0][1]}` + curve(botPts) + ' Z';
+    return `M${topPts[0][0]},${topPts[0][1]}` + splineCurve(topPts) + ` L${botPts[0][0]},${botPts[0][1]}` + splineCurve(botPts) + ' Z';
   });
 }
 
@@ -182,18 +159,38 @@ function hourCells(heatmap, days) {
   return timeSlots(days, 'hour').map((s) => byKey.get(s.key)
     || { date: s.date, hour: s.hour, totalTokens: 0, models: {}, kinds: {}, agents: {}, calls: 0 });
 }
-function renderFlowPanel(a, days, agentNames = {}) {
-  const useHour = scaleFor(days) === 'hour' && a.heatmap.length > 0;
-  const cells = useHour ? hourCells(a.heatmap, days) : a.daily;
-  // 有来源 / Agent 拆分就用它们；后端因为模型、供应商筛选把这两项撤掉时，改按模型看：
-  // 供应商筛选下每格 models 仍然齐全（已按筛选过滤），所以各家模型自己的线加起来就是总量。
-  const canSplitKind = cells.some((c) => Object.keys(c.kinds || {}).length || Object.keys(c.agents || {}).length);
-  const hasModels = cells.some((c) => Object.keys(c.models || {}).length);
-  const DIMS = canSplitKind || !hasModels ? [['kind', '按来源'], ['agent', '按 Agent']] : [['model', '按模型']];
+// 面板骨架只建一次，之后只更新内容。
+// 以前每次 draw() 都 replaceChildren 重建：元素全是新的，任何过渡都无从谈起（没有“从哪儿来”）。
+// 现在曲线沿同一批 path 变过去，颜色跟着过渡，纵轴变化也能滑过去。
+function createFlowPanel() {
+  // 跨重画要活着的状态：数据、当前画出来的那几层、悬停用的几何参数
+  let useHour = false, days = [], cells = [], canSplitKind = false, hasModels = false;
+  let DIMS = [['kind', '按来源'], ['agent', '按 Agent']];
+  let agentNames = {};
+  let shown = [], dots = [], vline = null, span = 1, stepX = 0, max = 1;
+  let valueAt = () => 0, fmtValue = () => '';
+  const pathEls = new Map();        // 层 id -> { el, columns, values, max }
+  const FLOW_MS = 260;              // 与 CSS 那条 S 形过渡同长，用来安排“降完再淡”
+  const W = 1000, H = 300, PAD_L = 90, PAD_B = 40, PAD_T = 8;
+  const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
+  const chart = svg(W, H, '用量总览：各来源消耗随时间的变化');
+  const gridLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
+  const pathsLayer = node('g', {});
+  const hoverLayer = node('g', {});
+  chart.append(gridLayer, pathsLayer, hoverLayer);   // 顺序不能乱：网格在下、曲线居中、悬停在上
+  const hud = h('div', { className: 'tt-flow-hud' });
+  const axesBox = h('div', { className: 'tt-flow-axes' });
+  // y 轴三个标签常驻：纵轴重算时靠过渡滑过去，而不是硬跳（文本换了、位置过渡）
+  const yLabelSpans = ['', '', ''].map(() => h('span', {}));
+  for (const s of yLabelSpans) axesBox.append(s);
+  const plot = h('div', { className: 'tt-flow-plot', 'data-tt-select': '' }, chart, axesBox, hud);
+  const legendBox = h('div', { className: 'tt-board-legend tt-legend-totals' });
+  const emptyBox = h('div', { className: 'tt-board-empty' }, '所选范围暂无用量');
   const sw = h('div', { className: 'tt-flow-switch' });
   const body = h('div', { className: 'tt-board-body' });
   const canvas = h('div', { className: 'tt-flow-canvas' });
   const foot = h('footer', {}, '');
+  canvas.append(plot, legendBox, emptyBox);
   body.append(canvas, foot);
   const el = h('section', { className: 'tt-board-panel tt-flow-panel', 'data-tt-select': '' },
     h('header', {}, h('h2', {}, '用量总览'), sw), body);
@@ -206,6 +203,36 @@ function renderFlowPanel(a, days, agentNames = {}) {
     return id;
   };
   const cellLabel = (c) => (useHour ? `${c.date} ${String(c.hour).padStart(2, '0')}:00` : c.date);
+
+  // 把「旧形状按新列数重采样」钉成当前形态：两串 d 段数一样，浏览器才能插值。
+  const pin = (el, d) => {
+    if (!d) return;
+    el.style.transition = 'none';
+    el.setAttribute('d', d);
+    void el.getBoundingClientRect();
+    el.style.transition = '';
+  };
+  const resample = (rec, count) => {
+    const from = Math.max(1, rec.values.length - 1);
+    return new Array(count).fill(0).map((_, k) => splineValueAt(rec.values, (k / Math.max(1, count - 1)) * from));
+  };
+  const buildOne = (values, count, m) => overlayPaths([{ values }], count, cw, ch, m)[0] || '';
+  const makePath = (layer, d) => node('path', {
+    class: 'tt-flow-line tt-flow-line-vis',
+    d,
+    fill: COLORS[layer.colorIndex % COLORS.length],
+    stroke: COLORS[layer.colorIndex % COLORS.length],
+    'fill-opacity': .15,
+    'stroke-width': 1.4,
+  }, [title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]);
+
+  // 悬停用的一套值每次都换，但监听器只挂一次（元素现在是常驻的，重挂会越堆越多）。
+  const clearHover = () => {
+    if (vline) vline.setAttribute('opacity', '0');
+    for (const dot of dots) dot.setAttribute('opacity', '0');
+    hud.className = 'tt-flow-hud';
+  };
+  let hoverMove = null, hoverLeave = null;
 
   function draw() {
     // 拆分维度由数据决定：后端在按模型 / 供应商筛选时不发 kinds / agents（各分项之和会对不上
@@ -231,9 +258,15 @@ function renderFlowPanel(a, days, agentNames = {}) {
         btn.title = btn.disabled ? '只有总量一层时，占比恒为 100%' : '';
       }
     }
-    canvas.replaceChildren();
-    if (!cells.length || (!splittable && cellsTotal <= 0)) {
-      canvas.append(h('div', { className: 'tt-board-empty' }, '所选范围暂无用量'));
+    // 只清网格与悬停层。曲线层千万不能在这里清：一清，节点就被摘下来了，
+    // 之后即使把同一批 path 塞回去，浏览器也当它是新插入的元素——“之前的样子”没了，
+    // d 的过渡根本不会建立，看上去就是突然跳变。
+    for (const layer of [gridLayer, hoverLayer]) layer.replaceChildren();
+    const hasData = cells.length > 0 && (splittable || cellsTotal > 0);
+    emptyBox.hidden = hasData;
+    plot.hidden = !hasData;
+    legendBox.hidden = !hasData;
+    if (!hasData) {
       foot.textContent = '';
       return;
     }
@@ -255,18 +288,16 @@ function renderFlowPanel(a, days, agentNames = {}) {
       }),
     }));
     // 聚焦：点图例只留选中的几层（可多层）。纵轴按这几层自己的量算，否则小层被大层一并压平看不见。
-    let shown = flowFocus.length ? layers.filter((l) => flowFocus.includes(l.id)) : layers;
+    shown = flowFocus.length ? layers.filter((l) => flowFocus.includes(l.id)) : layers;
     if (flowFocus.length && !shown.length) { flowFocus = []; shown = layers; }
     const solo = shown.length === 1 && flowFocus.length ? shown[0] : null;
 
-    const W = 1000, H = 300, PAD_L = 90, PAD_B = 40, PAD_T = 8;
-    const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
     // 纵轴上限 = 画面上真实存在的最高点，只算画出来的这几层。
     // 以前绝对量取的是「各层叠起来的日总量」，于是聚焦选谁都不影响纵轴：只选小层时轴还挂在
     // 全体叠起来的高度上（本机数据 23.52 亿，由 08-13 一天撑着），小层就被压成一条线。
     // 占比模式仍旧固定 1（每列归一才有意义），单选仍是它自己的尺度。
     const shownMax = Math.max(0.01, ...shown.flatMap((l) => l.values));
-    const max = flowScale === 'pct'
+    max = flowScale === 'pct'
       ? (solo ? Math.max(...solo.values, 0.01) : 1)
       : Math.max(1, shownMax);
     // 绝对量用叠加（复刻「0–24 时分布」的观感），占比用堆叠（归一到 100% 才有意义）。
@@ -274,8 +305,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
     const paths = overlaid
       ? overlayPaths(shown, cells.length, cw, ch, max)
       : stackedAreaPaths(shown, cells.length, cw, ch, max);
-    const chart = svg(W, H, '用量总览：各来源消耗随时间的变化');
-    const g = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
+    const g = gridLayer;
     // 轴标签不画进 SVG。SVG 随容器等比缩放，字会一起变大变小；
     // 改成叠一层 HTML，位置用百分比跟着图走，字号是普通 CSS px，永远不变。
     const yTicks = [], xTicks = [];
@@ -284,17 +314,68 @@ function renderFlowPanel(a, days, agentNames = {}) {
       g.append(node('line', { x1: 0, x2: cw, y1: y, y2: y, stroke: 'var(--tt-b3)', 'stroke-dasharray': '2 4' }));
       yTicks.push({ y: PAD_T + y, text: flowScale === 'pct' ? Math.round(v * 1000) / 10 + '%' : compact(v) });
     }
-    shown.forEach((layer, i) => {
-      const color = COLORS[layer.colorIndex % COLORS.length];
-      // 叠加：照搬「0–24 时分布」的色彩逻辑——填充只给 15%，重叠层数越多颜色越深；
-      // 描边一点都不透，所以叠得再深，轮廓也始终认得出来。
-      // 占比：那是堆叠，层不重叠，重叠加深不成立，填充得实一些才能看出构成。
-      const style = overlaid
-        ? { 'fill-opacity': .15, stroke: color, 'stroke-width': 1.4 }
-        : { 'fill-opacity': .55, stroke: color, 'stroke-width': .8, 'stroke-opacity': .85 };
-      g.append(node('path', { d: paths[i], fill: color, ...style },
-        [title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]));
-    });
+    // ── 曲线 ──
+    // 叠加模式（绝对量）按层 id 复用同一批 path：重画只换 d 与颜色，浏览器就能插值过渡。
+    // 占比模式是堆叠，每条带的形状取决于上下相邻的层，按层各自插值没意义，照旧重建。
+    if (!overlaid) {
+      pathEls.clear();
+      pathsLayer.replaceChildren();
+      shown.forEach((layer, i) => {
+        const color = COLORS[layer.colorIndex % COLORS.length];
+        pathsLayer.append(node('path', { d: paths[i], fill: color, 'fill-opacity': .55, stroke: color, 'stroke-width': .8, 'stroke-opacity': .85 },
+          [title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]));
+      });
+    } else {
+      const keep = new Set(shown.map((l) => l.id));
+      // ① 这次不再画的层：先缓降到 0（保持自己的颜色），降完再淡掉、移除
+      for (const [id, rec] of [...pathEls]) {
+        if (keep.has(id)) continue;
+        if (rec.columns !== cells.length) pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
+        rec.el.setAttribute('d', buildOne(new Array(cells.length).fill(0), cells.length, max));
+        rec.timer = setTimeout(() => {
+          rec.el.setAttribute('opacity', '0');   // 淡出交给样式表，不写内联
+          rec.timer2 = setTimeout(() => { rec.el.remove(); pathEls.delete(id); }, 200);
+        }, FLOW_MS);
+      }
+      // ② 这次要画的层：形态对齐 → 换新 d。列数没变就能直接插值；变了先把旧形状重采样钉住。
+      shown.forEach((layer, i) => {
+        const color = COLORS[layer.colorIndex % COLORS.length];
+        let rec = pathEls.get(layer.id);
+        const fresh = !rec;
+        if (fresh) {
+          rec = { el: makePath(layer, ''), columns: cells.length, values: [], max: 1 };
+          pathEls.set(layer.id, rec);
+        } else if (rec.columns !== cells.length) {
+          pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
+        }
+        // 次序：不动。同一帧里把节点摘下来重插（不管 append 还是 insertBefore），
+        // 浏览器就把它当成新插入的元素，d 的过渡不会建立。而且叠放先后本来就不该每帧变。
+        // 所以只追加（新层落在最后），已有节点永远留在原位——描边/填充谁压谁也随之稳定了。
+        if (fresh) pathsLayer.append(rec.el);
+        // 上一层刚被判“不画了”、正在降或正在淡，又被选回来了：先撤掉那两个定时器，
+        // 否则几百毫秒后它会当着你的面消失。顺手清掉内联 transition（防御）：
+        // 它会把样式表里那条 d 过渡整个顶掉。
+        if (rec.timer) { clearTimeout(rec.timer); rec.timer = 0; }
+        if (rec.timer2) { clearTimeout(rec.timer2); rec.timer2 = 0; }
+        if (rec.el.style.transition) rec.el.style.transition = '';
+        rec.el.style.opacity = '';
+        // 新出现的层先从 0 起：这一帧必须在它挂进文档之后写，并逼一次布局，
+        // 否则浏览器没有“之前的样子”，下面那行新 d 会直接落地 = 突然出现。
+        if (fresh) {
+          rec.el.setAttribute('d', buildOne(new Array(cells.length).fill(0), cells.length, max));
+          void rec.el.getBoundingClientRect();
+        }
+        rec.el.setAttribute('d', paths[i]);
+        rec.el.setAttribute('fill', color);
+        rec.el.setAttribute('stroke', color);
+        rec.el.setAttribute('fill-opacity', '.15');
+        rec.el.setAttribute('stroke-width', '1.4');
+        rec.el.setAttribute('opacity', '1');
+        rec.columns = cells.length;
+        rec.values = layer.values;
+        rec.max = max;
+      });
+    }
     // x 轴刻度按列中心摆（而不是数据点位置）：首尾两个刻度才不会把一半压在框外。
     const colW = cw / Math.max(1, cells.length);
     const step = Math.max(1, Math.ceil(cells.length / 9));
@@ -319,33 +400,24 @@ function renderFlowPanel(a, days, agentNames = {}) {
 
     // ── 悬停：竖直虚线 + 各层标记点 + 读数浮层 ──
     // 虚线跟着指针的 x 走，取值走插值，所以停在哪都能读出那个位置的值。
-    const span = Math.max(1, cells.length - 1);
-    const stepX = cw / span;
-    const valueAt = (layer, fx) => {
-      const a = Math.max(0, Math.min(cells.length - 1, Math.floor(fx)));
-      const b = Math.min(cells.length - 1, a + 1);
-      return a === b ? layer.values[a] : bezierYAt(a, layer.values[a], b, layer.values[b], fx);
-    };
-    const fmtValue = (v) => (flowScale === 'pct' ? (v * 100).toFixed(1) + '%' : compact(v));
+    span = Math.max(1, cells.length - 1);
+    stepX = cw / span;
+    // 悬停取值走同一套三次样条（见 ui/curve.mjs），所以读数和曲线永远对得上：
+    // 停在两列之间时读的是曲线上那一点，而不是卡到整列。
+    valueAt = (layer, fx) => splineValueAt(layer.values, fx);
+    fmtValue = (v) => (flowScale === 'pct' ? (v * 100).toFixed(1) + '%' : compact(v));
     const hover = node('g', { class: 'tt-flow-hover' });
-    const vline = node('line', { y1: 0, y2: ch, stroke: 'var(--tt-t2)', 'stroke-width': 1, 'stroke-dasharray': '3 3', 'shape-rendering': 'crispEdges', opacity: 0 });
+    vline = node('line', { y1: 0, y2: ch, stroke: 'var(--tt-t2)', 'stroke-width': 1, 'stroke-dasharray': '3 3', 'shape-rendering': 'crispEdges', opacity: 0 });
     hover.append(vline);
-    const dots = shown.map((layer) => node('circle', {
+    dots = shown.map((layer) => node('circle', {
       r: 2.6, cx: 0, cy: 0,
       fill: COLORS[layer.colorIndex % COLORS.length], stroke: 'var(--tt-card)', 'stroke-width': 1, opacity: 0,
     }));
     for (const dot of dots) hover.append(dot);
-    g.append(hover);
+    hoverLayer.append(hover);
 
-    const hud = h('div', { className: 'tt-flow-hud' });
     let lastPx = null, hudSide = 'right'; // 记住指针上一次的位置，用来判断滑向哪边
-
-    const clearHover = () => {
-      vline.setAttribute('opacity', '0');
-      for (const dot of dots) dot.setAttribute('opacity', '0');
-      hud.className = 'tt-flow-hud';
-    };
-    chart.addEventListener('mousemove', (event) => {
+    hoverMove = (event) => {
       const box = chart.getBoundingClientRect ? chart.getBoundingClientRect() : null;
       if (!box || !box.width) return;
       const gx = ((event.clientX - box.left) / box.width) * W - PAD_L;
@@ -388,24 +460,31 @@ function renderFlowPanel(a, days, agentNames = {}) {
       // 浮层顶边因此在指针上方 1/3 个浮层高度处。
       const top = py - hudHt * (1 / 3);
       hud.style.top = Math.max(4, Math.min(Math.max(4, rectH - hudHt - 4), top)) + 'px';
-    });
-    chart.addEventListener('mouseleave', clearHover);
+    };
+    if (hoverMove) chart.removeEventListener('mousemove', hoverMove);
+    if (hoverLeave) chart.removeEventListener('mouseleave', hoverLeave);
+    chart.addEventListener('mousemove', hoverMove);
+    hoverLeave = clearHover;
+    chart.addEventListener('mouseleave', hoverLeave);
 
-    chart.append(g);
     // 轴标签层：绝对定位盖在图上。viewBox 坐标换算成百分比，位置跟着图走。
-    const axes = h('div', { className: 'tt-flow-axes' },
-      ...yTicks.map((t) => h('span', {
-        style: `left:${((PAD_L / W) * 100).toFixed(3)}%;top:${((t.y / H) * 100).toFixed(3)}%;transform:translate(calc(-100% - 8px),-50%)`,
-      }, t.text)),
-      ...xTicks.map((t) => h('span', {
+    // 只换内容：y 轴三个标签复用常驻节点（位置过渡），x 轴日期每次重建（列数会变）。
+    yTicks.forEach((t, i) => {
+      const s = yLabelSpans[i];
+      if (!s) return;
+      s.textContent = t.text;
+      s.style.left = ((PAD_L / W) * 100).toFixed(3) + '%';
+      s.style.top = ((t.y / H) * 100).toFixed(3) + '%';
+      s.style.transform = 'translate(calc(-100% - 8px),-50%)';
+    });
+    for (const s of axesBox.querySelectorAll('.tt-flow-xlab')) s.remove();
+    for (const t of xTicks) {
+      axesBox.append(h('span', {
+        className: 'tt-flow-xlab',
         style: `left:${((t.x / W) * 100).toFixed(3)}%;top:${((t.y / H) * 100).toFixed(3)}%;transform:translate(-50%,-50%)`,
-      }, t.text)));
-    // 轴标签层和浮层都塞进 plot。plot 只包 SVG，百分比才以图区为基准，
-    // 否则按整块画布（还含图例）算，标签会落到底下的图例上。
-    const plot = h('div', { className: 'tt-flow-plot', 'data-tt-select': '' }, chart, axes, hud);
-    canvas.append(plot);
-    const grand = (splittable ? [...totals.values()].reduce((s, v) => s + v, 0) : cellsTotal) || 1;
-    canvas.append(h('div', { className: 'tt-board-legend tt-legend-totals' },
+      }, t.text));
+    }    const grand = (splittable ? [...totals.values()].reduce((s, v) => s + v, 0) : cellsTotal) || 1;
+    legendBox.replaceChildren(
       ...ids.map((id, i) => h('button', {
         type: 'button',
         // 不用原生 title：它长得跟这套深色玻璃不搭，改用自带样式的说明（见 .tt-legend-tip）
@@ -426,7 +505,7 @@ function renderFlowPanel(a, days, agentNames = {}) {
             splittable
               ? h('small', {}, `占总量 ${((totalOf(id) / grand) * 100).toFixed(1)}%`)
               : h('small', {}, '只有总量')),
-          splittable ? h('small', {}, '点一下只看这一层 · Shift / Ctrl 点可多看几层 · 再点取消') : null)))));
+          splittable ? h('small', {}, '点一下只看这一层 · Shift / Ctrl 点可多看几层 · 再点取消') : null))));
     // 叠加模式下各层独立成线，叠满不等于总量，页脚不能再那么写。
     const scaleNote = !splittable
       ? '按模型或供应商筛选时只显示总量'
@@ -445,18 +524,38 @@ function renderFlowPanel(a, days, agentNames = {}) {
       : `${cells[0].date} → ${lastCell.date} · 共 ${cells.length} 天 · ${scaleNote}`;
   }
 
-  for (const [dim, label] of DIMS) {
-    sw.append(h('button', { type: 'button', dataset: { dim }, 'aria-pressed': String(flowDimension === dim),
-      onClick: () => { flowDimension = dim; flowFocus = ''; draw(); } }, label));
+  function buildSwitch() {
+    sw.replaceChildren();
+    for (const [dim, label] of DIMS) {
+      sw.append(h('button', { type: 'button', dataset: { dim }, 'aria-pressed': String(flowDimension === dim),
+        onClick: () => { flowDimension = dim; flowFocus = ''; draw(); } }, label));
+    }
+    sw.append(h('span', { className: 'tt-flow-sep' }));
+    for (const [sc, label] of [['abs', '绝对量'], ['pct', '占比']]) {
+      sw.append(h('button', { type: 'button', dataset: { scale: sc }, 'aria-pressed': String(flowScale === sc),
+        onClick: () => { flowScale = sc; draw(); } }, label));
+    }
   }
-  sw.append(h('span', { className: 'tt-flow-sep' }));
-  for (const [sc, label] of [['abs', '绝对量'], ['pct', '占比']]) {
-    sw.append(h('button', { type: 'button', dataset: { scale: sc }, 'aria-pressed': String(flowScale === sc),
-      onClick: () => { flowScale = sc; draw(); } }, label));
+
+  // 面板不再每次重建，改成外面拿到实例后调 update。
+  function update(next, dayList, names) {
+    agentNames = names || {};
+    days = dayList || [];
+    useHour = scaleFor(days) === 'hour' && next.heatmap.length > 0;
+    cells = useHour ? hourCells(next.heatmap, days) : next.daily;
+    // 有来源 / Agent 拆分就用它们；后端因为模型、供应商筛选把这两项撤掉时，改按模型看：
+    // 供应商筛选下每格 models 仍然齐全（已按筛选过滤），所以各家模型自己的线加起来就是总量。
+    canSplitKind = cells.some((c) => Object.keys(c.kinds || {}).length || Object.keys(c.agents || {}).length);
+    hasModels = cells.some((c) => Object.keys(c.models || {}).length);
+    DIMS = canSplitKind || !hasModels ? [['kind', '按来源'], ['agent', '按 Agent']] : [['model', '按模型']];
+    buildSwitch();
+    draw();
   }
-  draw();
-  return el;
+
+  return { root: el, update };
 }
+
+const flowPanels = new WeakMap();   // container -> 常驻面板实例。换范围不能重建它，否则没有“从哪儿来”
 
 export function renderAnalytics(container, dashboard, state, patch) {
   container.replaceChildren(); container.className = 'tt-board';
@@ -479,7 +578,10 @@ export function renderAnalytics(container, dashboard, state, patch) {
     h('div', { title: hint, 'data-tt-select': '' }, h('span', {}, label), h('strong', {}, value)))));
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
-  container.append(renderFlowPanel(a, days, dashboard.agentNames || {}));
+  let flowPanel = flowPanels.get(container);
+  if (!flowPanel) { flowPanel = createFlowPanel(); flowPanels.set(container, flowPanel); }
+  flowPanel.update(a, days, dashboard.agentNames || {});
+  container.append(flowPanel.root);
   const totals = new Map();
   for (const day of a.daily) for (const [id, n] of Object.entries(day.models)) totals.set(id, (totals.get(id) || 0) + n);
   const allModels = [...totals].sort((x,y) => y[1]-x[1]).map(([id]) => id);
