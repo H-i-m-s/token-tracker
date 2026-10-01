@@ -113,9 +113,6 @@ export class WorkspaceApp {
 
     this.pollTimer = null;
     this.disposers = [];
-    // 横向滑动的收尾状态：出场那块与兼底定时器。
-    this.slidingOut = null;
-    this.slideTimer = null;
     // 体检（只读）：切到体检那一页才取一次；载荷分解要重算一遍看板，所以再单独点一次才量。
     this.diagData = null;
     this.diagError = "";
@@ -138,7 +135,6 @@ export class WorkspaceApp {
     this.disposed = true;
     this.stopPolling();
     this.clearBusyTimer();
-    this.settleSlide();
     for (const d of this.disposers) {
       try { d(); } catch {}
     }
@@ -280,7 +276,13 @@ export class WorkspaceApp {
     this.filterStatus = this.filterChips.root;
     this.container.append(chrome, nav, this.filterStatus, this.statusEl, this.mainEl);
     this.renderBoardControls();
-    for (const id of ["overview", "balance", "details", "realtime"]) this.mainEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
+    // 四块视图并排进一条轨道（真滑轨）：切换 = 整条轨道平移到位。
+    // 首帧先带 tt-no-anim 把位置摆好，免得打开时从第 0 块滑过来。
+    this.trackEl = h("div", { className: "tt-track tt-no-anim" });
+    for (const id of ["overview", "balance", "details", "realtime"]) {
+      this.trackEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
+    }
+    this.mainEl.append(this.trackEl);
     this.selectView(this.view);
   }
 
@@ -288,22 +290,35 @@ export class WorkspaceApp {
     if (!VALID_VIEWS.includes(view)) view = "overview";
     const from = this.view;
     const changed = view !== from;
-    // 上一次滑动没收尾就又被点了一下：先把残留的出场块收干净，别留下半路冻住的视图。
-    this.settleSlide();
-    const outgoing = changed ? this.mainEl.querySelector(`#${from}-module`) : null;
-    const forward = VIEW_ORDER.indexOf(view) > VIEW_ORDER.indexOf(from);
-    const willSlide = animate && changed && !!outgoing && !this.prefersReducedMotion();
+    const index = Math.max(0, VIEW_ORDER.indexOf(view));
     this.view = view;
     this.mainEl.dataset.view = view;
-    // 要滑动时出场那块得留可见：它要跟着一起平移出去，动画结束再藏（见 settleSlide）。
-    for (const section of this.mainEl.children) {
-      section.hidden = section.id !== `${view}-module` && !(willSlide && section === outgoing);
-    }
     for (const tab of this.viewTabs.children) {
       tab.setAttribute("aria-selected", String(tab.dataset.view === view));
       tab.tabIndex = tab.dataset.view === view ? 0 : -1;
     }
-    if (willSlide) this.slideView(outgoing, forward);
+    // 切走那块里可能还留着焦点：先把它交回页签，再标 inert（否则会报“aria-hidden 里有焦点”）。
+    if (changed) {
+      const still = document.activeElement;
+      const owner = still && typeof still.closest === "function" ? still.closest(".tt-track > section") : null;
+      if (owner && owner.id !== `${view}-module`) this.viewTabs.querySelector(`#tab-${from}`)?.focus();
+    }
+    // 真滑轨：一块一屏，切到第 N 块就是整条轨道往左挪 N 屏（translateX 百分比相对轨道自身宽度）。
+    const track = this.trackEl;
+    if (track) {
+      const glide = animate && changed && !this.prefersReducedMotion();
+      track.classList.toggle("tt-no-anim", !glide);
+      track.style.transform = `translateX(${-index * 100}%)`;
+      // 首帧/减少动效：这帧先不动，下一帧再把过渡交还给 CSS，以后切换才有动画。
+      if (!glide) requestAnimationFrame(() => track.classList.remove("tt-no-anim"));
+    }
+    // 不在视口里的那几块：inert 挡交互、aria-hidden 挡读屏。
+    // 不这么做的话四块内容都在 DOM 里且都算可见，读屏会把四份内容一起念出来。
+    for (const section of this.mainEl.querySelectorAll(".tt-track > section")) {
+      const active = section.id === `${view}-module`;
+      section.toggleAttribute("inert", !active);
+      section.setAttribute("aria-hidden", String(!active));
+    }
     // 体检挂在实时监控页底部（不占页签位）：只有真的切到这一页才去取一次。
     if (view === "realtime") {
       if (!this.diagData && !this.diagLoading) this.loadDiagnostics();
@@ -315,47 +330,6 @@ export class WorkspaceApp {
 
   prefersReducedMotion() {
     try { return !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches; } catch { return false; }
-  }
-
-  // 四块视图横向滑动。入场那块留在文档流里（它决定容器新的内容高度、滚动回到顶部），
-  // 出场那块临时绝对定位、用像素把现在的视觉位置钉死，于是两块能并排同时平移。
-  slideView(outgoing, forward) {
-    const main = this.mainEl;
-    const incoming = main.querySelector(`#${this.view}-module`);
-    const mainRect = main.getBoundingClientRect();
-    const r = outgoing.getBoundingClientRect();
-    // 按“视觉位置”钉（top 不含 scrollTop），紧跟着把滚动归零，它就不会跳。
-    outgoing.style.left = `${Math.round(r.left - mainRect.left)}px`;
-    outgoing.style.top = `${Math.round(r.top - mainRect.top)}px`;
-    outgoing.style.width = `${Math.round(r.width)}px`;
-    outgoing.style.height = `${Math.round(r.height)}px`;
-    outgoing.classList.add("tt-leaving", forward ? "tt-slide-out-next" : "tt-slide-out-prev");
-    main.scrollTop = 0;
-    main.classList.add("tt-sliding");
-    incoming?.classList.remove("tt-slide-in-next", "tt-slide-in-prev");
-    void incoming?.offsetWidth; // 强制回流：animation 不会因为 hidden 切换自己重跑
-    incoming?.classList.add(forward ? "tt-slide-in-next" : "tt-slide-in-prev");
-    this.slidingOut = outgoing;
-    clearTimeout(this.slideTimer);
-    // animationend 在无头/后台标签页里可能不来，定时器兼底（略长于 160ms）。
-    this.slideTimer = setTimeout(() => this.settleSlide(), 300);
-    incoming?.addEventListener("animationend", () => this.settleSlide(), { once: true });
-  }
-
-  settleSlide() {
-    clearTimeout(this.slideTimer);
-    this.slideTimer = null;
-    const outgoing = this.slidingOut;
-    this.slidingOut = null;
-    if (outgoing) {
-      outgoing.classList.remove("tt-leaving", "tt-slide-out-next", "tt-slide-out-prev");
-      outgoing.style.left = outgoing.style.top = outgoing.style.width = outgoing.style.height = "";
-      // 连点页签时它可能已经不是当前视图了；是的话就别藏。
-      if (outgoing.id !== `${this.view}-module`) outgoing.hidden = true;
-    }
-    const incoming = this.mainEl?.querySelector(`#${this.view}-module`);
-    incoming?.classList.remove("tt-slide-in-next", "tt-slide-in-prev");
-    this.mainEl?.classList.remove("tt-sliding");
   }
 
   // ---------- data loading ----------
@@ -829,8 +803,11 @@ export class WorkspaceApp {
     // 只钳这一块里的：顶部筛选条那三颗下拉在模块之外，不能因为这里重画就被关掉。
     let el = this.container.querySelector("#details-module");
     if (!el) {
-      el = h("section", { id: "details-module", className: "tt-module" });
-      this.mainEl.appendChild(el);
+      // 正常情况下这块由 renderShell 建好并排在轨道里；这里只是兜底重建，属性要跟上当前视图。
+      el = h("section", { id: "details-module", className: "tt-module", role: "tabpanel", "aria-labelledby": "tab-details" });
+      (this.trackEl || this.mainEl).appendChild(el);
+      el.toggleAttribute("inert", this.view !== "details");
+      el.setAttribute("aria-hidden", String(this.view !== "details"));
     }
     closeOpenSelect(el);
 

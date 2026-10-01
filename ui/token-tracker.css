@@ -109,9 +109,7 @@ body {
   position: relative;
 }
 
-/* 滑动期间把横向滚动钉住。.tt-dashboard-app 下 .tt-main 本来就是 overflow: hidden，
-   这里是兼底：transform 出去的块会被算进 scrollable overflow，将来若改了容器的溢出行为也不至于闪滚动条。 */
-.tt-main.tt-sliding { overflow-x: hidden; }
+/* 四块视图并排成一条轨道，切换 = 整条轨道平移到位（真滑轨）。见下方 .tt-track 规则。 */
 
 /* ── modules ── */
 .tt-module {
@@ -123,30 +121,7 @@ body {
   flex-direction: column;
 }
 
-/* 切页签：四块视图之间横向滑动（方向跟页签顺序绑定），不是“旧的消失 + 新的淡入”。
-   入场那块留在文档流里，出场那块在动画期间临时脱离文档流、由脚本按像素冻在原位，
-   这样两块能并排同时平移，看着才是“内容滑过去”。动画结束由 settleSlide() 摘类并藏回去。
-
-   选择器用 .tt-main > section 而不是 .tt-module：数据大屏那块元素的类被 renderAnalytics
-   写成 .tt-board（container.className = 'tt-board'），运行时根本没有 tt-module，
-   挂在 .tt-module 上的动画对它完全不生效（这就是“大屏与其他块之间没效果”的原因）。 */
-.tt-main > section.tt-leaving {
-  position: absolute;
-  margin: 0;
-  pointer-events: none;
-}
-.tt-main > section.tt-slide-in-next { animation: tt-slide-in-next 160ms ease-out; }
-.tt-main > section.tt-slide-in-prev { animation: tt-slide-in-prev 160ms ease-out; }
-.tt-main > section.tt-leaving.tt-slide-out-next { animation: tt-slide-out-next 160ms ease-out; }
-.tt-main > section.tt-leaving.tt-slide-out-prev { animation: tt-slide-out-prev 160ms ease-out; }
-@keyframes tt-slide-in-next { from { transform: translateX(100%); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
-@keyframes tt-slide-in-prev { from { transform: translateX(-100%); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
-@keyframes tt-slide-out-next { from { transform: translateX(0); opacity: 1; } to { transform: translateX(-100%); opacity: .6; } }
-@keyframes tt-slide-out-prev { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: .6; } }
-@media (prefers-reduced-motion: reduce) {
-  .tt-main > section.tt-slide-in-next, .tt-main > section.tt-slide-in-prev,
-  .tt-main > section.tt-leaving.tt-slide-out-next, .tt-main > section.tt-leaving.tt-slide-out-prev { animation: none; }
-}
+/* 切页签改成真滑轨（见 .tt-dashboard-app 段里的 .tt-track）：整条轨道平移，不再用逐块动画。 */
 
 .tt-module-hd {
   display: flex;
@@ -986,9 +961,27 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-appearance-controls { display: flex; align-items: center; gap: 7px; }
 .tt-dashboard-app .tt-icon-btn { width: 28px; height: 28px; font-size: 15px; padding: 0; border: 1px solid var(--tt-b1); border-radius: 6px; }
 .tt-dashboard-app .tt-main { flex: 1 1 0; min-height: 0; padding: 0; display: block; overflow: hidden; }
-.tt-dashboard-app .tt-main > section { height: 100%; min-height: 0; }
+/* 真滑轨：四块视图并排成一条轨道，切换就是整条轨道平移到位。
+   一块一屏（flex: 0 0 100%），translateX 的百分比相对轨道自身宽度，所以位移 = 屏数 × 100%。
+   这里用 transition 而不是 animation：将来接拖拽时，只要拖动期间把 tt-no-anim 加上、
+   再把 transform 跟着指针改，就是跟手效果，不用另写一套。
+   隐藏不再走 display:none（那样根本没法并排滑），改由 selectView 把不在视口里的几块标 inert + aria-hidden。
+   每块面板自己内部纵向滚（.tt-module 走 overflow:auto，大屏走 .tt-board 的 overflow-y），轨道不动它们。 */
+.tt-dashboard-app .tt-main > .tt-track {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  will-change: transform;
+  transform: translateX(0);
+  transition: transform 280ms cubic-bezier(.22,.61,.36,1);
+}
+.tt-dashboard-app .tt-main > .tt-track.tt-no-anim { transition: none; }
+.tt-dashboard-app .tt-track > section { flex: 0 0 100%; width: 100%; height: 100%; min-height: 0; }
+@media (prefers-reduced-motion: reduce) {
+  .tt-dashboard-app .tt-main > .tt-track { transition: none; }
+}
 .tt-dashboard-app [hidden] { display: none !important; }
-.tt-dashboard-app .tt-main > .tt-module { overflow: auto; scrollbar-width: thin; border-radius: 14px; }
+.tt-dashboard-app .tt-track > .tt-module { overflow: auto; scrollbar-width: thin; border-radius: 14px; }
 /* 大屏整页纵向滚动：每块高度由内容决定，不再把所有图压进一屏。
    行序：KPI / 用量总览色带图 / 细分图组 / 页脚说明。
    用 max-content 而不是 auto：auto 行还可能被 align-content 的默认行为抻高，
