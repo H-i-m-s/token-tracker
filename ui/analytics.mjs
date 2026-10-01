@@ -158,18 +158,25 @@ function createFlowPanel() {
   const W = 1000, H = 300, PAD_L = 90, PAD_B = 40, PAD_T = 8;
   const cw = W - PAD_L - 10, ch = H - PAD_B - PAD_T;
   const chart = svg(W, H, '用量总览：各来源消耗随时间的变化');
-  const gridLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
-  // 曲线与悬停标记必须跟网格用同一个坐标系。以前这两层忘了这个平移：
-  // path 从 viewBox 的 (0,0) 起算，于是曲线整体比网格高 8 个单位、左 90 个单位，
-  // 基线不落在 0 那条网格线上，第一个尖峰还压在纵轴文字的栏里。
+  // 曲线与悬停标记跟网格共用一个坐标系（都平移 (PAD_L, PAD_T)），
+  // path 从 viewBox 的 (0,0) 起算会整体偏上 8 个单位、偏左 90 个单位。
   const pathsLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
   const hoverLayer = node('g', { transform: `translate(${PAD_L},${PAD_T})` });
-  chart.append(gridLayer, pathsLayer, hoverLayer);   // 顺序不能乱：网格在下、曲线居中、悬停在上
+  chart.append(pathsLayer, hoverLayer);   // 顺序不能乱：曲线在下、悬停在上
   const hud = h('div', { className: 'tt-flow-hud' });
   const axesBox = h('div', { className: 'tt-flow-axes' });
+  // 三条横向网格线做成 HTML，而不是 SVG 的 line：纵轴重算时它要跟旁边的刻度一起滑。
+  // 画在 SVG 里时它没有过渡，纵轴一变就瞬跳到新刻度，而标签还在滑、曲线还在变，
+  // 看上去就是整张图“突变”（多选相加改纵轴时最容易撞上）。
+  const gridRows = ['', '', ''].map(() => {
+    const row = h('div', { className: 'tt-flow-gridline' });
+    row.style.left = ((PAD_L / W) * 100).toFixed(3) + '%';
+    row.style.width = ((cw / W) * 100).toFixed(3) + '%';
+    return row;
+  });
   // y 轴三个标签常驻：纵轴重算时靠过渡滑过去，而不是硬跳（文本换了、位置过渡）
   const yLabelSpans = ['', '', ''].map(() => h('span', {}));
-  for (const s of yLabelSpans) axesBox.append(s);
+  for (let i = 0; i < 3; i++) axesBox.append(gridRows[i], yLabelSpans[i]);
   const plot = h('div', { className: 'tt-flow-plot', 'data-tt-select': '' }, chart, axesBox, hud);
   const legendBox = h('div', { className: 'tt-board-legend tt-legend-totals' });
   const emptyBox = h('div', { className: 'tt-board-empty' }, '所选范围暂无用量');
@@ -248,7 +255,8 @@ function createFlowPanel() {
     // 只清网格与悬停层。曲线层千万不能在这里清：一清，节点就被摘下来了，
     // 之后即使把同一批 path 塞回去，浏览器也当它是新插入的元素——“之前的样子”没了，
     // d 的过渡根本不会建立，看上去就是突然跳变。
-    for (const layer of [gridLayer, hoverLayer]) layer.replaceChildren();
+    // 只清悬停层（网格线现在是 HTML，见上面 gridRows）
+    hoverLayer.replaceChildren();
     const hasData = cells.length > 0 && (splittable || cellsTotal > 0);
     emptyBox.hidden = hasData;
     plot.hidden = !hasData;
@@ -291,13 +299,13 @@ function createFlowPanel() {
     // 纵轴从 Token 绝对量变成 0–100%。同一批节点、同一套命令结构，切换时就能逐点插值，
     // 是真正的形状变换，而不是两套图叠着淡入淡出。
     const paths = overlayPaths(shown, cells.length, cw, ch, max);
-    const g = gridLayer;
     // 轴标签不画进 SVG。SVG 随容器等比缩放，字会一起变大变小；
     // 改成叠一层 HTML，位置用百分比跟着图走，字号是普通 CSS px，永远不变。
     const yTicks = [], xTicks = [];
     for (let i = 0; i <= 2; i++) {
       const v = (max * i) / 2, y = ch - (v / max) * (ch - 6);
-      g.append(node('line', { x1: 0, x2: cw, y1: y, y2: y, stroke: 'var(--tt-b3)', 'stroke-dasharray': '2 4' }));
+      // 网格线与刻度用同一个 top、同一条过渡，任何时刻都对得上
+      if (gridRows[i]) gridRows[i].style.top = (((PAD_T + y) / H) * 100).toFixed(3) + '%';
       yTicks.push({ y: PAD_T + y, text: flowScale === 'pct' ? Math.round(v * 1000) / 10 + '%' : compact(v) });
     }
     // ── 曲线 ──
@@ -576,8 +584,12 @@ export function renderAnalytics(container, dashboard, state, patch) {
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
   let flowPanel = flowPanels.get(container);
   if (!flowPanel) { flowPanel = createFlowPanel(); flowPanels.set(container, flowPanel); }
-  flowPanel.update(a, days, dashboard.agentNames || {});
+  // 顺序很重要：先把面板挂回容器，再更新内容。
+  // 上面那句 replaceChildren 会把它整块摘下文档，而 update 里要改曲线的 d——
+  // 元素不在文档里时写 d，浏览器就没有“之前的样子”，过渡不会建立（换日期看着就是硬跳）。
+  // pin() 里那次逼布局同理，脱着文档时等于没逼。
   container.append(flowPanel.root);
+  flowPanel.update(a, days, dashboard.agentNames || {});
   const totals = new Map();
   for (const day of a.daily) for (const [id, n] of Object.entries(day.models)) totals.set(id, (totals.get(id) || 0) + n);
   const allModels = [...totals].sort((x,y) => y[1]-x[1]).map(([id]) => id);

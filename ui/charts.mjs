@@ -141,6 +141,9 @@ export function drawUsageChart(container, points, opts = {}) {
   const withDate = bucket === 3600 && dayOf(rows[0].t) !== dayOf(rows[rows.length - 1].t);
   const lbl = (t) => (opts.labelFmt ? opts.labelFmt(t) : bucketLabel(t, bucket, { withDate }));
 
+  // 图形照固定的「设计尺寸」画，靠 viewBox 铺满容器：界面变宽时图形横向铺开，
+  // 竖向不动。所有文字都放在 HTML 层（见下面的 .tt-ds-axes），是普通 CSS px，
+  // 既不缩放，也不需要“每变宽一帧就重画整张图”——那正是拖侧边栏时抽搐的来源。
   const width = opts.width || 680;
   const height = opts.height || 190;
   const padL = 46, padR = 46, padT = 14, padB = 24;
@@ -159,26 +162,38 @@ export function drawUsageChart(container, points, opts = {}) {
   const el = (tag, attrs = {}) => { const n = document.createElementNS(ns, tag); for (const [k, v] of Object.entries(attrs)) n.setAttribute(k, String(v)); return n; };
   const svg = el("svg", { viewBox: `0 0 ${width} ${height}`, role: "img", preserveAspectRatio: "none" });
   svg.style.width = "100%"; svg.style.height = "100%"; svg.style.display = "block";
+  // 文字层：位置用百分比跟着 viewBox 走（同一套坐标，铺满后自然对齐），字号是 CSS px。
+  const axes = document.createElement("div");
+  axes.className = "tt-ds-axes";
+  const put = (x, y, text, anchor = "end", color = "", kind = "y") => {
+    const s = document.createElement("span");
+    s.textContent = text;
+    s.className = "tt-ds-" + kind + "lab";
+    s.style.left = ((x / width) * 100).toFixed(3) + "%";
+    s.style.top = ((y / height) * 100).toFixed(3) + "%";
+    s.style.transform = anchor === "end" ? "translate(-100%,-50%)" : anchor === "middle" ? "translate(-50%,-50%)" : "translate(0,-50%)";
+    if (color) s.style.color = color;
+    axes.appendChild(s);
+    return s;
+  };
 
   // 横向网格 + 左轴 token 刻度
   for (let i = 0; i <= 3; i++) {
     const y = padT + (i / 3) * plotH;
-    svg.appendChild(el("line", { x1: padL, y1: y, x2: padL + plotW, y2: y, stroke: "var(--tt-b3, #efede8)", "stroke-width": 1, "stroke-dasharray": i === 3 ? "0" : "2 4" }));
-    const t = el("text", { x: padL - 6, y: y + 3, "text-anchor": "end", "font-size": 9, fill: "var(--tt-t3, #9a978f)" });
-    t.textContent = fmtTokensShort(niceMax * (1 - i / 3));
-    svg.appendChild(t);
+    svg.appendChild(el("line", { x1: padL, y1: y, x2: padL + plotW, y2: y, stroke: "var(--tt-b3, #efede8)", "stroke-width": 1, "stroke-dasharray": i === 3 ? "0" : "2 4", "vector-effect": "non-scaling-stroke" }));
+    put(padL - 6, y, fmtTokensShort(niceMax * (1 - i / 3)));
   }
 
   // 面积：平滑曲线封到底以后填充
   const line = smoothPath(rows.map((d, i) => [xAt(i), yTok(tokens[i])]));
   const areaD = `${line} L${xAt(rows.length - 1)},${padT + plotH} L${xAt(0)},${padT + plotH} Z`;
   svg.appendChild(el("path", { d: areaD, fill: opts.areaColor || "var(--tt-blue, #4a7fe0)", "fill-opacity": 0.16 }));
-  svg.appendChild(el("path", { d: line, fill: "none", stroke: opts.areaColor || "var(--tt-blue, #4a7fe0)", "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-linecap": "round" }));
+  svg.appendChild(el("path", { d: line, fill: "none", stroke: opts.areaColor || "var(--tt-blue, #4a7fe0)", "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-linecap": "round", "vector-effect": "non-scaling-stroke" }));
 
   // 命中率折线（跳过 null）。同样平滑，用虚线跟总量的实线区分开。
   let seg = [];
   const flushSeg = () => {
-    if (seg.length >= 2) svg.appendChild(el("path", { d: smoothPath(seg), fill: "none", stroke: opts.rateColor || "var(--tt-green, #35c07d)", "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": "4 3" }));
+    if (seg.length >= 2) svg.appendChild(el("path", { d: smoothPath(seg), fill: "none", stroke: opts.rateColor || "var(--tt-green, #35c07d)", "stroke-width": 1.6, "stroke-linejoin": "round", "stroke-linecap": "round", "stroke-dasharray": "4 3", "vector-effect": "non-scaling-stroke" }));
     seg = [];
   };
   rows.forEach((d, i) => {
@@ -189,11 +204,7 @@ export function drawUsageChart(container, points, opts = {}) {
   flushSeg();
 
   // 右轴：命中率刻度
-  for (const p of [0, 50, 100]) {
-    const t = el("text", { x: padL + plotW + 6, y: yHit(p) + 3, "text-anchor": "start", "font-size": 9, fill: "var(--tt-green, #35c07d)" });
-    t.textContent = p + "%";
-    svg.appendChild(t);
-  }
+  for (const p of [0, 50, 100]) put(padL + plotW + 6, yHit(p), p + "%", "start", "var(--tt-green, #35c07d)", "y2");
 
   // X 轴：跨天的小时图把刻度落在每天的 0 点，天数一眼可见；其余情况均匀取 4 个位置。
   let marks;
@@ -217,12 +228,11 @@ export function drawUsageChart(container, points, opts = {}) {
     const x = xAt(i);
     if (usedX.length && x - usedX[usedX.length - 1] < 54) continue;
     usedX.push(x);
-    const t = el("text", { x, y: height - 7, "text-anchor": i === 0 ? "start" : i === rows.length - 1 ? "end" : "middle", "font-size": 9, fill: "var(--tt-t3, #9a978f)" });
-    t.textContent = lbl(rows[i].t);
-    svg.appendChild(t);
+    put(x, height - 7, lbl(rows[i].t), i === 0 ? "start" : i === rows.length - 1 ? "end" : "middle", "", "x");
   }
 
   container.appendChild(svg);
+  container.appendChild(axes);
   return svg;
 }
 

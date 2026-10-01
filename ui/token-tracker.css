@@ -439,9 +439,25 @@ body {
 }
 
 .tt-ds-chart {
+  position: relative;
   width: 100%;
   height: 190px;
   min-height: 150px;
+}
+
+/* 账单图的刻度文字：位置用百分比跟着 viewBox 走，字号是普通 CSS px。
+   放在 HTML 而不是 SVG 里，是为了让界面变宽时字不跟着被横向拉伸。 */
+.tt-ds-axes {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  font-size: 9px;
+  line-height: 1;
+  color: var(--tt-t3);
+}
+.tt-ds-axes span {
+  position: absolute;
+  white-space: nowrap;
 }
 
 .tt-ds-foot {
@@ -1100,10 +1116,18 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 }
 /* 淡出也必须走这条规则，不能在脚本里写内联 transition：
    内联会把整条 transition 列表顶掉，那条曲线的 d 从此只能跳变。 */
+/* 横向网格线（HTML 层，不在 SVG 里）：与纵轴刻度共用同一个 top 和同一条过渡，
+   纵轴重算时一起滑，不会出现“网格已经跳到新刻度、刻度还在半路”的突变。 */
+.tt-flow-panel .tt-flow-plot .tt-flow-gridline {
+  position: absolute; height: 0;
+  border-top: 1px dashed var(--tt-b3);
+  transition: top 260ms cubic-bezier(.4, 0, .2, 1);
+}
 /* y 轴三个标签：纵轴重算时位置跟着滑，数字换掉即可 */
 .tt-flow-panel .tt-flow-axes span:not(.tt-flow-xlab) { transition: top 260ms cubic-bezier(.4, 0, .2, 1); }
 @media (prefers-reduced-motion: reduce) {
   .tt-flow-panel .tt-flow-plot .tt-flow-line,
+  .tt-flow-panel .tt-flow-plot .tt-flow-gridline,
   .tt-flow-panel .tt-flow-axes span:not(.tt-flow-xlab) { transition: none; }
 }
 /* 图例悬停说明：原来用浏览器自带的 title（一个灰框，跟这套深色玻璃不搭），
@@ -1296,6 +1320,22 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
 .tt-agent-scale-note { margin-left: auto; color: var(--tt-t3); }
 
 .tt-card-content > #balance-module { overflow-y: auto; scrollbar-width: thin; }
+
+/* 滚动容器的栏位一律预留（scrollbar-gutter: stable）。
+   面板里有些内容的高度是宽度的函数（热力格子 aspect-ratio: 1、agent 行的 min-width），
+   滚动条一出现就把可用宽度挤窄 10px，高度随之变化，滚动条又消失——
+   两种状态互相打架，表现就是卡片右缘不断抽。预留之后宽度与滚动条无关，回路就断了。
+   预留出来的是一条与卡片同色的空白，看不见。 */
+.tt-dashboard-app .tt-track > .tt-module,
+.tt-main,
+.tt-card-content > #balance-module,
+.tt-board,
+.tt-heat-scroll,
+.tt-agent-list,
+.tt-dist-list,
+.tt-table-wrap {
+  scrollbar-gutter: stable;
+}
 
 /* Hana overlays the first titlebar-h pixels with a native Electron drag region.
    Keep pointer targets below it; iframe no-drag alone cannot clear a parent region. */
