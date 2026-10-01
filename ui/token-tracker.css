@@ -104,7 +104,14 @@ body {
   display: flex;
   flex-direction: column;
   gap: 12px;
+  /* 切页签时要把出场那块按像素冻在这个盒子里再平移出去。
+     里面的绝对定位元素各自有更近的定位祖先（如 .tt-flow-plot），不受影响。 */
+  position: relative;
 }
+
+/* 滑动期间把横向滚动钉住。.tt-dashboard-app 下 .tt-main 本来就是 overflow: hidden，
+   这里是兼底：transform 出去的块会被算进 scrollable overflow，将来若改了容器的溢出行为也不至于闪滚动条。 */
+.tt-main.tt-sliding { overflow-x: hidden; }
 
 /* ── modules ── */
 .tt-module {
@@ -116,16 +123,29 @@ body {
   flex-direction: column;
 }
 
-/* 切页签时给新露出的卡片一个 120ms 淡入 + 3px 上移：只是让“换内容”有个着落，不是加载动画。
-   首屏不跑（selectView 首次拿到的 view 没变），尊重系统的减少动效设置。
-   注：动画不能只靠 hidden 切换自动重跑，需要调用方强制回流后加上 .tt-enter（见 selectView）。 */
-.tt-module.tt-enter { animation: tt-module-in 120ms ease-out; }
-@keyframes tt-module-in {
-  from { opacity: 0; transform: translateY(3px); }
-  to { opacity: 1; transform: translateY(0); }
+/* 切页签：四块视图之间横向滑动（方向跟页签顺序绑定），不是“旧的消失 + 新的淡入”。
+   入场那块留在文档流里，出场那块在动画期间临时脱离文档流、由脚本按像素冻在原位，
+   这样两块能并排同时平移，看着才是“内容滑过去”。动画结束由 settleSlide() 摘类并藏回去。
+
+   选择器用 .tt-main > section 而不是 .tt-module：数据大屏那块元素的类被 renderAnalytics
+   写成 .tt-board（container.className = 'tt-board'），运行时根本没有 tt-module，
+   挂在 .tt-module 上的动画对它完全不生效（这就是“大屏与其他块之间没效果”的原因）。 */
+.tt-main > section.tt-leaving {
+  position: absolute;
+  margin: 0;
+  pointer-events: none;
 }
+.tt-main > section.tt-slide-in-next { animation: tt-slide-in-next 160ms ease-out; }
+.tt-main > section.tt-slide-in-prev { animation: tt-slide-in-prev 160ms ease-out; }
+.tt-main > section.tt-leaving.tt-slide-out-next { animation: tt-slide-out-next 160ms ease-out; }
+.tt-main > section.tt-leaving.tt-slide-out-prev { animation: tt-slide-out-prev 160ms ease-out; }
+@keyframes tt-slide-in-next { from { transform: translateX(100%); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+@keyframes tt-slide-in-prev { from { transform: translateX(-100%); opacity: .6; } to { transform: translateX(0); opacity: 1; } }
+@keyframes tt-slide-out-next { from { transform: translateX(0); opacity: 1; } to { transform: translateX(-100%); opacity: .6; } }
+@keyframes tt-slide-out-prev { from { transform: translateX(0); opacity: 1; } to { transform: translateX(100%); opacity: .6; } }
 @media (prefers-reduced-motion: reduce) {
-  .tt-module.tt-enter { animation: none; }
+  .tt-main > section.tt-slide-in-next, .tt-main > section.tt-slide-in-prev,
+  .tt-main > section.tt-leaving.tt-slide-out-next, .tt-main > section.tt-leaving.tt-slide-out-prev { animation: none; }
 }
 
 .tt-module-hd {

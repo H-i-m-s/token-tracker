@@ -15,6 +15,8 @@ import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./chart
 
 const PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 5000;
+// 四块视图的先后顺序：切页签时用它判断方向（往右的页签 = 内容往左滑）。
+const VIEW_ORDER = ["overview", "balance", "details", "realtime"];
 
 // 「点得开」抽屉里的小组件（模块级：不依赖实例状态）
 const turnFact = (label, value) => h("span", { className: "tt-turn-fact" }, h("em", {}, label), value);
@@ -111,6 +113,9 @@ export class WorkspaceApp {
 
     this.pollTimer = null;
     this.disposers = [];
+    // 横向滑动的收尾状态：出场那块与兼底定时器。
+    this.slidingOut = null;
+    this.slideTimer = null;
     // 体检（只读）：切到体检那一页才取一次；载荷分解要重算一遍看板，所以再单独点一次才量。
     this.diagData = null;
     this.diagError = "";
@@ -133,6 +138,7 @@ export class WorkspaceApp {
     this.disposed = true;
     this.stopPolling();
     this.clearBusyTimer();
+    this.settleSlide();
     for (const d of this.disposers) {
       try { d(); } catch {}
     }
@@ -280,26 +286,24 @@ export class WorkspaceApp {
 
   selectView(view, { persist = true, animate = true } = {}) {
     if (!VALID_VIEWS.includes(view)) view = "overview";
-    const changed = view !== this.view;
+    const from = this.view;
+    const changed = view !== from;
+    // 上一次滑动没收尾就又被点了一下：先把残留的出场块收干净，别留下半路冻住的视图。
+    this.settleSlide();
+    const outgoing = changed ? this.mainEl.querySelector(`#${from}-module`) : null;
+    const forward = VIEW_ORDER.indexOf(view) > VIEW_ORDER.indexOf(from);
+    const willSlide = animate && changed && !!outgoing && !this.prefersReducedMotion();
     this.view = view;
     this.mainEl.dataset.view = view;
-    for (const section of this.mainEl.children) section.hidden = section.id !== `${view}-module`;
+    // 要滑动时出场那块得留可见：它要跟着一起平移出去，动画结束再藏（见 settleSlide）。
+    for (const section of this.mainEl.children) {
+      section.hidden = section.id !== `${view}-module` && !(willSlide && section === outgoing);
+    }
     for (const tab of this.viewTabs.children) {
       tab.setAttribute("aria-selected", String(tab.dataset.view === view));
       tab.tabIndex = tab.dataset.view === view ? 0 : -1;
     }
-    // 切过去的那块淡入 120ms（首屏不算：selectView 一开始拿到的 view 就等于 this.view，changed 为假）。
-    // 类靠 animationend 摘，再配一个定时器兼底：开了“减少动效”或标签页在后台时动画可能压根不跑，
-    // 那样 animationend 永远不会来，类就留在节点上（重切时会先 remove 再加，所以不会出错，但没必要留着）。
-    const section = this.mainEl.querySelector(`#${view}-module`);
-    if (animate && changed && section) {
-      section.classList.remove("tt-enter");
-      void section.offsetWidth; // 强制回流：animation 不会因为 hidden 切换自己重跑
-      section.classList.add("tt-enter");
-      const drop = () => { clearTimeout(timer); section.classList.remove("tt-enter"); };
-      const timer = setTimeout(drop, 200);
-      section.addEventListener("animationend", drop, { once: true });
-    }
+    if (willSlide) this.slideView(outgoing, forward);
     // 体检挂在实时监控页底部（不占页签位）：只有真的切到这一页才去取一次。
     if (view === "realtime") {
       if (!this.diagData && !this.diagLoading) this.loadDiagnostics();
@@ -307,6 +311,51 @@ export class WorkspaceApp {
     }
     // 只有用户自己切的才回写；否则 onStateChange 同步过来的会再写一次，绕成环
     if (persist && this.state.get().view !== view) this.state.patch({ view });
+  }
+
+  prefersReducedMotion() {
+    try { return !!window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches; } catch { return false; }
+  }
+
+  // 四块视图横向滑动。入场那块留在文档流里（它决定容器新的内容高度、滚动回到顶部），
+  // 出场那块临时绝对定位、用像素把现在的视觉位置钉死，于是两块能并排同时平移。
+  slideView(outgoing, forward) {
+    const main = this.mainEl;
+    const incoming = main.querySelector(`#${this.view}-module`);
+    const mainRect = main.getBoundingClientRect();
+    const r = outgoing.getBoundingClientRect();
+    // 按“视觉位置”钉（top 不含 scrollTop），紧跟着把滚动归零，它就不会跳。
+    outgoing.style.left = `${Math.round(r.left - mainRect.left)}px`;
+    outgoing.style.top = `${Math.round(r.top - mainRect.top)}px`;
+    outgoing.style.width = `${Math.round(r.width)}px`;
+    outgoing.style.height = `${Math.round(r.height)}px`;
+    outgoing.classList.add("tt-leaving", forward ? "tt-slide-out-next" : "tt-slide-out-prev");
+    main.scrollTop = 0;
+    main.classList.add("tt-sliding");
+    incoming?.classList.remove("tt-slide-in-next", "tt-slide-in-prev");
+    void incoming?.offsetWidth; // 强制回流：animation 不会因为 hidden 切换自己重跑
+    incoming?.classList.add(forward ? "tt-slide-in-next" : "tt-slide-in-prev");
+    this.slidingOut = outgoing;
+    clearTimeout(this.slideTimer);
+    // animationend 在无头/后台标签页里可能不来，定时器兼底（略长于 160ms）。
+    this.slideTimer = setTimeout(() => this.settleSlide(), 300);
+    incoming?.addEventListener("animationend", () => this.settleSlide(), { once: true });
+  }
+
+  settleSlide() {
+    clearTimeout(this.slideTimer);
+    this.slideTimer = null;
+    const outgoing = this.slidingOut;
+    this.slidingOut = null;
+    if (outgoing) {
+      outgoing.classList.remove("tt-leaving", "tt-slide-out-next", "tt-slide-out-prev");
+      outgoing.style.left = outgoing.style.top = outgoing.style.width = outgoing.style.height = "";
+      // 连点页签时它可能已经不是当前视图了；是的话就别藏。
+      if (outgoing.id !== `${this.view}-module`) outgoing.hidden = true;
+    }
+    const incoming = this.mainEl?.querySelector(`#${this.view}-module`);
+    incoming?.classList.remove("tt-slide-in-next", "tt-slide-in-prev");
+    this.mainEl?.classList.remove("tt-sliding");
   }
 
   // ---------- data loading ----------
