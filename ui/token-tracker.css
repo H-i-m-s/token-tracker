@@ -1524,26 +1524,8 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 .tt-turn-body .tt-btn { padding: 2px 7px; font-size: 10px; }
 
 /* ── 体检（只读） ──
-   平时收着，点开才取数。放主列最下面：它回答的是「有没有白干」，不该抢主图的注意力。 */
-.tt-diag { padding-bottom: 4px; }
-.tt-diag-hd {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 7px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--tt-t2);
-  cursor: pointer;
-  text-align: left;
-}
-.tt-diag-hd:hover { background: var(--tt-row-hover); }
-.tt-diag-caret { flex: 0 0 auto; width: 11px; font-size: 10px; color: var(--tt-t4); }
-.tt-diag-hint { margin-left: auto; font-size: 9.5px; color: var(--tt-t4); }
-
-.tt-diag-bd { padding: 2px 10px 8px; }
+   自成一个页签（跟其他四个一样是整屏 module、各自滚动），内容按「一行一条」排。 */
+.tt-diag-bd { padding: 2px 0 8px; }
 .tt-diag-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
