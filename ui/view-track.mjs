@@ -93,9 +93,11 @@ export function gestureMode(target, root, { panelRoot = null, limit = WALK_LIMIT
 
 // 换页时拖动中的实际位移：越出首/尾之后按阻尼衰减，松手时再回弹。
 // 注意 step 是“一屏 + 面板间距”，不是屏宽：两者不等的时候（有间距）用错就会整体偏移。
-export function dragOffset({ index, count, step, dx, rubber = RUBBER }) {
+// from 是“眼睛看到的位置”（轨道当前的 translateX）。默认按 -index*step 算；
+// 传 from 是因为上一次切页的过渡可能还在跑，从目标值算起会让第一帧跳一下。
+export function dragOffset({ index, count, step, dx, rubber = RUBBER, from = -index * step }) {
   const min = -(count - 1) * step;
-  const wanted = -index * step + dx;
+  const wanted = from + dx;
   if (wanted > 0) return wanted * rubber;
   if (wanted < min) return min + (wanted - min) * rubber;
   return wanted;
@@ -125,6 +127,29 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
   // 顶部控件区（范围胶囊、筛选排、页签）在滑轨区**外面**，只挂 mainEl 的话在那边按下根本收不到事件。
   const surfaceEl = bindEl || mainEl;
   let drag = null;
+
+  // 轨道当前“眼睛看到”的位移（过渡跑到一半时就是中间值）。
+  function currentTranslate(el) {
+    let t = "";
+    try { t = win.getComputedStyle(el).transform; } catch { /* 量不到就当 0 */ }
+    if (!t || t === "none") return 0;
+    const m = /matrix\(([^)]+)\)/.exec(t);
+    if (m) { const p = m[1].split(","); return parseFloat(p[4]) || 0; }
+    const m3 = /matrix3d\(([^)]+)\)/.exec(t);
+    if (m3) { const p = m3[1].split(","); return parseFloat(p[12]) || 0; }
+    return 0;
+  }
+
+  // 位置直接写，不做 rAF 合并。为什么：写 style.transform 本身很便宜，
+  // 浏览器本来就按帧批量处理样式；而多一层延迟在后台标签页（rAF 被节流、甚至不回调）
+  // 时会变成真问题。这里只做一件事：值没变就不写。
+  function writeJob(job) {
+    if (job.kind === "pan") {
+      if (job.surface) { job.surface.scrollLeft = job.left; job.surface.scrollTop = job.top; }
+    } else {
+      trackEl.style.transform = `translateX(${job.x}px)`;
+    }
+  }
 
   // 一屏 + 面板间距 = 位移的步长。间距定义在 CSS 变量上，这里读同一份，不另写一个数字。
   const gapOf = () => {
@@ -185,8 +210,12 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
         if (e.isTrusted) { try { mainEl.setPointerCapture(drag.id); } catch { /* 指针已消失 */ } }
       }
       e.preventDefault();
-      drag.surface.scrollLeft = drag.left - dx;
-      drag.surface.scrollTop = drag.top - dy;
+      const left = drag.left - dx, top = drag.top - dy;
+      if (drag.wroteLeft !== left || drag.wroteTop !== top) {
+        drag.wroteLeft = left;
+        drag.wroteTop = top;
+        writeJob({ kind: "pan", surface: drag.surface, left, top });
+      }
       return;
     }
 
@@ -198,6 +227,9 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
       drag.claimed = true;
       drag.index = getIndex();
       drag.step = stepOf();
+      // 从眼睛看到的位置接着拖：上次切页的过渡可能还在跑，从 -index*step 算起会跳一下。
+      drag.from = currentTranslate(trackEl);
+      drag.wrote = null;
       trackEl.classList.add("tt-no-anim");   // 拖动期间关掉过渡，位移由我们逐帧写
       mainEl.classList.add("tt-dragging");
       onClaim?.();                            // 收掉还开着的浮层（文字选中由 CSS 管）
@@ -209,7 +241,11 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
     drag.lastX = e.clientX;
     drag.lastT = e.timeStamp;
     drag.dx = dx;
-    trackEl.style.transform = `translateX(${Math.round(dragOffset({ index: drag.index, count, step: drag.step, dx }))}px)`;
+    const x = Math.round(dragOffset({ index: drag.index, count, step: drag.step, dx, from: drag.from }));
+    if (drag.wrote !== x) {
+      drag.wrote = x;
+      writeJob({ kind: "view", x });
+    }
   }
 
   function onUp(e) {

@@ -121,6 +121,17 @@ test("dragOffset：正常区间原样跟手", () => {
   assert.equal(dragOffset({ ...args, dx: -120 }), -820);
 });
 
+test("dragOffset：from 给了就从“眼睛看到的位置”接着算（接上一次没跑完的过渡）", () => {
+  const args = { index: 1, count: 4, step: 700 };
+  // 上一次切页的过渡还在半路（比如视觉位置在 -500），这时接着拖 120px
+  assert.equal(dragOffset({ ...args, dx: 120, from: -500 }), -380);
+  assert.equal(dragOffset({ ...args, dx: 0, from: -500 }), -500);
+  // 阻尼两端也按 from 来（首块再往右拖）
+  assert.equal(dragOffset({ index: 0, count: 4, step: 700, dx: 120, from: 0 }), 42);
+  // 不传 from 时与以前完全一致（默认 -index*step）
+  assert.equal(dragOffset({ ...args, dx: 120 }), dragOffset({ ...args, dx: 120, from: -700 }));
+});
+
 test("dragOffset：两端有阻尼，拖得动但拖不远", () => {
   // 在第 0 块还往右拖：位移按 0.35 折
   assert.equal(dragOffset({ index: 0, count: 4, step: 700, dx: 100 }), 35);

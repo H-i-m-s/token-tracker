@@ -328,10 +328,19 @@ export class WorkspaceApp {
     const track = this.trackEl;
     if (track) {
       const glide = animate && changed && !this.prefersReducedMotion();
-      track.classList.toggle("tt-no-anim", !glide);
-      track.style.transform = `translateX(calc(${-index} * (100% + var(--tt-track-gap, 0px))))`;
-      // 首帧/减少动效：这帧先不动，下一帧再把过渡交还给 CSS，以后切换才有动画。
-      if (!glide) requestAnimationFrame(() => track.classList.remove("tt-no-anim"));
+      const to = `translateX(calc(${-index} * (100% + var(--tt-track-gap, 0px))))`;
+      if (glide) {
+        track.classList.remove("tt-no-anim");
+        track.style.transform = to;
+      } else {
+        // 首帧 / 减少动效：这一帧先落位、不滑。
+        // 这里用同步回流，刻意不用 rAF：rAF 在后台标签页会被节流甚至不回调，
+        // 那个 tt-no-anim 就会一直留在轨道上 —— 之后每次切页都不会滑。
+        track.classList.add("tt-no-anim");
+        track.style.transform = to;
+        void track.offsetWidth;   // 让这次落位在“过渡关着”的状态下生效
+        track.classList.remove("tt-no-anim");
+      }
     }
     // 不在视口里的那几块：inert 挡交互、aria-hidden 挡读屏。
     // 不这么做的话四块内容都在 DOM 里且都算可见，读屏会把四份内容一起念出来。
