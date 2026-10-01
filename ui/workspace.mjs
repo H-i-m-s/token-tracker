@@ -14,6 +14,26 @@ import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./chart
 
 const PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 5000;
+
+// 「点得开」抽屉里的小组件（模块级：不依赖实例状态）
+const turnFact = (label, value) => h("span", { className: "tt-turn-fact" }, h("em", {}, label), value);
+// 只取时分秒：同一轮的调用都在同一天里
+function clockOf(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return String(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+// 距上一条消息的间隔。含排队与工具往返，只是间隔，不是生成耗时，所以不叫「耗时」。
+function gapText(ms) {
+  const s = Number(ms) / 1000;
+  if (!Number.isFinite(s) || s <= 0) return "—";
+  if (s < 60) return s.toFixed(1) + "s";
+  const m = Math.floor(s / 60);
+  if (m < 60) return m + "m" + Math.round(s - m * 60) + "s";
+  return (s / 3600).toFixed(1) + "h";
+}
 const MAX_SPARK_POINTS = 40;
 
 // 选项里的占位文案曾被当成真实筛选值存进 state（见 components.mjs selectOptions 的注释）。
@@ -63,6 +83,9 @@ export class WorkspaceApp {
     this.detailsSort = "time";
     this.detailsMin = 0;
     this.agentNames = new Map();
+    // 「点得开」：展开的那几行按 key（sessionKey#seq）记着；面板数据按同一把 key 缓存。
+    this.turnOpen = new Set();
+    this.turnDetail = new Map();
 
     this.pollTimer = null;
     this.disposers = [];
@@ -679,6 +702,8 @@ export class WorkspaceApp {
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
       this.mainEl.appendChild(el);
+      // 表格每次重建，但模块本体不重建：点击监听挂在这一层，一次就够。
+      this.bindTurnClicks(el);
     }
 
     // 两条路：引擎给了 details 就用它（排序/门槛/分页都在数据层做完了，这里只渲染这一页），
@@ -751,11 +776,25 @@ export class WorkspaceApp {
     );
 
     const tbody = h("tbody", {},
-      ...pageRows.map((r) => {
+      ...pageRows.flatMap((r) => {
         const ratio = maxTokens > 0 ? Math.min(100, ((r.totalTokens || 0) / maxTokens) * 100) : 0;
         const hr = hitRate(r);
-        return h("tr", { className: this.dashboard?.summary?.highUsageThreshold > 0 && r.totalTokens >= this.dashboard.summary.highUsageThreshold ? "tt-high-usage" : "" },
-          h("td", {}, formatDateTime(r.time)),
+        const turnKey = this.turnKey(r);
+        const open = !!turnKey && this.turnOpen.has(turnKey);
+        return [h("tr", {
+          className: (this.dashboard?.summary?.highUsageThreshold > 0 && r.totalTokens >= this.dashboard.summary.highUsageThreshold ? "tt-high-usage " : "") + (open ? "tt-turn-open" : ""),
+          "data-turn-row": turnKey || null,
+          "data-turn-session": turnKey ? r.sessionKey : null,
+          "data-turn-seq": turnKey ? String(r.seq) : null,
+        },
+          h("td", { className: "tt-turn-time" },
+            // 能打开的行才给角标；没有会话的行（mock 预览、老格式行）不做成一个点不动的按钮。
+            turnKey ? h("button", {
+              type: "button", className: "tt-turn-caret", title: "看这一轮的调用明细",
+              "aria-label": open ? "收起这一轮的调用明细" : "展开这一轮的调用明细",
+              "aria-expanded": open ? "true" : "false",
+            }, open ? "▾" : "▸") : null,
+            formatDateTime(r.time)),
           h("td", { title: r.agent }, r.agentName || r.agent || "—"),
           h("td", { title: r.provider }, r.provider || "—"),
           h("td", { title: r.model }, r.model || "—"),
@@ -777,7 +816,11 @@ export class WorkspaceApp {
               h("i", { style: `width:${ratio.toFixed(1)}%` }),
             ),
           ),
-        );
+        ),
+        // 抽屉行：关着就只是一条壳（不给高度），点开才去取数
+        turnKey ? h("tr", { className: "tt-turn-drawer" + (open ? "" : " tt-turn-closed"), "data-turn-cell": turnKey },
+          h("td", { colSpan: 5 }, this.renderTurnPanel(this.turnDetail.get(turnKey))),
+        ) : null];
       }),
     );
 
@@ -853,6 +896,220 @@ export class WorkspaceApp {
       await saveDetailsCSV(this.hana, csv, this.state.get().range, { suffix, count: this.dashboard?.details?.total ?? 0 });
     } catch (err) {
       this.setError(`导出失败：${err.message}`);
+    }
+  }
+
+  // ---------- 「点得开」：某一轮的调用拆解 ----------
+  // 明细行回答「这一轮多贵」，不回答「为什么贵」。展开后由引擎从会话文件重读这一轮，
+  // 逐条列出调用（未命中 / 缓存读 / 输出 / 缓存写 / 推理），并给出会话文件的绝对路径。
+  bindTurnClicks(el) {
+    el.addEventListener("click", async (e) => {
+      try {
+        const row = e.target.closest ? e.target.closest("tr[data-turn-row]") : null;
+        if (!row || !row.dataset.turnRow) return;
+        // 正拖着选文字时不当作点击：考古时本来就想把一行复制出来。
+        const picking = typeof window.getSelection === "function" && String(window.getSelection() || "").length > 0;
+        if (picking) return;
+        await this.toggleTurn(row.dataset.turnRow, row.dataset.turnSession, Number(row.dataset.turnSeq) || 0);
+      } catch (err) {
+        // 展开失败只报一次，不要把明细表一起带走
+        this.setError(`展开这一轮失败：${err?.message || err}`);
+      }
+    });
+  }
+
+  // 这两个字段只有后端给了才点得开（mock 预览的行、老格式的行都没有）。
+  turnKey(r) {
+    return r && r.sessionKey && r.seq != null ? `${r.sessionKey}#${r.seq}` : "";
+  }
+
+  async toggleTurn(key, sessionKey, seq) {
+    if (!key) return;
+    if (this.turnOpen.has(key)) {
+      this.turnOpen.delete(key);
+      this.paintTurnRow(key);
+      return;
+    }
+    this.turnOpen.add(key);
+    this.paintTurnRow(key);
+    const known = this.turnDetail.get(key);
+    if (known && known.status === "ready") return; // 同一行反复开合不必重读文件
+    await this.loadTurn(key, sessionKey, seq);
+  }
+
+  async loadTurn(key, sessionKey, seq) {
+    if (!key) return;
+    this.rememberTurn(key, { status: "loading", key, sessionKey, seq });
+    this.paintTurnRow(key);
+    if (this.mock) {
+      this.rememberTurn(key, { status: "error", key, sessionKey, seq, message: "预览模式没有会话文件" });
+      this.paintTurnRow(key);
+      return;
+    }
+    try {
+      const turn = await this.api.getTurn(sessionKey, seq, { mock: this.mock });
+      if (turn && turn.ok === false) throw Object.assign(new Error(turn.message || "读取失败"), { code: turn.code });
+      this.rememberTurn(key, { status: "ready", key, sessionKey, seq, data: turn || {} });
+    } catch (err) {
+      this.rememberTurn(key, { status: "error", key, sessionKey, seq, message: err?.message || "读取失败" });
+    }
+    this.paintTurnRow(key);
+  }
+
+  // 面板状态也留一手上限：一行拖一份调用清单，点开几十行不设限会一直涨。
+  rememberTurn(key, state) {
+    if (this.turnDetail.size >= 40 && !this.turnDetail.has(key)) {
+      const oldest = this.turnDetail.keys().next().value;
+      this.turnDetail.delete(oldest);
+      this.turnOpen.delete(oldest);
+    }
+    this.turnDetail.set(key, state);
+  }
+
+  // 只换这一行的抽屉，不重渲染整张表：否则同屏其他展开的行、滚动位置都会抖一下。
+  paintTurnRow(key) {
+    try {
+      this.paintTurnRowInner(key);
+    } catch (err) {
+      this.setError(`展开这一轮失败：${err?.message || err}`);
+    }
+  }
+
+  paintTurnRowInner(key) {
+    const open = this.turnOpen.has(key);
+    for (const row of this.container.querySelectorAll("tr[data-turn-row]")) {
+      if (row.dataset.turnRow !== key) continue;
+      row.classList.toggle("tt-turn-open", open);
+      const caret = row.querySelector(".tt-turn-caret");
+      if (caret) {
+        caret.textContent = open ? "▾" : "▸";
+        caret.setAttribute("aria-expanded", open ? "true" : "false");
+      }
+      break;
+    }
+    for (const cell of this.container.querySelectorAll("[data-turn-cell]")) {
+      if (cell.dataset.turnCell !== key) continue;
+      const holder = cell.firstElementChild;
+      if (holder) {
+        holder.innerHTML = "";
+        holder.appendChild(this.renderTurnPanel(this.turnDetail.get(key)));
+      }
+      cell.classList.toggle("tt-turn-closed", !open);
+      break;
+    }
+  }
+
+  // 抽屉内容的构建兼一层兜底：它出意外只坏这一块，不连累整张明细表。
+  renderTurnPanel(state) {
+    try {
+      return this.buildTurnPanel(state);
+    } catch (err) {
+      return h("div", { className: "tt-turn-body" }, h("div", { className: "tt-turn-note" }, `展开失败：${err?.message || err}`));
+    }
+  }
+
+  buildTurnPanel(state) {
+    const body = h("div", { className: "tt-turn-body" });
+    if (!state || state.status === "loading") {
+      body.appendChild(h("div", { className: "tt-turn-note" }, "正在读出这一轮的调用…"));
+      return body;
+    }
+    const { key, sessionKey, seq } = state;
+    const reread = () => this.loadTurn(key, sessionKey, seq);
+    if (state.status === "error") {
+      body.appendChild(h("div", { className: "tt-turn-note" },
+        "读不出来：" + (state.message || "未知原因"),
+        h("button", { type: "button", className: "tt-btn ghost", onClick: reread }, "重读"),
+      ));
+      return body;
+    }
+
+    const t = state.data || {};
+    if (t.kind === "ledger") {
+      body.appendChild(h("div", { className: "tt-turn-note" }, "这是宿主账本按天聚合出来的一行（memory / utility 子系统），没有会话文件，也就拆不出单次调用。"));
+      return body;
+    }
+    if (t.fileExists === false) {
+      body.appendChild(h("div", { className: "tt-turn-note" }, "会话文件已不在（可能被归档或删掉）：" + (t.filePath || "路径未知")));
+      return body;
+    }
+
+    body.appendChild(h("div", { className: "tt-turn-hd" },
+      h("span", { className: "tt-turn-seq" }, `第 ${t.seq != null ? t.seq : seq} 轮`),
+      h("span", { className: "tt-turn-when" }, formatDateTime(t.time)),
+      h("span", { className: "tt-turn-model", title: [t.provider, t.model].filter(Boolean).join(" / ") }, t.model || "—"),
+      h("span", { className: "tt-turn-spacer" }),
+      h("span", { className: "tt-turn-count" }, `${t.calls != null ? t.calls : 0} 次调用`),
+      t.failedCalls > 0 ? h("span", { className: "tt-turn-skip" }, `${t.failedCalls} 次失败未计入`) : null,
+      h("button", { type: "button", className: "tt-btn ghost", onClick: reread }, "重读"),
+    ));
+
+    const filePath = t.filePath || "";
+    body.appendChild(h("div", { className: "tt-turn-file" },
+      h("span", { className: "tt-turn-file-tag" }, t.fileExists === false ? "文件已不在" : "会话文件"),
+      filePath ? h("code", { className: "tt-turn-path", title: filePath }, filePath) : h("span", { className: "tt-turn-path" }, "—"),
+      filePath ? h("button", { type: "button", className: "tt-btn ghost", onClick: (e) => this.copyText(filePath, e.currentTarget) }, "复制路径") : null,
+    ));
+
+    body.appendChild(h("div", { className: "tt-turn-facts" },
+      turnFact("输入（含命中）", fmt(t.input)),
+      turnFact("其中未命中", fmt(Math.max(0, (Number(t.input) || 0) - (Number(t.cacheRead) || 0)))),
+      turnFact("缓存读", fmt(t.cacheRead)),
+      turnFact("缓存写", fmt(t.cacheWrite)),
+      turnFact("输出", fmt(t.output)),
+      turnFact("推理", fmt(t.reasoning)),
+      turnFact("合计", fmt(t.totalTokens)),
+    ));
+
+    const list = Array.isArray(t.callList) ? t.callList : [];
+    if (!list.length) {
+      body.appendChild(h("div", { className: "tt-turn-note" }, "这一轮里没有成功的调用（可能全部失败或被中断）。"));
+      return body;
+    }
+    body.appendChild(h("div", { className: "tt-table-wrap tt-turn-calls" },
+      h("table", { className: "tt-table" },
+        h("thead", {}, h("tr", {},
+          h("th", { style: "width:34px" }, "#"),
+          h("th", { style: "width:132px" }, "时间"),
+          h("th", {}, "模型"),
+          h("th", { className: "num" }, "未命中输入"),
+          h("th", { className: "num" }, "缓存读"),
+          h("th", { className: "num" }, "输出"),
+          h("th", { className: "num" }, "缓存写"),
+          h("th", { className: "num" }, "推理"),
+          h("th", { className: "num" }, "合计"),
+        )),
+        h("tbody", {}, ...list.map((c, i) => h("tr", { className: c.failed ? "tt-turn-call is-failed" : "tt-turn-call" },
+          h("td", { className: "num" }, String(i + 1)),
+          h("td", { title: c.time || "" }, clockOf(c.time) + (c.gapMs == null ? "" : "  ·" + gapText(c.gapMs))),
+          h("td", { title: c.model || "" }, c.model || "—"),
+          h("td", { className: "num" }, fmt(c.input)),
+          h("td", { className: "num" }, fmt(c.cacheRead)),
+          h("td", { className: "num" }, fmt(c.output)),
+          h("td", { className: "num" }, fmt(c.cacheWrite)),
+          h("td", { className: "num" }, fmt(c.reasoning)),
+          h("td", { className: "num" }, fmt(c.totalTokens)),
+        ))),
+      ),
+    ));
+    body.appendChild(h("div", { className: "tt-turn-foot" },
+      "读的是会话文件本身（明细行的权威来源）" + (t.truncated ? "，这里只列出前 400 次调用" : "") + "；失败或中断的调用不计入上面的合计与调用次数。",
+    ));
+    return body;
+  }
+
+  async copyText(text, btn) {
+    try {
+      if (this.hana?.clipboard?.writeText) await this.hana.clipboard.writeText(text);
+      else if (navigator.clipboard?.writeText) await navigator.clipboard.writeText(text);
+      else throw new Error("当前环境不支持写剪贴板");
+      if (btn) {
+        const before = btn.textContent;
+        btn.textContent = "已复制";
+        setTimeout(() => { if (btn.isConnected) btn.textContent = before; }, 1200);
+      }
+    } catch (err) {
+      this.setError(`复制失败：${err?.message || err}`);
     }
   }
 

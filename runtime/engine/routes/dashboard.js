@@ -1,6 +1,7 @@
 import { resolveHanaHome, readTextFile } from "../services/platform.js";
 import { buildVisualAnalytics } from "../services/visual-analytics.js";
 import { queryTurns, queryTurnSizes } from "../services/turns-store.js";
+import { readTurnCalls } from "../services/turn-calls.js";
 import { loadLedger } from "../services/ledger-source.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -828,6 +829,23 @@ export default function (app, ctx) {
     return { rows: objectRows };
   };
 
+  // 「点得开」：明细里的一行 → 该轮的会话文件与逐次调用拆解。
+  // 与 _buildDashboardData 一样挂在 ctx 上（HTTP RPC / 离线对拍共用同一实例）。
+  // 路径安全：只拿 sessionKey 在缓存里索引会话、取它自己的 filePath；绝不接受调用方传来的路径。
+  ctx._readTurnCalls = async (sessionKey, seq) => {
+    const key = typeof sessionKey === "string" ? sessionKey : "";
+    const n = Number(seq);
+    if (!key || !Number.isFinite(n) || n < 1) {
+      return { ok: false, code: "BAD_REQUEST", message: "需要 sessionKey 与 seq（≥1）" };
+    }
+    const sessions = ctx._tokenCache?.data?.sessions;
+    // 只认自有键：__proto__ / constructor 这类不能被当成会话命中。
+    const session = sessions && Object.prototype.hasOwnProperty.call(sessions, key) ? sessions[key] : null;
+    if (!session) return { ok: false, code: "NO_SESSION_FILE", message: "找不到该会话：" + key };
+    const turn = readTurnCalls({ session, seq: n, log: ctx.log });
+    return { ...turn, sessionKey: key, seq: n };
+  };
+
   app.get("/dashboard/data", async c => {
     try {
       const result = await ctx._buildDashboardData({
@@ -974,7 +992,7 @@ const CN_DAY = new Intl.DateTimeFormat("en-CA", { timeZone: "Asia/Shanghai" });
 // 为什么不上对象：键名会在每一行里重复一遭，17k 行光键名就 1.6 MB，而宿主给托管服务的
 // 响应设了 4 MiB 硬顶（实测超了整条请求直接失败，不是截断）。
 export const ROW_COLS = ["time", "agent", "agentName", "provider", "model",
-  "totalTokens", "inputTokens", "outputTokens", "cacheRead", "calls"];
+  "totalTokens", "inputTokens", "outputTokens", "cacheRead", "calls", "sessionKey", "seq"];
 
 export function encodeRows(rows, cols = ROW_COLS) {
   return rows.map((r) => cols.map((k) => r[k] ?? null));

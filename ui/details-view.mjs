@@ -25,7 +25,7 @@ export const DETAIL_THRESHOLDS = [
 // 与引擎的 ROW_COLS 同序（引擎那边是唯一出处，这里只是“引擎没给列名”时的兜底；
 // 两边是否还对齐由 test/rows-wire.test.js 对拍）。
 export const ROW_COLS = ["time", "agent", "agentName", "provider", "model",
-  "totalTokens", "inputTokens", "outputTokens", "cacheRead", "calls"];
+  "totalTokens", "inputTokens", "outputTokens", "cacheRead", "calls", "sessionKey", "seq"];
 
 // 把「列名 + 数组行」解回对象行。对象行（mock 数据）原样返回。
 // 键名只发一次是为了载荷能过宿主的 4 MiB 响应硬顶，解回来这一层是唯一一处。

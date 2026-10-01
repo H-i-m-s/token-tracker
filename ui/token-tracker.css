@@ -1457,3 +1457,87 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
 .tt-select .tt-select-clear { order: 1; flex: 0 0 16px; width: 16px; height: 16px; margin-left: 1px; padding: 0; border: 0; border-radius: 50%; background: transparent; color: inherit; font: 13px/1 var(--font-sans); display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
 .tt-select .tt-select-clear[hidden] { display: none; }
 .tt-select .tt-select-clear:hover { background: var(--tt-row-hover); }
+
+/* ── 「点得开」：明细行展开的调用拆解 ──
+   这一块接在表格规则之后，靠“后来者胜”盖住 .tt-table tr:hover td 的底色，不用 !important。 */
+tr[data-turn-row] { cursor: pointer; }
+tr[data-turn-row] > td:first-child { white-space: nowrap; }
+.tt-table tr.tt-turn-open > td { background: var(--tt-row-hover); }
+
+.tt-turn-caret {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  margin-right: 5px;
+  padding: 0;
+  border: 0;
+  border-radius: 3px;
+  background: transparent;
+  color: var(--tt-t3);
+  font: 10px/1 var(--font-sans);
+  cursor: pointer;
+  vertical-align: -1px;
+  transition: color 120ms ease, background 120ms ease;
+}
+tr[data-turn-row]:hover .tt-turn-caret { color: var(--tt-t1); }
+tr.tt-turn-open .tt-turn-caret { color: var(--tt-blue); }
+.tt-turn-caret:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; }
+
+/* 抽屉行：关着就整行不占位 */
+.tt-table tr.tt-turn-drawer > td {
+  padding: 0;
+  background: var(--tt-empty);
+  border-bottom: 1px solid var(--tt-b3);
+  white-space: normal;
+  overflow: visible;
+  text-overflow: clip;
+}
+.tt-table tr.tt-turn-drawer.tt-turn-closed { display: none; }
+
+.tt-turn-body {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  padding: 9px 12px 10px;
+  border-left: 2px solid var(--tt-select-b);
+}
+
+.tt-turn-hd { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11px; color: var(--tt-t1); }
+.tt-turn-seq { font-weight: 600; color: var(--tt-em); }
+.tt-turn-when { color: var(--tt-t2); font-variant-numeric: tabular-nums; }
+.tt-turn-model { color: var(--tt-t2); }
+.tt-turn-spacer { flex: 1 1 auto; }
+.tt-turn-count { color: var(--tt-t3); font-variant-numeric: tabular-nums; }
+.tt-turn-skip { color: var(--tt-orange); }
+
+.tt-turn-file { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tt-turn-file-tag { flex: 0 0 auto; font-size: 9.5px; color: var(--tt-t4); }
+.tt-turn-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 10.5px;
+  color: var(--tt-t2);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: all;
+}
+
+.tt-turn-facts { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+.tt-turn-fact { font-size: 10px; color: var(--tt-num); font-variant-numeric: tabular-nums; }
+.tt-turn-fact em { font-style: normal; color: var(--tt-t3); margin-right: 3px; }
+
+/* 调用清单：比明细表密一档，行高不抢戏 */
+.tt-turn-calls { border-color: var(--tt-b3); }
+.tt-turn-calls .tt-table th { font-size: 9.5px; padding: 4px 7px; }
+.tt-turn-calls .tt-table td { font-size: 10.5px; padding: 3px 7px; }
+.tt-turn-calls .tt-table tr:hover td { background: var(--tt-card); }
+.tt-turn-call.is-failed td { color: var(--tt-t3); }
+.tt-turn-call.is-failed td:nth-child(3) { text-decoration: line-through; text-decoration-color: var(--tt-t4); }
+
+.tt-turn-note { font-size: 11px; color: var(--tt-t3); display: flex; align-items: center; gap: 8px; }
+.tt-turn-foot { font-size: 9.5px; color: var(--tt-t4); }
+.tt-turn-body .tt-btn { padding: 2px 7px; font-size: 10px; }

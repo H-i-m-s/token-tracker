@@ -83,6 +83,13 @@ export class AppApi {
     return data.csv;
   }
 
+  // 「点得开」：某一轮的调用拆解。引擎会从会话文件重读（文件是权威），不从缓存里拼。
+  async getTurn(sessionKey, seq, { mock = false } = {}) {
+    const qs = new URLSearchParams({ sessionKey: String(sessionKey || ""), seq: String(seq || 0) });
+    const data = await this.fetchJson(`/turn?${qs}${mock ? "&mock=1" : ""}`);
+    return data.turn;
+  }
+
   async getBalances({ mock = false } = {}) {
     const data = await this.fetchJson(`/balance${this._mockQs(mock)}`);
     return data.balances;

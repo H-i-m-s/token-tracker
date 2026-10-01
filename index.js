@@ -223,6 +223,31 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   }
 
+  // 「点得开」：明细里的一行 → 这一轮的会话文件与逐次调用拆解。
+  // sessionKey/seq 原样转给引擎（引擎只拿 sessionKey 索引缓存里的会话，不接受文件路径）。
+  async function handleTurn(c) {
+    const payload = {
+      sessionKey: c.req.query("sessionKey") || "",
+      seq: c.req.query("seq") || "",
+    };
+    if (isMock(c)) {
+      // mock 没有引擎：预览里那一轮本来就没有会话文件。
+      return jsonResponse(c, errResponse("NO_SESSION_FILE", "预览模式没有会话文件"));
+    }
+    try {
+      const turn = await busClient.request("token-tracker.turn", payload);
+      // 失败的两种形状（引擎的 ok:false、传输异常）都收成 errResponse —— 前端只认 error.code/message，
+      // 平铺一个 ok:false 出去会让它退化成「请求失败 (200)」，真正的原因就丢了。
+      if (!turn || turn.ok === false) {
+        return jsonResponse(c, errResponse(turn?.code || "TURN_FAILED", turn?.message || "获取轮次详情失败"));
+      }
+      return jsonResponse(c, okResponse({ turn }));
+    } catch (err) {
+      log("error", "GET /turn error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "TURN_FAILED", err?.message || "获取轮次详情失败"), 503);
+    }
+  }
+
   async function handleBalance(c) {
     try {
       const raw = await busClient.request("token-tracker.balance", {}, { mock: isMock(c) });
@@ -294,6 +319,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       app.get("/snapshot", handleSnapshot);
       app.get("/dashboard", handleDashboard);
       app.get("/details.csv", handleDetailsCsv);
+      app.get("/turn", handleTurn);
       app.get("/balance", handleBalance);
       app.get("/ds-usage", handleDsUsage);
       app.post("/refresh", handleRefresh);
@@ -316,7 +342,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     throw err;
   }
 
-  log("info", "routes registered: /snapshot /dashboard /balance /ds-usage /refresh /settings /events");
+  log("info", "routes registered: /snapshot /dashboard /details.csv /turn /balance /ds-usage /refresh /settings /events");
 
   let disposed = false;
   return async () => {

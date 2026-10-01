@@ -638,15 +638,9 @@ async function scanAll(shared, log, force) {
       changed = scanDir(wf, agent, "background", null, cache, full ? null : old, touched) || changed;
     }
   }
-  // usage-ledger.json 中无 sessionPath 的条目（memory + utility 子系统）
+  // usage-ledger 中无 sessionPath 的条目（memory + utility 子系统）
   const _ledgerChanged = scanLedger(cache, log, full, shared, touched);
   changed = _ledgerChanged || changed;
-  // 按行落盘时要显式补报“变了但 mtime/size 看不出来”的键。
-  // 账本会话的 mtime/size 恒为 0，所以账本一重建就整批补报。
-  const _forcedKeys = [];
-  if (_ledgerChanged) {
-    for (const _key of Object.keys(cache.sessions)) if (_key.startsWith("__ledger__")) _forcedKeys.push(_key);
-  }
 
   // 轮次明细不裁剪：早先只留 5 天，是因为一条轮次记录里约 83% 是嵌套的测速采样（合起来每轮约 1.7 KB）。
   // 那份包袱已经搬到会话级，现在一轮只剩约 200 字节，全历史约 3 MB，值得留下来。
@@ -662,8 +656,9 @@ async function scanAll(shared, log, force) {
     // 按行比较会认为「这一行没变」而跳过，新格式就永远写不进旧行（历史上格式改了
     // 却滞留在旧行、以及刚去掉的 5 天裁剪，都是这么留下的）。markAllDirty 正是为这种场合备的。
     if (shared.persist) {
+      // 账本没有文件属性可比，靠上面写进 size 的内容指纹，落盘层自己判断哪几天真的变了。
       if (full) shared.persist.markAllDirty();
-      else shared.persist.markDirty(_forcedKeys);
+      else shared.persist.markDirty();
     }
     else saveCache(shared.cachePath, cache, log);
   }
@@ -1130,7 +1125,27 @@ function scanLedger(cache, log, force, shared, touched = null) {
     }
   }
   cache._ledgerKey = ledger.key;
+
+  // ── 内容指纹：账本行没有文件，mtime/size 撒不出来。
+  // 落盘层判断「这一行变没变」靠比较会话记录里的 mtime/size（对文件行来说就是文件属性），
+  // 所以账本行把 32 位内容哈希放在 size 上、mtime 恒 0：这一行的身份就是它的内容。
+  // 以前这里靠调用方整批补报（账本一动就重写全部账本行，六十多行约 385 KB），
+  // 可账本多一条记录只会改动它所属的那一天：指纹把落盘量收敛到与真实变化成正比。
+  for (const k of Object.keys(cache.sessions)) {
+    if (!k.startsWith("__ledger__")) continue;
+    cache.sessions[k].size = ledgerFingerprint(cache.sessions[k]);
+  }
   return changed;
+}
+
+// FNV-1a 32 位：够快够散，只用来判断「内容变了没」。
+function ledgerFingerprint(s) {
+  const rest = { ...s };
+  delete rest.size; // size 就是指纹本身，不能参与计算
+  const text = JSON.stringify(rest);
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) h = Math.imul(h ^ text.charCodeAt(i), 0x01000193) >>> 0;
+  return h;
 }
 
 // ─── 每日全局消耗汇总 ───
@@ -1518,7 +1533,7 @@ export function createPersistScheduler({ cachePath, log, getData, store = null, 
       stats.lastRows = saved.rows || 0;
       stats.lastScope = saved.scope || "JSON";
       stats.lastDetail = saved.why
-        ? saved.why.stale + " 行因文件变动 · " + saved.why.forced + " 行补报 · " + saved.why.gone + " 行移除"
+        ? saved.why.stale + " 行内容变过 · " + saved.why.forced + " 行补报 · " + saved.why.gone + " 行移除"
         : null;
       data.persist = snapshot();
       // meta 里写的是“这次写完之后”的真实计数，所以重启读回来不会慢一拍。

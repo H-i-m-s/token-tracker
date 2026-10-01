@@ -12,12 +12,19 @@ process.env.TOKEN_TRACKER_DATA_DIR = dataDir;
 const { ROW_COLS, encodeRows, rowOf } = await import("../runtime/engine/routes/dashboard.js");
 const { ROW_COLS: UI_COLS, decodeRows } = await import("../ui/details-view.mjs");
 
-const objRow = (i) => rowOf(
-  { agent: "hanako" },
-  { time: `2026-09-30T12:${String(i).padStart(2, "0")}:00.000Z`, provider: "deepseek", model: "deepseek-flash",
-    totalTokens: 15800, inTokens: 15500, outTokens: 300, cacheRead: 14000, msgCount: 2 },
-  { hanako: "Hanako" },
-);
+// 引擎产出的对象行现在带 sessionKey / seq（供「点得开」用），基准对象也要跟上，
+// 否则「压缩编码→解码，字段一个不少」会把新列当成多出来的东西。
+const objRow = (i) => {
+  const r = rowOf(
+    { agent: "hanako" },
+    { time: `2026-09-30T12:${String(i).padStart(2, "0")}:00.000Z`, provider: "deepseek", model: "deepseek-flash",
+      totalTokens: 15800, inTokens: 15500, outTokens: 300, cacheRead: 14000, msgCount: 2 },
+    { hanako: "Hanako" },
+  );
+  r.sessionKey = `hanako::desktop::::2026-09-30T12-${String(i).padStart(2, "0")}-00-000Z_x.jsonl`;
+  r.seq = i + 1;
+  return r;
+};
 
 test("两边列名同序（任何一边加了字段而另一边没跟上，行会整体错位）", () => {
   assert.deepEqual(UI_COLS, ROW_COLS);

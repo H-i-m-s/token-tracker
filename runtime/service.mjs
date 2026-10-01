@@ -59,6 +59,14 @@ async function request(method, payload = {}) {
     view.summary.highUsageThreshold = handlers.get('token-tracker.settings.read')().highUsageThreshold;
     return view;
   }
+  // turn：轮次详情（「点得开」）。挂法与 dashboard 同：直接调挂在 ctx 上的函数（_readTurnCalls），
+  // 不经过 bus handler 表。gate 与 dashboard 同源（都要缓存里有会话）。
+  if (method === 'turn') {
+    const fn = engine.ctx._readTurnCalls;
+    if (typeof fn !== 'function') throw Object.assign(new Error('轮次详情服务未就绪（等待路由注册）'), { code: 'NOT_READY' });
+    const p = payload && typeof payload === 'object' ? payload : {};
+    return await fn(p.sessionKey, p.seq);
+  }
   // details/csv：明细 CSV 导出（引擎拼好文本，约 1.5 MB）。gate 与 dashboard 同源（都要缓存就绪）。
   const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'ds-usage': 'ds-usage', 'details/csv': 'details.csv', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
   if (!name) throw Object.assign(new Error('Unknown method'), { status: 404 });
