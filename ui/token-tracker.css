@@ -1459,31 +1459,11 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
 .tt-select .tt-select-clear:hover { background: var(--tt-row-hover); }
 
 /* ── 「点得开」：明细行展开的调用拆解 ──
-   这一块接在表格规则之后，靠“后来者胜”盖住 .tt-table tr:hover td 的底色，不用 !important。 */
+   入口就是行本身（没有角标）；这一块接在表格规则之后，靠“后来者胜”盖住 .tt-table tr:hover td 的底色。 */
 tr[data-turn-row] { cursor: pointer; }
 tr[data-turn-row] > td:first-child { white-space: nowrap; }
-.tt-table tr.tt-turn-open > td { background: var(--tt-row-hover); }
-
-.tt-turn-caret {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 14px;
-  height: 14px;
-  margin-right: 5px;
-  padding: 0;
-  border: 0;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--tt-t3);
-  font: 10px/1 var(--font-sans);
-  cursor: pointer;
-  vertical-align: -1px;
-  transition: color 120ms ease, background 120ms ease;
-}
-tr[data-turn-row]:hover .tt-turn-caret { color: var(--tt-t1); }
-tr.tt-turn-open .tt-turn-caret { color: var(--tt-blue); }
-.tt-turn-caret:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; }
+.tt-table tr.tt-turn-open > td { background: var(--tt-select-bg); }
+.tt-table tr.tt-turn-open:hover > td { background: var(--tt-select-bg); }
 
 /* 抽屉行：关着就整行不占位 */
 .tt-table tr.tt-turn-drawer > td {

@@ -25,6 +25,10 @@ function clockOf(iso) {
   const p = (n) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
+// 当前选中的字符数（拿不到就当 0）。只用来比较「这一次手势有没有选出新文字」。
+function selectedLength() {
+  try { return typeof window.getSelection === "function" ? String(window.getSelection() || "").length : 0; } catch { return 0; }
+}
 // 距上一条消息的间隔。含排队与工具往返，只是间隔，不是生成耗时，所以不叫「耗时」。
 function gapText(ms) {
   const s = Number(ms) / 1000;
@@ -702,8 +706,6 @@ export class WorkspaceApp {
     if (!el) {
       el = h("section", { id: "details-module", className: "tt-module" });
       this.mainEl.appendChild(el);
-      // 表格每次重建，但模块本体不重建：点击监听挂在这一层，一次就够。
-      this.bindTurnClicks(el);
     }
 
     // 两条路：引擎给了 details 就用它（排序/门槛/分页都在数据层做完了，这里只渲染这一页），
@@ -781,20 +783,22 @@ export class WorkspaceApp {
         const hr = hitRate(r);
         const turnKey = this.turnKey(r);
         const open = !!turnKey && this.turnOpen.has(turnKey);
+        let selAtDown = 0;
         return [h("tr", {
           className: (this.dashboard?.summary?.highUsageThreshold > 0 && r.totalTokens >= this.dashboard.summary.highUsageThreshold ? "tt-high-usage " : "") + (open ? "tt-turn-open" : ""),
           "data-turn-row": turnKey || null,
           "data-turn-session": turnKey ? r.sessionKey : null,
           "data-turn-seq": turnKey ? String(r.seq) : null,
+          title: turnKey ? (open ? "点一下收起这一轮的调用明细" : "点这一行看它的调用明细") : null,
+          // 整行就是「这一轮」的入口。拖动选中文字不该被当成点击，所以按下时记一次选中长度、
+          // 抬起时比较；不能拿「当前有没有选中」当条件——页面上残留的选中会让整行永久点不动。
+          onMouseDown: turnKey ? () => { selAtDown = selectedLength(); } : null,
+          onClick: turnKey ? () => {
+            if (selectedLength() > selAtDown) return;
+            this.toggleTurn(turnKey, r.sessionKey, r.seq).catch((err) => this.setError(`展开这一轮失败：${err?.message || err}`));
+          } : null,
         },
-          h("td", { className: "tt-turn-time" },
-            // 能打开的行才给角标；没有会话的行（mock 预览、老格式行）不做成一个点不动的按钮。
-            turnKey ? h("button", {
-              type: "button", className: "tt-turn-caret", title: "看这一轮的调用明细",
-              "aria-label": open ? "收起这一轮的调用明细" : "展开这一轮的调用明细",
-              "aria-expanded": open ? "true" : "false",
-            }, open ? "▾" : "▸") : null,
-            formatDateTime(r.time)),
+          h("td", { className: "tt-turn-time" }, formatDateTime(r.time)),
           h("td", { title: r.agent }, r.agentName || r.agent || "—"),
           h("td", { title: r.provider }, r.provider || "—"),
           h("td", { title: r.model }, r.model || "—"),
@@ -902,21 +906,7 @@ export class WorkspaceApp {
   // ---------- 「点得开」：某一轮的调用拆解 ----------
   // 明细行回答「这一轮多贵」，不回答「为什么贵」。展开后由引擎从会话文件重读这一轮，
   // 逐条列出调用（未命中 / 缓存读 / 输出 / 缓存写 / 推理），并给出会话文件的绝对路径。
-  bindTurnClicks(el) {
-    el.addEventListener("click", async (e) => {
-      try {
-        const row = e.target.closest ? e.target.closest("tr[data-turn-row]") : null;
-        if (!row || !row.dataset.turnRow) return;
-        // 正拖着选文字时不当作点击：考古时本来就想把一行复制出来。
-        const picking = typeof window.getSelection === "function" && String(window.getSelection() || "").length > 0;
-        if (picking) return;
-        await this.toggleTurn(row.dataset.turnRow, row.dataset.turnSession, Number(row.dataset.turnSeq) || 0);
-      } catch (err) {
-        // 展开失败只报一次，不要把明细表一起带走
-        this.setError(`展开这一轮失败：${err?.message || err}`);
-      }
-    });
-  }
+  // 入口就是行本身（由 renderDetailsTable 直接绑在 <tr> 上），这里不挂代理监听。
 
   // 这两个字段只有后端给了才点得开（mock 预览的行、老格式的行都没有）。
   turnKey(r) {
@@ -980,11 +970,6 @@ export class WorkspaceApp {
     for (const row of this.container.querySelectorAll("tr[data-turn-row]")) {
       if (row.dataset.turnRow !== key) continue;
       row.classList.toggle("tt-turn-open", open);
-      const caret = row.querySelector(".tt-turn-caret");
-      if (caret) {
-        caret.textContent = open ? "▾" : "▸";
-        caret.setAttribute("aria-expanded", open ? "true" : "false");
-      }
       break;
     }
     for (const cell of this.container.querySelectorAll("[data-turn-cell]")) {
