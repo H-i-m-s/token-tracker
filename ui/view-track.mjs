@@ -21,7 +21,21 @@ export const AXIS_RATIO = 1.2;      // 换页时横向位移要明显大于纵�
 export const SNAP_RATIO = 0.25;     // 位移超过 1/4 步长就翻页
 export const SNAP_VELOCITY = 0.5;   // px/ms；甩得够快也翻页
 export const RUBBER = 0.35;         // 换页时两端的阻尼系数：拖得动，但拖不远
+// 松手后那段吸附过渡：基准时长、下限上限，以及“手多快算快”（px/ms）。
+export const SETTLE_BASE_MS = 280;
+export const SETTLE_MIN_MS = 110;
+export const SETTLE_MAX_MS = 320;
+export const SETTLE_REF_SPEED = 0.6;
+// 快速用得更“陡”的曲线：缓入段几乎为零，接得上松手那一下的速度。
+export const FLICK_EASING = "cubic-bezier(.08,.72,.12,1)";
 const WALK_LIMIT = 24;              // 往上最多查这么多层
+
+// 拖拽跟手时的平滑：画面不去死跟指针，而是追一个略微滞后的目标。
+// 指针速度天然不平滑（人手抖、鼠标采样跳变），1:1 跟手等于把这些抖动原样传给画面；
+// 这里让它以 50ms 的时常数收敛，并允许最多落后 12px（约一屏的 1.6%）
+// —— 手指的抖动被抹平，匀速部分的速度依旧保留，只是整体晚一点。
+export const SMOOTH_TAU_MS = 50;
+export const SMOOTH_MAX_LAG = 12;
 
 export const GESTURE = { view: "view", pan: "pan", select: "select", blocked: "blocked" };
 
@@ -101,6 +115,35 @@ export function dragOffset({ index, count, step, dx, rubber = RUBBER, from = -in
   if (wanted > 0) return wanted * rubber;
   if (wanted < min) return min + (wanted - min) * rubber;
   return wanted;
+}
+
+// 拖拽跟手的平滑一步：在 dt 毫秒里朝着 target 收敛，但落后不超过 maxLag。
+// dt 很大（比如停了一会儿）就自然追上；dt≤0 不推进，但也不允许越出上限。
+function clampLag(shown, target, maxLag) {
+  const lag = shown - target;
+  if (lag > maxLag) return target + maxLag;
+  if (lag < -maxLag) return target - maxLag;
+  return shown;
+}
+
+export function smoothStep({ shown = 0, target = 0, dt = 0, tau = SMOOTH_TAU_MS, maxLag = SMOOTH_MAX_LAG } = {}) {
+  if (!(dt > 0)) return clampLag(shown, target, maxLag);
+  const alpha = 1 - Math.exp(-dt / tau);
+  return clampLag(shown + (target - shown) * alpha, target, maxLag);
+}
+
+// 松手后这段过渡走多久。为什么不是固定 280ms：固定时长等于“手一松就刹住、再重播一段动画”，
+// 手感上就是被接管了一下。这里让手越快、要走的距离越短，这段就越短。
+// distance 是抬手后还要走的距离（px）；step 是一屏加间距。
+export function settleDuration({
+  velocity = 0, distance = 0, step = 1,
+  base = SETTLE_BASE_MS, min = SETTLE_MIN_MS, max = SETTLE_MAX_MS, refSpeed = SETTLE_REF_SPEED,
+} = {}) {
+  const speed = Math.abs(velocity);
+  const speedFactor = speed > refSpeed ? refSpeed / speed : 1;              // 甩得快→更短
+  const ratio = step > 0 ? Math.abs(distance) / step : 1;
+  const distFactor = Math.min(1, Math.max(0.35, ratio));                    // 只差一点点→更短
+  return Math.round(Math.min(max, Math.max(min, base * speedFactor * distFactor)));
 }
 
 // 松手落到第几块。一次最多一块：甩得再狠也只翻一格，宁可稳一点也不要不听话。
@@ -204,13 +247,17 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
         drag.left = drag.surface.scrollLeft;
         drag.top = drag.surface.scrollTop;
         drag.claimed = true;
+        // 认领这刻已经走掉的距离不再算进来：否则第一帧会把“门槛之前那段”一次性补上（弹一下）。
+        drag.originX = dx;
+        drag.originY = dy;
         drag.surface.classList.add("tt-panning");
         // 合成事件（验收台里造的）没有真实指针，setPointerCapture 会抛 NotFoundError；
         // 只有真指针才需要它，判 isTrusted 比吞异常干净。
         if (e.isTrusted) { try { mainEl.setPointerCapture(drag.id); } catch { /* 指针已消失 */ } }
       }
       e.preventDefault();
-      const left = drag.left - dx, top = drag.top - dy;
+      const mx = dx - drag.originX, my = dy - drag.originY;
+      const left = drag.left - mx, top = drag.top - my;
       if (drag.wroteLeft !== left || drag.wroteTop !== top) {
         drag.wroteLeft = left;
         drag.wroteTop = top;
@@ -229,6 +276,9 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
       drag.step = stepOf();
       // 从眼睛看到的位置接着拖：上次切页的过渡可能还在跑，从 -index*step 算起会跳一下。
       drag.from = currentTranslate(trackEl);
+      // 同上：门槛之前那段不算位移，认领之后才从 0 开始跟手。
+      drag.originX = dx;
+      drag.originY = dy;
       drag.wrote = null;
       trackEl.classList.add("tt-no-anim");   // 拖动期间关掉过渡，位移由我们逐帧写
       mainEl.classList.add("tt-dragging");
@@ -240,8 +290,8 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
     if (dt > 0) drag.velocity = (e.clientX - drag.lastX) / dt;
     drag.lastX = e.clientX;
     drag.lastT = e.timeStamp;
-    drag.dx = dx;
-    const x = Math.round(dragOffset({ index: drag.index, count, step: drag.step, dx, from: drag.from }));
+    drag.dx = dx - drag.originX;
+    const x = Math.round(dragOffset({ index: drag.index, count, step: drag.step, dx: drag.dx, from: drag.from }));
     if (drag.wrote !== x) {
       drag.wrote = x;
       writeJob({ kind: "view", x });
@@ -261,7 +311,12 @@ export function createViewGestures({ mainEl, trackEl, bindEl, count, getIndex, o
     }
     mainEl.classList.remove("tt-dragging");
     trackEl.classList.remove("tt-no-anim");   // 交回过渡，下面这次的位移就是吸附动画
-    onChange(settleTarget({ index: current.index, count, dx: current.dx, velocity: current.velocity, step: current.step }));
+    const target = settleTarget({ index: current.index, count, dx: current.dx, velocity: current.velocity, step: current.step });
+    // 抬手后还要走多远：从“眼睛看到的位置”到吸附点。
+    const distance = -target * current.step - (current.from + current.dx);
+    const duration = settleDuration({ velocity: current.velocity, distance, step: current.step });
+    const easing = Math.abs(current.velocity) > SNAP_VELOCITY ? FLICK_EASING : "";
+    onChange(target, { duration, easing });
   }
 
   surfaceEl.addEventListener("pointerdown", onDown, true);

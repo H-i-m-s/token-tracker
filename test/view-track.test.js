@@ -4,7 +4,8 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import {
   decideAxis, blockingReason, scrollableX, scrollableAny, nearestScroller, gestureMode, isControl,
-  dragOffset, settleTarget, DRAG_START_PX,
+  dragOffset, settleTarget, settleDuration, FLICK_EASING, SETTLE_BASE_MS,
+  DRAG_START_PX,
 } from "../ui/view-track.mjs";
 
 test("decideAxis：没到门槛一律不判方向（留给点击）", () => {
@@ -98,6 +99,19 @@ test("isControl：顶部控件区里的控件不当拖拽面，普通块算", ()
   assert.equal(isControl(fake(null)), false);
   assert.equal(isControl(null), false);
   assert.equal(isControl({}), false);
+});
+
+test("settleDuration：手越快、要走的距离越短，这段过渡就越短（不再固定 280ms）", () => {
+  const base = { step: 700, distance: 700 };
+  const slow = settleDuration({ ...base, velocity: 0 });
+  const fast = settleDuration({ ...base, velocity: 2 });
+  assert.equal(slow, SETTLE_BASE_MS);                     // 慢慢挪：照旧
+  assert.ok(fast < slow && fast >= 110, `甩得快应当更短且有下限（${fast} < ${slow}）`);
+  const short = settleDuration({ step: 700, distance: 40, velocity: 0 });
+  assert.ok(short < slow && short >= 110, `只差一点点就到位时更短（${short}）`);
+  const tiny = settleDuration({ step: 700, distance: 700, velocity: 400 });
+  assert.ok(tiny >= 110 && tiny <= 320, `极端值不越界（${tiny}）`);
+  assert.ok(FLICK_EASING.startsWith("cubic-bezier"), "快甩用一条单独的陡曲线");
 });
 
 test("nearestScroller：往上找最近的可滚容器（图表平移的落点）", () => {

@@ -299,14 +299,15 @@ export class WorkspaceApp {
       bindEl: this.container,
       count: VIEW_ORDER.length,
       getIndex: () => Math.max(0, VIEW_ORDER.indexOf(this.view)),
-      onChange: (index) => this.selectView(VIEW_ORDER[Math.min(VIEW_ORDER.length - 1, Math.max(0, index))]),
+      onChange: (index, opts) => this.selectView(VIEW_ORDER[Math.min(VIEW_ORDER.length - 1, Math.max(0, index))],
+        { duration: opts && opts.duration, easing: (opts && opts.easing) || "" }),
       // 接管手势时把还开着的浮层收掉：拖动会让触发器跟着走，浮层留在原地会看着漂。
       onClaim: () => { closeOpenSelect(); closeOpenDate(); },
     });
     this.selectView(this.view);
   }
 
-  selectView(view, { persist = true, animate = true } = {}) {
+  selectView(view, { persist = true, animate = true, duration = 0, easing = "" } = {}) {
     if (!VALID_VIEWS.includes(view)) view = "overview";
     const from = this.view;
     const changed = view !== from;
@@ -327,15 +328,31 @@ export class WorkspaceApp {
     // 步长写进 calc，引用同一个 CSS 变量（--tt-track-gap），宽度一变也不用改代码。
     const track = this.trackEl;
     if (track) {
-      const glide = animate && changed && !this.prefersReducedMotion();
+      // duration 是“这一次吸附”的时长（拖动松手时按速度和距离算出来）。
+      // 同块回流（一次没翻页的拖动）也要滑：它同样是从拖动位置回到休息位，瞬移就是另一处“顿”。
+      const glide = animate && (changed || !!duration) && !this.prefersReducedMotion();
       const to = `translateX(calc(${-index} * (100% + var(--tt-track-gap, 0px))))`;
       if (glide) {
         track.classList.remove("tt-no-anim");
+        if (duration) {
+          track.style.transitionDuration = `${duration}ms`;
+          if (easing) track.style.transitionTimingFunction = easing;
+          // 只对这一次生效：跑完交还 CSS，别把以后每次切页的时长也带偏。
+          // 不用 transitionend 做唯一依靠（它不保证会来），给一个超时兼底。
+          clearTimeout(this.settleTimer);
+          this.settleTimer = setTimeout(() => {
+            track.style.transitionDuration = "";
+            track.style.transitionTimingFunction = "";
+          }, duration + 120);
+        }
         track.style.transform = to;
       } else {
         // 首帧 / 减少动效：这一帧先落位、不滑。
         // 这里用同步回流，刻意不用 rAF：rAF 在后台标签页会被节流甚至不回调，
         // 那个 tt-no-anim 就会一直留在轨道上 —— 之后每次切页都不会滑。
+        clearTimeout(this.settleTimer);
+        track.style.transitionDuration = "";
+        track.style.transitionTimingFunction = "";
         track.classList.add("tt-no-anim");
         track.style.transform = to;
         void track.offsetWidth;   // 让这次落位在“过渡关着”的状态下生效
