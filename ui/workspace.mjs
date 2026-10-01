@@ -286,7 +286,13 @@ export class WorkspaceApp {
     this.setLoading(1, { silent });
     const request = ++this.dashboardRequest;
     try {
-      const dashboard = await this.api.getDashboard(this.state.get(), { mock: this.mock });
+      // 明细已服务端分页：页码/排序/门槛跟着一起发；后台静默刷新用当前页，别把读者送回第一页。
+      const filters = {
+        ...this.state.get(),
+        page: this.detailsPage, pageSize: PAGE_SIZE,
+        sortKey: this.detailsSort, order: "desc", minTokens: this.detailsMin,
+      };
+      const dashboard = await this.api.getDashboard(filters, { mock: this.mock });
       if (request !== this.dashboardRequest || this.disposed) return;
       // 行是数组编码来的，在这一层解回对象；下面所有渲染都按对象行读。
       this.dashboard = decodeRows(dashboard);
@@ -675,12 +681,18 @@ export class WorkspaceApp {
       this.mainEl.appendChild(el);
     }
 
-    // 先排序/筛门槛得到「看得到的那些」，再切页。
-    // 顶部显示的条数与合计都算在这份视图上，所以换个门槛数字会跟着变。
+    // 两条路：引擎给了 details 就用它（排序/门槛/分页都在数据层做完了，这里只渲染这一页），
+    // 拿不到 details（mock 预览、或引擎没拿到 SQLite 驱动）才退回本地这套，语义相同。
+    const server = this.dashboard?.details || null;
     const rows = this.dashboard?.rows || [];
-    const view = viewRows(rows, { sort: this.detailsSort, minTokens: this.detailsMin });
-    const { page, totalPages, rows: pageRows } = pageSlice(view, this.detailsPage, PAGE_SIZE);
+    const view = server ? [] : viewRows(rows, { sort: this.detailsSort, minTokens: this.detailsMin });
+    const slice = server
+      ? { page: server.page, totalPages: server.totalPages, rows: decodeRows({ rows: server.rows, rowCols: server.rowCols }).rows }
+      : pageSlice(view, this.detailsPage, PAGE_SIZE);
+    const { page, totalPages, rows: pageRows } = slice;
     this.detailsPage = page; // 夹过界的页码写回去，否则输入框会一直显示一个不存在的页
+    const total = server ? server.total : view.length;
+    const sum = server ? server.sumTokens : sumTokens(view);
     const maxTokens = Math.max(...pageRows.map((r) => r.totalTokens || 0), 1);
 
     const keepScroll = preserveScroll ? el.scrollTop : 0;
@@ -689,7 +701,7 @@ export class WorkspaceApp {
       h("div", { className: "tt-module-hd" },
         h("span", { className: "tt-module-title" }, "消费明细"),
         h("div", { className: "tt-module-actions" },
-          h("span", { className: "tt-module-meta" }, `共 ${view.length.toLocaleString()} 条 · 合计 ${fmt(sumTokens(view))} tok`),
+          h("span", { className: "tt-module-meta" }, `共 ${total.toLocaleString()} 条 · 合计 ${fmt(sum)} tok`),
           h("select", { id: "details-sort", className: "tt-pill", "aria-label": "明细排序" },
             ...selectOptions(DETAIL_SORTS.map((s) => ({ value: s.key, label: s.label })), this.detailsSort)),
           h("select", { id: "details-min", className: "tt-pill", "aria-label": "按单轮用量过滤" },
@@ -699,19 +711,25 @@ export class WorkspaceApp {
       ),
       h("div", { className: "tt-module-bd dense" },
         this.renderDetailsTable(pageRows, maxTokens,
-          view.length ? "当前门槛之上没有轮次，把门槛放宽些" : "该时间范围内无消费记录"),
-        this.renderDetailsPagination(view.length, page, totalPages),
+          total ? "当前门槛之上没有轮次，把门槛放宽些" : "该时间范围内无消费记录"),
+        this.renderDetailsPagination(total, page, totalPages),
       ),
     );
     if (preserveScroll) el.scrollTop = keepScroll;
 
     // 原生 select 留着当状态源，换成自绘下拉（幂等）；改完排序/门槛都回到第 1 页。
     enhanceSelects(this.container);
+    // 服务端分页时，排序/门槛都得重新取一次（语义在后端）；本地退回那套就地重渲染。
+    const refresh = () => {
+      this.detailsPage = 1;
+      if (this.dashboard?.details) this.loadDashboard(true);
+      else this.renderDetails();
+    };
     this.container.querySelector("#details-sort")?.addEventListener("change", (e) => {
-      this.detailsSort = e.target.value; this.detailsPage = 1; this.renderDetails();
+      this.detailsSort = e.target.value; refresh();
     });
     this.container.querySelector("#details-min")?.addEventListener("change", (e) => {
-      this.detailsMin = Number(e.target.value) || 0; this.detailsPage = 1; this.renderDetails();
+      this.detailsMin = Number(e.target.value) || 0; refresh();
     });
     this.container.querySelector("#details-export")?.addEventListener("click", () => this.exportCSV());
     this.bindDetailsPagination();
@@ -793,11 +811,14 @@ export class WorkspaceApp {
   }
 
   bindDetailsPagination() {
-    const totalPages = Math.max(1, Math.ceil((this.dashboard?.rows || []).length / PAGE_SIZE));
+    const server = this.dashboard?.details || null;
+    const totalPages = server ? server.totalPages : Math.max(1, Math.ceil((this.dashboard?.rows || []).length / PAGE_SIZE));
     const go = (next) => {
       const target = Math.min(totalPages, Math.max(1, next));
       this.detailsPage = Number.isFinite(target) ? target : 1;
-      this.renderDetails();
+      // 服务端分页：页码在后端生效，重新取一次这一页（静默，别把整页控件重建一遍）；本地模式就地重渲染。
+      if (server) this.loadDashboard(true, { silent: true });
+      else this.renderDetails();
     };
     this.container.querySelectorAll("[data-page]").forEach((btn) => {
       btn.addEventListener("click", () => {
@@ -823,11 +844,13 @@ export class WorkspaceApp {
 
   async exportCSV() {
     try {
-      // 导出的就是眼前这份：当前排序 + 当前门槛，导出来的行数要跟顶部的「共 N 条」对得上。
-      const view = viewRows(this.dashboard?.rows || [], { sort: this.detailsSort, minTokens: this.detailsMin });
+      // 明细服务端分页之后前端只有一页，而导出的语义是「当前筛选 + 当前排序下的全部行」：
+      // CSV 只能由引擎拼好（同一套口径，不会出现「导出的和看得见的不一致」）。
       const label = DETAIL_THRESHOLDS.find((t) => t.key === this.detailsMin)?.label || "";
       const suffix = this.detailsMin > 0 ? `-${label.replace("≥", "")}` : "";
-      await saveDetailsCSV(this.hana, view, this.state.get().range, { suffix });
+      const filters = { ...this.state.get(), sortKey: this.detailsSort, order: "desc", minTokens: this.detailsMin };
+      const csv = await this.api.getDetailsCsv(filters, { mock: this.mock });
+      await saveDetailsCSV(this.hana, csv, this.state.get().range, { suffix, count: this.dashboard?.details?.total ?? 0 });
     } catch (err) {
       this.setError(`导出失败：${err.message}`);
     }

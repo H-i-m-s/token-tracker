@@ -6,6 +6,9 @@ import { LocalClient } from "./lib/local-client.mjs";
 import { SessionCacheStatus } from "./lib/session-cache.mjs";
 import { shapeSnapshot, shapeBalances } from "./lib/snapshot-service.mjs";
 import { okResponse, errResponse } from "./lib/api-errors.mjs";
+// 明细导出：CSV 的拼装在引擎侧（前端分页后手里只有一页），mock 预览用同一份拼装器与同一份 mock 行。
+import { buildDetailsCSV } from "./runtime/engine/services/details-csv.js";
+import { mockDashboardRows } from "./lib/mock-data.mjs";
 
 export const APP_ID = "token-tracker-app";
 
@@ -174,6 +177,12 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       model: c.req.query("model") || "",
       provider: c.req.query("provider") || "",
       type: c.req.query("type") || "",
+      // 明细已服务端分页：页码/排序/门槛跟着一起发，否则每次拿到的都是第一页的默认排序。
+      page: c.req.query("page") || "",
+      pageSize: c.req.query("pageSize") || "",
+      sortKey: c.req.query("sortKey") || "",
+      order: c.req.query("order") || "",
+      minTokens: c.req.query("minTokens") || "",
     };
     try {
       const raw = await busClient.request("token-tracker.dashboard", payload, { mock: isMock(c) });
@@ -182,6 +191,35 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     } catch (err) {
       log("error", "GET /dashboard error:", err?.message || err);
       return jsonResponse(c, errResponse(err?.code || "DASHBOARD_FAILED", err?.message || "获取消费明细失败"), err?.code === "INVALID_SETTINGS" ? 400 : 503);
+    }
+  }
+
+  // 明细导出：明细服务端分页之后，前端手里只有一页，而导出的语义是「当前筛选 + 当前排序下的全部行」，
+  // 所以 CSV 只能由引擎拼好（约 1.5 MB，仍在上限内），这里只负责转发与保存。
+  async function handleDetailsCsv(c) {
+    const payload = {
+      range: c.req.query("range") || "today",
+      from: c.req.query("from") || "",
+      to: c.req.query("to") || "",
+      agent: c.req.query("agent") || "",
+      model: c.req.query("model") || "",
+      provider: c.req.query("provider") || "",
+      type: c.req.query("type") || "",
+      sortKey: c.req.query("sortKey") || "",
+      order: c.req.query("order") || "",
+      minTokens: c.req.query("minTokens") || "",
+    };
+    try {
+      if (isMock(c)) {
+        // mock 路径没有引擎：用同一份 mock 明细行、同一个 CSV 拼装器，别另写一套。
+        return jsonResponse(c, okResponse({ csv: buildDetailsCSV(mockDashboardRows(payload.range || "today")) }));
+      }
+      const csv = await busClient.request("token-tracker.details.csv", payload);
+      if (typeof csv !== "string") throw Object.assign(new Error("导出内容必须是引擎生成的 CSV 文本"), { code: "CSV_FAILED" });
+      return jsonResponse(c, okResponse({ csv }));
+    } catch (err) {
+      log("error", "GET /details.csv error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "CSV_FAILED", err?.message || "导出失败"), err?.code === "INVALID_SETTINGS" ? 400 : 503);
     }
   }
 
@@ -255,6 +293,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       app.get("/spike", (c) => textResponse(c, `${APP_ID} spike route ok`));
       app.get("/snapshot", handleSnapshot);
       app.get("/dashboard", handleDashboard);
+      app.get("/details.csv", handleDetailsCsv);
       app.get("/balance", handleBalance);
       app.get("/ds-usage", handleDsUsage);
       app.post("/refresh", handleRefresh);

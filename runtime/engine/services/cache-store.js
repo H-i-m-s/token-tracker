@@ -121,7 +121,9 @@ export function createSqliteCacheStore({ DatabaseSync, file, log = () => {} }) {
       try { d.exec("ROLLBACK"); } catch {}
       throw e;
     }
-    return { rows: count, bytes, scope: writeAll ? "全量" : "增量", why };
+    // keys：这一轮真的写过的行（含被移除的）。turns 表按同一份「哪个会话动过」的判定增量重建，
+    // 免得第二处再算一遍 mtime/size 比较（两处判定若漂移就会互相打脸）。
+    return { rows: count, bytes, scope: writeAll ? "全量" : "增量", why, keys: [...touched] };
   }
 
   // meta（除 sessions 以外的状态）单独写：调度器要先把这一轮的真实计数更新完再写它。

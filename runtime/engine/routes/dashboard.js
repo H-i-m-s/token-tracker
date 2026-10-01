@@ -1,5 +1,6 @@
 import { resolveHanaHome, readTextFile } from "../services/platform.js";
 import { buildVisualAnalytics } from "../services/visual-analytics.js";
+import { queryTurns, queryTurnSizes } from "../services/turns-store.js";
 import { loadLedger } from "../services/ledger-source.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -335,9 +336,11 @@ export default function (app, ctx) {
       const from = params.from || "";
       const to = params.to || "";
       const provider = params.provider || "";
+      // 明细分页/排序参数（服务端分页）：page/pageSize/sortKey/order/minTokens，一律由 build 内部白名单化。
+      const detailsParams = { page: params.page, pageSize: params.pageSize, sortKey: params.sortKey, order: params.order, minTokens: params.minTokens };
       // 确保汇率可用（内部统一美元口径计算用）；opts.fxRate 供测试注入
       const fxRate = opts.fxRate !== undefined ? opts.fxRate : await fetchFxRate();
-      const result = build({ ...cache.data, dataDir: cache.dataDir }, range, { agent, model, type, provider, from, to }, fxRate);
+      const result = build({ ...cache.data, dataDir: cache.dataDir }, range, { agent, model, type, provider, from, to, ...detailsParams }, fxRate, cache.turnsStore);
       // 用 agent:list 覆盖 agentNames，保证显示名正确；标记已删除的 agent
       const activeAgentIds = new Set();
       try {
@@ -803,6 +806,28 @@ export default function (app, ctx) {
     }
   };
 
+  // 导出用：当前筛选 + 当前排序下的全部行（不分页）。给 token-tracker.details.csv 用。
+  // 与 _buildDashboardData 走同一套 range 解析与明细口径，只是不切页。
+  ctx._buildDetailsRows = async (params = {}) => {
+    const cache = ctx._tokenCache;
+    if (!cache?.data || !cache.data.sessions) return { notReady: true, error: "数据未就绪" };
+    const view = { ...cache.data, dataDir: cache.dataDir, turnsStore: cache.turnsStore };
+    const filters = {
+      agent: params.agent || "", model: params.model || "", type: params.type || "", provider: params.provider || "",
+      from: params.from || "", to: params.to || "",
+      sortKey: params.sortKey, order: params.order, minTokens: params.minTokens,
+    };
+    const { dateFilter, from: dayFrom, to: dayTo } = resolveDateRange(params.range || "all", filters);
+    let sessions = filterSessions(Object.values(view.sessions), filters);
+    if (filters.model) sessions = sessions.filter(s => s.models?.[filters.model]);
+    const sessionKeys = new Map();
+    for (const [k, v] of Object.entries(view.sessions)) sessionKeys.set(v, k);
+    const { objectRows } = collectDetails({
+      cache: view, sessions, sessionKeys, dateFilter, dayFrom, dayTo, filters, turnsStore: cache.turnsStore, allRows: true,
+    });
+    return { rows: objectRows };
+  };
+
   app.get("/dashboard/data", async c => {
     try {
       const result = await ctx._buildDashboardData({
@@ -973,61 +998,186 @@ export function rowOf(session, conv, agentNames) {
   };
 }
 
-function build(cache, range = "all", filters = {}, fxRate = null) {
-  const priceTable = loadPriceTable(cache.dataDir || "");
-  let sessions = Object.values(cache.sessions);
+// ── 消费明细：服务端分页 ──
+// 明细从 turns 表按页取，不再把全部历史搬进载荷（宿主对响应有 4 MiB 硬顶，而历史只会更长）。
+// 表拿不到（没有 SQLite 驱动）或还是空的时，回落到内存里现算 —— 两条路的输出形状与口径
+// 必须一模一样，前端不该知道走的是哪条。
+const DETAIL_PAGE_DEFAULT = 50;
+const DETAIL_PAGE_MAX = 200;
+const DETAIL_SORT_KEYS = new Set(["time", "tokens", "uncached", "hit"]);
 
-  // ── 按时间维度确定过滤函数 ──
-  let dateFilter = null;
+const maxDay = (a, b) => (!a ? b : !b ? a : (a > b ? a : b));
+const minDay = (a, b) => (!a ? b : !b ? a : (a < b ? a : b));
+
+// range / from / to → dateFilter（谓词）+ from/to（day 端点，含端点）。
+// 每个分支都等价于一个区间谓词，所以端点与谓词永远描述同一个集合（turns 表查询直接吃端点）。
+function resolveDateRange(range, filters = {}) {
+  const now = new Date();
+  const today = cnToday();
+  let from = "", to = "";
   if (range !== "all") {
-    const now = new Date();
-    const today = cnToday();
     if (/^last(3|7|30)$/.test(range)) {
       const start = new Date(today + "T00:00:00+08:00");
       start.setUTCDate(start.getUTCDate() - Number(range.slice(4)) + 1);
-      const first = CN_DAY.format(start);
-      dateFilter = d => d >= first && d <= today;
+      from = CN_DAY.format(start); to = today;
     } else if (range === "today") {
-      dateFilter = d => d === today;
+      from = today; to = today;
     } else if (range === "yesterday") {
       const yd = new Date(now);
       yd.setDate(yd.getDate() - 1);
-      dateFilter = d => d === yd.getFullYear() + "-" + String(yd.getMonth() + 1).padStart(2, "0") + "-" + String(yd.getDate()).padStart(2, "0");
+      const y = yd.getFullYear() + "-" + String(yd.getMonth() + 1).padStart(2, "0") + "-" + String(yd.getDate()).padStart(2, "0");
+      from = y; to = y;
     } else if (range === "week") {
       const day = now.getDay();
       const ws = new Date(now);
       // 与 OpenCode Go 官方口径统一：本周从周一开始。
       ws.setDate(ws.getDate() - ((day + 6) % 7));
-      const weekStart = ws.getFullYear() + "-" + String(ws.getMonth()+1).padStart(2,"0") + "-" + String(ws.getDate()).padStart(2,"0");
-      dateFilter = d => d >= weekStart;
+      from = ws.getFullYear() + "-" + String(ws.getMonth() + 1).padStart(2, "0") + "-" + String(ws.getDate()).padStart(2, "0");
     } else if (range === "year") {
-      const yearStart = now.getFullYear() + "-01-01";
-      dateFilter = d => d >= yearStart;
+      from = now.getFullYear() + "-01-01";
     } else if (range === "lyear") {
       const ly = now.getFullYear() - 1;
-      const ls = ly + "-01-01", le = ly + "-12-31";
-      dateFilter = d => d >= ls && d <= le;
+      from = ly + "-01-01"; to = ly + "-12-31";
     } else if (range === "month") {
-      const monthStart = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-01";
-      dateFilter = d => d >= monthStart;
+      from = now.getFullYear() + "-" + String(now.getMonth() + 1).padStart(2, "0") + "-01";
+    }
+  }
+  if (filters.from) {
+    from = maxDay(from, filters.from);
+    if (filters.to) to = minDay(to, filters.to);
+  }
+  return { dateFilter: (from || to) ? (d => (!from || d >= from) && (!to || d <= to)) : null, from, to };
+}
+
+// 会话级筛选（Agent / Provider / Type）。明细两条路与汇总口径都吃它，抽出来避免两处漂移。
+function filterSessions(list, filters) {
+  let out = list;
+  if (filters.agent) out = out.filter(s => s.agent === filters.agent);
+  if (filters.provider) out = out.filter(s => s.providers && Object.keys(s.providers).some(pk => pk.startsWith(filters.provider + "/")));
+  if (filters.type) out = out.filter(s => s.type === filters.type);
+  return out;
+}
+
+// 排序值。uncached 用「未命中输入」= input - cache_read（与 ui/details-view.mjs 的 uncachedInput 同口径，
+// 负数夹到 0）；hit = cache_read / input。没有口径的行给 null，两个方向都排最后。
+function detailSortValue(r, sortKey) {
+  if (sortKey === "tokens") return Number(r.totalTokens) || 0;
+  if (sortKey === "uncached") return Math.max(0, (Number(r.inputTokens) || 0) - (Number(r.cacheRead) || 0));
+  if (sortKey === "hit") {
+    const inp = Number(r.inputTokens);
+    if (r.inputTokens == null || !(inp > 0)) return null;
+    return r.cacheRead == null ? null : Number(r.cacheRead) / inp;
+  }
+  return String(r.time || "");
+}
+
+function detailCompare(a, b, sortKey, dir) {
+  const va = detailSortValue(a, sortKey), vb = detailSortValue(b, sortKey);
+  const na = va === null, nb = vb === null;
+  if (na !== nb) return na ? 1 : -1;
+  if (!na && va !== vb) return (va < vb ? -1 : 1) * dir;
+  const ta = String(a.time || ""), tb = String(b.time || "");
+  if (ta !== tb) return ta < tb ? 1 : -1;   // at DESC 兜底
+  // 与 SQL 的 `..., session_key ASC, seq ASC` 完全对齐：完全并列时也要有确定顺序，
+  // 不能靠 Array.sort 的稳定性（那等于会话迭代顺序，跨会话同一时间戳的地方会与 SQL 分岔）。
+  const ka = String(a.sessionKey ?? ""), kb = String(b.sessionKey ?? "");
+  if (ka !== kb) return ka < kb ? -1 : 1;
+  return (a.seq || 0) - (b.seq || 0);
+}
+
+// turns 表一行 → 明细行对象（字段与 rowOf 对齐，agentName 从名册补）。
+function sqlDetailRow(r, agentNames) {
+  return {
+    sessionKey: r.sessionKey, seq: r.seq, time: r.at,
+    agent: r.agent, agentName: agentNames?.[r.agent] || r.agent,
+    provider: r.provider, model: r.model,
+    totalTokens: r.total, inputTokens: r.input, outputTokens: r.output,
+    cacheRead: r.cacheRead, calls: r.calls,
+  };
+}
+
+// 取一页（或全部）明细，并给出与明细同一筛选集的 (model, total) 对（供单轮大小分布）。
+function collectDetails({ cache, sessions, sessionKeys, dateFilter, dayFrom, dayTo, filters, turnsStore, allRows = false }) {
+  const agentNames = cache.agentNames || {};
+  const pageSizeRaw = Math.floor(Number(filters.pageSize));
+  const pageSize = Number.isFinite(pageSizeRaw) && pageSizeRaw > 0 ? Math.min(pageSizeRaw, DETAIL_PAGE_MAX) : DETAIL_PAGE_DEFAULT;
+  const sortKey = DETAIL_SORT_KEYS.has(filters.sortKey) ? filters.sortKey : "time";
+  const order = filters.order === "asc" ? "asc" : "desc";
+  const minRaw = Number(filters.minTokens);
+  const minTokens = Number.isFinite(minRaw) && minRaw > 0 ? minRaw : 0;
+  const where = { from: dayFrom || "", to: dayTo || "", agent: filters.agent || "", model: filters.model || "", provider: filters.provider || "", type: filters.type || "" };
+
+  let useTable = false;
+  if (turnsStore && typeof turnsStore.count === "function") {
+    try { useTable = turnsStore.count() > 0; } catch { useTable = false; }
+  }
+
+  let picked, turnPairs;
+  if (useTable) {
+    turnPairs = queryTurnSizes(turnsStore, where);
+    if (allRows) {
+      const res = queryTurns(turnsStore, { ...where, sortKey, order, minTokens, all: true });
+      picked = { rows: res.rows.map(r => sqlDetailRow(r, agentNames)), total: res.total, sumTokens: res.sumTokens, page: 1, totalPages: 1 };
+    } else {
+      const want = Math.max(1, Math.floor(Number(filters.page)) || 1);
+      let res = queryTurns(turnsStore, { ...where, sortKey, order, minTokens, limit: pageSize, offset: (want - 1) * pageSize });
+      const totalPages = Math.max(1, Math.ceil(res.total / pageSize));
+      const page = Math.min(want, totalPages);
+      if (page !== want) res = queryTurns(turnsStore, { ...where, sortKey, order, minTokens, limit: pageSize, offset: (page - 1) * pageSize });
+      picked = { rows: res.rows.map(r => sqlDetailRow(r, agentNames)), total: res.total, sumTokens: res.sumTokens, page, totalPages };
+    }
+  } else {
+    // 回落：直接遍历内存里的 conversations，筛选/排序/分页语义与 SQL 路一致。
+    const all = [];
+    for (const s of sessions) {
+      const key = sessionKeys.get(s) || "";
+      const convs = s.conversations || [];
+      for (let i = 0; i < convs.length; i++) {
+        const c = convs[i];
+        if (filters.model && c.model !== filters.model) continue;
+        if (filters.provider && c.provider !== filters.provider) continue;
+        const timestamp = c.time ? new Date(c.time) : null;
+        const day = c.time && Number.isFinite(timestamp.getTime()) ? CN_DAY.format(timestamp) : "";
+        if (dateFilter && (!day || !dateFilter(day))) continue;
+        const r = rowOf(s, c, agentNames);
+        r.sessionKey = key; r.seq = i + 1;
+        all.push(r);
+      }
+    }
+    turnPairs = all.map(r => ({ model: r.model || "", totalTokens: r.totalTokens || 0 }));
+    const kept = minTokens > 0 ? all.filter(r => (r.totalTokens || 0) >= minTokens) : all;
+    kept.sort((a, b) => detailCompare(a, b, sortKey, order === "asc" ? 1 : -1));
+    const total = kept.length;
+    const sumTokens = kept.reduce((sum, r) => sum + (r.totalTokens || 0), 0);
+    if (allRows) picked = { rows: kept, total, sumTokens, page: 1, totalPages: 1 };
+    else {
+      const totalPages = Math.max(1, Math.ceil(total / pageSize));
+      const page = Math.min(Math.max(1, Math.floor(Number(filters.page)) || 1), totalPages);
+      picked = { rows: kept.slice((page - 1) * pageSize, page * pageSize), total, sumTokens, page, totalPages };
     }
   }
 
-  // ── Agent / Provider / Type / 自定义日期筛选 ──
-  const { agent: filterAgent, model: filterModel, type: filterType, provider: filterProvider, from, to } = filters;
-  if (filterAgent) {
-    sessions = sessions.filter(s => s.agent === filterAgent);
-  }
-  if (filterProvider) {
-    sessions = sessions.filter(s => s.providers && Object.keys(s.providers).some(pk => pk.startsWith(filterProvider + "/")));
-  }
-  if (filterType) {
-    sessions = sessions.filter(s => s.type === filterType);
-  }
-  if (from) {
-    const orig = dateFilter;
-    dateFilter = d => d >= from && (!to || d <= to) && (!orig || orig(d));
-  }
+  return {
+    details: {
+      total: picked.total, sumTokens: picked.sumTokens, page: picked.page, pageSize,
+      totalPages: picked.totalPages, sortKey, order, minTokens,
+      rows: allRows ? [] : encodeRows(picked.rows), rowCols: ROW_COLS,
+    },
+    objectRows: picked.rows,
+    turnPairs,
+  };
+}
+
+function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = null) {
+  const priceTable = loadPriceTable(cache.dataDir || "");
+  let sessions = Object.values(cache.sessions);
+
+  // ── 时间范围（range + from/to）：一个谓词给内存汇总，一对 day 端点给 turns 表 ──
+  const { dateFilter, from: dayFrom, to: dayTo } = resolveDateRange(range, filters);
+
+  // ── Agent / Provider / Type 筛选 ──
+  const { model: filterModel, provider: filterProvider } = filters;
+  sessions = filterSessions(sessions, filters);
 
   // 保存一份不含模型筛选的 sessions，用于前端下拉选项
   const sessionPool = sessions;
@@ -1168,8 +1318,8 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
   let hourlyTargetDay = null;
   if (range === "today") {
     hourlyTargetDay = cnToday();
-  } else if (from && to && from === to) {
-    hourlyTargetDay = from;
+  } else if (dayFrom && dayTo && dayFrom === dayTo) {
+    hourlyTargetDay = dayFrom;
   }
   if (hourlyTargetDay) {
     const hMap = {};
@@ -1249,16 +1399,12 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
     });
   }
 
-  const rows = [];
-  for (const s of sessions) for (const c of s.conversations || []) {
-    const timestamp = new Date(c.time);
-    const day = c.time && Number.isFinite(timestamp.getTime()) ? CN_DAY.format(timestamp) : "";
-    if (dateFilter && (!day || !dateFilter(day))) continue;
-    if (filterModel && c.model !== filterModel) continue;
-    if (filterProvider && c.provider !== filterProvider) continue;
-    rows.push(rowOf(s, c, cache.agentNames));
-  }
-  rows.sort((a, b) => String(b.time).localeCompare(String(a.time)));
+  // ── 消费明细：服务端分页（表在就用 SQL，表空/无驱动则回落内存），并给出同筛选集的单轮大小对 ──
+  const sessionKeys = new Map();
+  for (const [k, v] of Object.entries(cache.sessions)) sessionKeys.set(v, k);
+  const { details, turnPairs } = collectDetails({
+    cache, sessions, sessionKeys, dateFilter, dayFrom, dayTo, filters, turnsStore,
+  });
 
   // ── 供应商全量列表（不受筛选影响，用于前端下拉） ──
   const allProviders = {};
@@ -1329,12 +1475,12 @@ function build(cache, range = "all", filters = {}, fxRate = null) {
   // 以前还发 stream / abnormal / mediaGen / providerBreakdown / earliest / 缓存下钻 / prediction，
   // 全仓界面一处都没读，属于白算白传。
   return {
-    analytics: buildVisualAnalytics(sessions, dateFilter, filters, rows),
+    analytics: buildVisualAnalytics(sessions, dateFilter, filters, turnPairs),
     agentNames: cache.agentNames || {},
     summary: { ...sums, cacheHitRate: sums.totalTokens > 0 ? +((sums.totalCacheRead / sums.totalTokens * 100).toFixed(1)) : 0, estimatedCost },
     agents, models, modelOptions, providers: allProviderList, daily, hourly,
-    // 行数组编码 + 列名：键名只发一次（上面 ROW_COLS 有说明），前端 decodeRows 解回对象。
-    rows: encodeRows(rows), rowCols: ROW_COLS,
+    // 明细改成服务端分页：只发当前页，行数组编码 + 列名（前端 decodeRows 解回对象）。
+    details,
   };
 }
 

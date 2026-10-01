@@ -62,8 +62,25 @@ export class AppApi {
     if (filters.model) qs.set("model", filters.model);
     if (filters.provider) qs.set("provider", filters.provider);
     if (filters.type) qs.set("type", filters.type);
+    // 明细已服务端分页：页码、排序、门槛都要带上去，否则拿回来的永远是第一页的默认排序。
+    if (filters.page) qs.set("page", String(filters.page));
+    if (filters.pageSize) qs.set("pageSize", String(filters.pageSize));
+    if (filters.sortKey) qs.set("sortKey", filters.sortKey);
+    if (filters.order) qs.set("order", filters.order);
+    if (filters.minTokens) qs.set("minTokens", String(filters.minTokens));
     const data = await this.fetchJson(`/dashboard?${qs}${mock ? "&mock=1" : ""}`);
     return data.dashboard;
+  }
+
+  // 明细导出：拿引擎按「当前筛选 + 当前排序」拼好的 CSV 文本（明细分页后前端只有一页）。
+  async getDetailsCsv(filters = {}, { mock = false } = {}) {
+    const qs = new URLSearchParams();
+    for (const k of ["range", "from", "to", "agent", "model", "provider", "type", "sortKey", "order"]) {
+      if (filters[k]) qs.set(k, String(filters[k]));
+    }
+    if (filters.minTokens) qs.set("minTokens", String(filters.minTokens));
+    const data = await this.fetchJson(`/details.csv?${qs}${mock ? "&mock=1" : ""}`);
+    return data.csv;
   }
 
   async getBalances({ mock = false } = {}) {

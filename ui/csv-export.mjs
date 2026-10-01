@@ -1,21 +1,13 @@
-import { hitRate } from "./details-view.mjs";
-
-export function buildDetailsCSV(rows) {
-  const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "缓存命中率", "调用次数", "总Token", "成本"];
-  const lines = rows.map((r) => {
-    // 缓存命中率是这两列里唯一需要算的：没口径就留空，不写 0%（那会读成“完全没命中”）。
-    const hr = hitRate(r);
-    return [r.time || "", r.agentName || r.agent || "", r.provider || "", r.model || "",
-      r.inputTokens ?? "", r.outputTokens ?? "",
-      hr == null ? "" : (hr * 100).toFixed(1) + "%",
-      r.calls ?? "",
-      r.totalTokens ?? 0, r.cost ?? ""];
-  });
-  return "\uFEFF" + [header, ...lines].map(line => line.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\r\n");
-}
-
-export async function saveDetailsCSV(hana, rows, range, { suffix = "", preview = showCSVPreview } = {}) {
-  const content = buildDetailsCSV(rows);
+// 明细导出的「保存 / 预览」这一段留在前端。
+//
+// CSV 的拼装已经搬到引擎（runtime/engine/services/details-csv.js，RPC：token-tracker.details.csv）：
+// 明细服务端分页之后，前端手里只有一页，而导出的语义是「当前筛选 + 当前排序下的全部行」。
+// 这里只负责把拿到的 CSV 文本交给宿主的保存能力，拿不到就退回预览框。
+export async function saveDetailsCSV(hana, content, range, { suffix = "", count = 0, preview = showCSVPreview } = {}) {
+  if (typeof content !== "string") {
+    // 行拼装已不在前端：再传一批行进来是调用方没跟上，早报比导出半截文件强。
+    throw new Error("导出内容必须是引擎生成的 CSV 文本");
+  }
   const now = new Date();
   const date = [now.getFullYear(), String(now.getMonth() + 1).padStart(2, "0"), String(now.getDate()).padStart(2, "0")].join("-");
   // suffix：明细按用量设了门槛时把档位写进文件名，不然一份被筛过的 CSV 会自称是全部。
@@ -31,7 +23,7 @@ export async function saveDetailsCSV(hana, rows, range, { suffix = "", preview =
       if (["saved", "canceled", "download-started"].includes(result?.kind)) return result;
     } catch { /* Preserve an accessible export even when native saving is unavailable. */ }
   }
-  preview({ name, content, count: rows.length });
+  preview({ name, content, count });
   return { kind: "preview" };
 }
 

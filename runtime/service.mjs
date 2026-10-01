@@ -59,7 +59,8 @@ async function request(method, payload = {}) {
     view.summary.highUsageThreshold = handlers.get('token-tracker.settings.read')().highUsageThreshold;
     return view;
   }
-  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'ds-usage': 'ds-usage', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
+  // details/csv：明细 CSV 导出（引擎拼好文本，约 1.5 MB）。gate 与 dashboard 同源（都要缓存就绪）。
+  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'ds-usage': 'ds-usage', 'details/csv': 'details.csv', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
   if (!name) throw Object.assign(new Error('Unknown method'), { status: 404 });
   const value = await handlers.get('token-tracker.' + name)(payload);
   if (method === 'snapshot') { value.revision = revision; if (value.realtime) delete value.realtime.sessionPath; }

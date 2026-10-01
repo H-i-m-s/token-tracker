@@ -177,8 +177,9 @@ export class NavigationApp {
 
   async onExport() {
     try {
-      const dashboard = decodeRows(await this.api.getDashboard(this.state.get(), { mock: this.mock }));
-      await saveDetailsCSV(this.hana, dashboard?.rows || [], this.state.get().range);
+      // 明细已服务端分页，这一页拿不到「全部行」：CSV 必须由引擎按当前筛选/排序拼好再保存。
+      const csv = await this.api.getDetailsCsv(this.state.get(), { mock: this.mock });
+      await saveDetailsCSV(this.hana, csv, this.state.get().range);
     } catch (err) {
       this.summarySection.appendChild(h("div", { className: "tt-error" }, `导出失败：${err.message}`));
     }

@@ -4,6 +4,8 @@ import path from "node:path";
 import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
+import { createSqliteTurnsStore } from "./services/turns-store.js";
+import { buildDetailsCSV } from "./services/details-csv.js";
 import { openDsUsageStore } from "./services/ds-usage-store.js";
 import { createDsUsageService } from "./services/ds-usage-service.js";
 import { diagnosePartitions } from "./services/ds-token-source.js";
@@ -15,7 +17,7 @@ import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
 const CACHE = "token-cache.json";
-const CACHE_VERSION = 24; // 24：轮次记录补缓存拆分（cacheRead/cacheWrite/reasoning）；23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
+const CACHE_VERSION = 25; // 25：轮次明细另立 turns 表（SQLite 行存储），本次全量重建正好把表填满；24：轮次记录补缓存拆分（cacheRead/cacheWrite/reasoning）；23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
 const ARCHIVE = "usage-archive.json";
 const ARCHIVE_VERSION = 1;
 
@@ -80,11 +82,13 @@ export default class TokenTrackerPlugin {
     // 介质优先按行存进 SQLite（一次只写变化的行）；拿不到驱动就用追加式 JSON 日志，
     // 主文件仍是 token-cache.json，同样只追加变化会话，不再每次整库重写。
     const DatabaseSync = loadSqliteDriver();
+    const sqliteFile = path.join(path.dirname(cachePath), "cache.sqlite");
     let store = null;
+    let turnsStore = null;
     let usingSqlite = false;
     if (DatabaseSync) {
       try {
-        store = createSqliteCacheStore({ DatabaseSync, file: path.join(path.dirname(cachePath), "cache.sqlite"), log });
+        store = createSqliteCacheStore({ DatabaseSync, file: sqliteFile, log });
         usingSqlite = true;
       } catch (e) {
         log.warn("[token-tracker] sqlite 缓存不可用，退回 JSON 追加日志：", e.message);
@@ -92,6 +96,17 @@ export default class TokenTrackerPlugin {
       }
     }
     if (!store) store = createJsonJournalStore({ file: cachePath, log });
+    // 轮次明细另立一张表（同一个库文件、独立连接），职责自成一个模块，不塞进 cache-store。
+    if (usingSqlite) {
+      try {
+        turnsStore = createSqliteTurnsStore({ DatabaseSync, file: sqliteFile, log });
+      } catch (e) {
+        log.warn("[token-tracker] turns 表不可用：", e.message);
+        turnsStore = null;
+      }
+    }
+    shared.turnsStore = turnsStore;
+    this.register(() => { try { turnsStore?.close?.(); } catch {} });
     let old = store.load();
     if (!old && usingSqlite) {
       old = loadCache(cachePath, log);
@@ -114,6 +129,20 @@ export default class TokenTrackerPlugin {
     // 把缓存放进 shared.data，作为下一轮扫描的增量基准。
     // 少了这一步，第一轮扫描又是从空白开始（文件全量重解析 + 账本重建 + 裁剪重跑）。
     if (old && old.sessions && Object.keys(old.sessions).length) shared.data = old;
+
+    // 迁移回填：turns 表还空着、而缓存里已经有 conversations，就一次性把历史铺进去。
+    // 版本从 24 提到 25 会触发全量重建直接把表填满；这里兜的是「表被删过 / 换过介质」那种情况。
+    // 分批提交 + 批间让出事件循环，别把启动按死。
+    if (turnsStore && old && old.sessions && Object.keys(old.sessions).length) {
+      try {
+        if (turnsStore.count() === 0) {
+          const filled = await turnsStore.backfill(old);
+          if (filled > 0) log.info("[token-tracker] turns 表回填 " + filled + " 行");
+        }
+      } catch (e) {
+        log.warn("[token-tracker] turns 表回填失败：", e.code || "", e.message);
+      }
+    }
 
     // 落盘调度：变化只标脏（见 createPersistScheduler），退出时再刷一次。
     // 计数从上一份缓存里续上，“今日累计”跟重启前的接得起。
@@ -359,12 +388,26 @@ export default class TokenTrackerPlugin {
       const fn = pluginCtx._buildDashboardData;
       if (typeof fn !== "function") return { error: "token-tracker 数据服务未就绪（等待路由注册）" };
       try {
-        const r = await fn({ range: p.range, from: p.from, to: p.to, agent: p.agent, model: p.model, provider: p.provider, type: p.type });
+        const r = await fn({ range: p.range, from: p.from, to: p.to, agent: p.agent, model: p.model, provider: p.provider, type: p.type, page: p.page, pageSize: p.pageSize, sortKey: p.sortKey, order: p.order, minTokens: p.minTokens });
         if (r && r.notReady) return { error: r.error };
         return r;
       } catch (e) {
         // 与旧 HTTP 路由同语义：错误不拖垮调用方，错误文案随响应返回
         return { error: e?.message || "构建失败" };
+      }
+    });
+
+    // 明细 CSV：当前筛选 + 当前排序下的「全部行」，由引擎拼好 CSV 文本（约 1.5 MB，仍在 4 MiB 上限内）。
+    // 前端拿不到整批行（明细已服务端分页），导出只能由引擎生成。参数同明细，但不分页。
+    regHandler("token-tracker.details.csv", async (payload) => {
+      const fn = pluginCtx._buildDetailsRows;
+      if (typeof fn !== "function") return { error: "token-tracker 数据服务未就绪（等待路由注册）" };
+      try {
+        const r = await fn(payload || {});
+        if (r && r.notReady) return { error: r.error };
+        return buildDetailsCSV(r?.rows || []);
+      } catch (e) {
+        return { error: e?.message || "导出失败" };
       }
     });
 
@@ -547,18 +590,20 @@ async function scanAll(shared, log, force) {
   }
   // 扫描是同步 IO 密集的（readdirSync/statSync/readTextFile）。整段跑下来会占住事件循环，
   // 界面打开时的第一批请求只能排队。每个 agent 之间让出一拍，请求就能插进来。
+  // 这次扫描真的重建过 / 移除掉的会话键（turns 表按它增量同步，与内存保持一致）。
+  const touched = new Set();
   const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
   for (const agent of dirs) {
     await yieldToLoop();
-    changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old) || changed;
+    changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old, touched) || changed;
     const arch = path.join(AGENTS, agent, "sessions", "archived");
-    if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old) || changed;
+    if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old, touched) || changed;
     const phone = path.join(AGENTS, agent, "phone", "sessions");
     if (fs.existsSync(phone)) {
       for (const sub of fs.readdirSync(phone)) {
         const sp = path.join(phone, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "channel", sub.replace(/-[^-]+$/, ""), cache, full ? null : old) || changed;
+        changed = scanDir(sp, agent, "channel", sub.replace(/-[^-]+$/, ""), cache, full ? null : old, touched) || changed;
       }
     }
     // bridge 私聊会话
@@ -568,33 +613,33 @@ async function scanAll(shared, log, force) {
         if (sub === "bridge-sessions.json") continue;
         const sp = path.join(bridge, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "bridge", sub, cache, full ? null : old) || changed;
+        changed = scanDir(sp, agent, "bridge", sub, cache, full ? null : old, touched) || changed;
       }
     }
     // 后台活动
     const activity = path.join(AGENTS, agent, "activity");
     if (fs.existsSync(activity)) {
-      changed = scanDir(activity, agent, "background", null, cache, full ? null : old) || changed;
+      changed = scanDir(activity, agent, "background", null, cache, full ? null : old, touched) || changed;
     }
     // 子代理会话
     const subagent = path.join(AGENTS, agent, "subagent-sessions");
     if (fs.existsSync(subagent)) {
-      changed = scanDir(subagent, agent, "sub", null, cache, full ? null : old) || changed;
+      changed = scanDir(subagent, agent, "sub", null, cache, full ? null : old, touched) || changed;
       for (const sub of fs.readdirSync(subagent)) {
         if (sub === "session-meta.json") continue;
         const sp = path.join(subagent, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "sub", sub, cache, full ? null : old) || changed;
+        changed = scanDir(sp, agent, "sub", sub, cache, full ? null : old, touched) || changed;
       }
     }
     // workflow 任务会话（此前漏扫，导致 workflow 调用不计入统计）
     const wf = path.join(AGENTS, agent, "workflow-sessions");
     if (fs.existsSync(wf)) {
-      changed = scanDir(wf, agent, "background", null, cache, full ? null : old) || changed;
+      changed = scanDir(wf, agent, "background", null, cache, full ? null : old, touched) || changed;
     }
   }
   // usage-ledger.json 中无 sessionPath 的条目（memory + utility 子系统）
-  const _ledgerChanged = scanLedger(cache, log, full, shared);
+  const _ledgerChanged = scanLedger(cache, log, full, shared, touched);
   changed = _ledgerChanged || changed;
   // 按行落盘时要显式补报“变了但 mtime/size 看不出来”的键。
   // 账本会话的 mtime/size 恒为 0，所以账本一重建就整批补报。
@@ -616,11 +661,29 @@ async function scanAll(shared, log, force) {
     // 全量重扫要整库重写：记录是重新解析出来的，但文件的 mtime/size 可能一个没变，
     // 按行比较会认为「这一行没变」而跳过，新格式就永远写不进旧行（历史上格式改了
     // 却滞留在旧行、以及刚去掉的 5 天裁剪，都是这么留下的）。markAllDirty 正是为这种场合备的。
-    if (shared.persist) { if (full) shared.persist.markAllDirty(); else shared.persist.markDirty(_forcedKeys); }
+    if (shared.persist) {
+      if (full) shared.persist.markAllDirty();
+      else shared.persist.markDirty(_forcedKeys);
+    }
     else saveCache(shared.cachePath, cache, log);
   }
   shared.data = cache;
   shared.ready = true;
+
+  // ── turns 表在扫描时同步，不等落盘攒批 ──
+  // turns 是明细的查询源，必须跟 shared.data 同一时刻。表如果只在落盘时写，就永远比内存旧一个
+  // 攒批窗口（5 分钟）——那段时间里「SQL 路 vs 回落路」会对不上（真数据上 sumTokens 差过 586 万）。
+  // full 整表重建，否则只动这次真的重建过 / 被移除的会话。失败只留痕，不能影响扫描结果。
+  if (shared.turnsStore) {
+    try {
+      shared.turnsStore.apply(cache, { all: full, keys: [...touched] });
+    } catch (e) {
+      log.warn("[token-tracker] turns 表同步失败：", e.code || "", e.message);
+    }
+  }
+  // 全量重扫之后立刻落一次盘：会话 blob 仍然攒批（5 分钟），但全量重建后这一份是全新的，
+  // 拖到下一次攒批窗口万一进程被硬杀就白扫了；成本仅一次。turns 表不靠它（见上）。
+  if (changed && full && shared.persist) shared.persist.flushNow("全量重建");
 
   // 汇总扫描期跳过的 JSONL 行，如果有污染的会话文件告警
   let _totalSkipped = 0;
@@ -632,7 +695,7 @@ async function scanAll(shared, log, force) {
   }
 }
 
-function scanDir(dir, agent, type, channel, cache, old) {
+function scanDir(dir, agent, type, channel, cache, old, touched = null) {
   let changed = false;
   let conv = null;
   let files = [];
@@ -878,6 +941,7 @@ function scanDir(dir, agent, type, channel, cache, old) {
     data.title = (fn.match(/^(\d{4}-\d{2}-\d{2})/)||[])[1] || "unknown";
     if (_skipped > 0) data.skippedLines = _skipped;
     cache.sessions[key] = data;
+    touched?.add(key);
     changed = true;
   }
   return changed;
@@ -885,7 +949,7 @@ function scanDir(dir, agent, type, channel, cache, old) {
 
 // ─── 宿主账本扫描（memory + utility 子系统没有 JSONL 的 LLM 调用）───
 // 来源以活账本 SQLite 为准，见 services/ledger-source.js：json 那份从 2026-09-09 起就冻结了。
-function scanLedger(cache, log, force, shared) {
+function scanLedger(cache, log, force, shared, touched = null) {
   const ledger = loadLedger(HOME, log);
   if (!ledger.entries.length) return false;
 
@@ -893,7 +957,7 @@ function scanLedger(cache, log, force, shared) {
   if (!force && cache._ledgerKey === ledger.key) return false;
 
   for (const k of Object.keys(cache.sessions)) {
-    if (k.startsWith("__ledger__")) delete cache.sessions[k];
+    if (k.startsWith("__ledger__")) { delete cache.sessions[k]; touched?.add(k); }
   }
 
   const data = { entries: ledger.entries };
@@ -967,6 +1031,7 @@ function scanLedger(cache, log, force, shared) {
         dailyBreakdown: {}, hourlyBreakdown: {},
         title: day,
       };
+      touched?.add(key);
       changed = true;
     }
     const s = cache.sessions[key];
@@ -1427,6 +1492,7 @@ export function createPersistScheduler({ cachePath, log, getData, store = null, 
       let saved;
       if (store) {
         // 按行存：只写这一轮真的变过的会话，外加调用方补报的键。
+        // （turns 表不在这里维护：它在扫描时同步，见 scanAll。“谁维护表”只有一个答案。）
         saved = store.save(data, [...forced], allDirty);
       } else {
         // JSON 退路：计数和正文在同一份文件里，只能先写后更新，计数会慢一拍
