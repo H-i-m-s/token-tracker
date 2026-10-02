@@ -1,0 +1,12 @@
+# Release artifacts
+dist/
+
+# Dependencies
+node_modules/
+
+# Temp / OS
+*.log
+*.tmp
+.DS_Store
+Thumbs.db
+desktop.ini
