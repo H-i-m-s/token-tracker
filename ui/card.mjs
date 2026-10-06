@@ -3,7 +3,7 @@ import { bootstrap } from './bootstrap.mjs';
 import { applyAppearance } from './appearance.mjs';
 import { renderAnalytics } from './analytics.mjs';
 import { h, RANGES, THEME_OPTIONS, selectOptions, installDetailsDismiss } from './components.mjs';
-import { asList } from './selection.mjs';
+import { asList, selectionKey } from './selection.mjs';
 import { enhanceSelects } from './custom-select.mjs';
 import { closeAllPickers } from './custom-pickers.mjs';
 import { cardIcon } from './card-icons.mjs';
@@ -60,12 +60,17 @@ export class CardApp extends WorkspaceApp {
     }, { passive: false });
   }
 
-  // 基类只在 chromeSignature 变化时才重画顶部控件。卡片自己的功能页签和菜单勾选项也属于
-  // 「画成什么样」的输入：不把它们算进签名，点页签就只改状态、不重画（高亮不动、
-  // 菜单里新开的开关也不会变成页签）。看板那边不受影响，它不继承这份签名。
+  // 基类只在 chromeSignature 变化时才重画顶部控件。卡片顶部那排「画成什么样」的输入有：时间窗、
+  // 四个筛选（「已筛选」与「清除」的显隐靠它们）、配色、菜单勾选项、当前页签。少算一个，
+  // 改它就只动状态不重画 —— 点了「清除」界面还写着「已筛选」，人就会觉得清不掉。
+  // 看板那边不受影响，它不继承这份签名（它的筛选胶囊是原地更新的）。
   chromeSignature(state) {
     const { tabs, active } = cardSelection(state);
-    return JSON.stringify([state.from, state.to, state.appearance, this.inputStatusPrefs, tabs, active]);
+    return JSON.stringify([
+      state.range, state.from, state.to,
+      selectionKey(state.agent), selectionKey(state.model), selectionKey(state.provider), selectionKey(state.type),
+      state.appearance, this.inputStatusPrefs, tabs, active,
+    ]);
   }
 
   renderBoardControls() {
@@ -116,13 +121,22 @@ export class CardApp extends WorkspaceApp {
       const option = this.menu.querySelector(`[data-option="${focusedOption}"]`);
       if (option && !option.disabled) option.focus(); else this.settings.querySelector('summary')?.focus();
     }
-    // 多选之后这几个字段是数组；筛选标示按选中的值把名字列出来，别只显示「已筛选」。
-    const activeLabels = [...asList(state.agent), ...asList(state.model), ...asList(state.provider)];
+    // 筛选标示把筛的东西名字列出来，不只写「已筛选」：卡片里没有看板那排筛选胶囊，
+    // 只写三个字等于告诉他「有筛选」，却不说是哪一项、去哪儿清。完整清单挂在 title 上。
+    const filterNames = [
+      ...asList(state.agent).map(v => `Agent：${v}`),
+      ...asList(state.model).map(v => `模型：${v}`),
+      ...asList(state.provider).map(v => `供应商：${v}`),
+      ...asList(state.type).map(v => `类型：${v}`),
+    ];
+    const filterText = !filterNames.length
+      ? '全部用量'
+      : (filterNames.length <= 2 ? filterNames.join('、') : `${filterNames.slice(0, 2).join('、')} 等 ${filterNames.length} 项`);
     this.filterBar.replaceChildren(...[
       h('select', { 'aria-label': '卡片时间范围', onChange: e => this.state.patch({ range: e.target.value, from: '', to: '' }) },
         ...selectOptions([...(state.from ? [{ value: 'all', label: `${state.from} — ${state.to}` }] : []), ...RANGES.map(v => ({ value: v.key, label: v.label }))], state.range)),
-      h('span', { className: 'tt-card-filter-label', title: activeLabels.join(' · ') }, activeLabels.length ? '已筛选' : '全部用量'),
-      activeLabels.length || state.from ? h('button', { type: 'button', className: 'tt-btn ghost', onClick: () => this.state.patch({ agent: [], model: [], provider: [], type: [], from: '', to: '', ...(state.from ? { range: 'today' } : {}) }) }, '清除') : null,
+      h('span', { className: 'tt-card-filter-label', title: filterNames.length ? filterNames.join(' · ') : '当前没有筛选' }, filterText),
+      filterNames.length || state.from ? h('button', { type: 'button', className: 'tt-btn ghost', onClick: () => this.state.patch({ agent: [], model: [], provider: [], type: [], from: '', to: '', ...(state.from ? { range: 'today' } : {}) }) }, '清除') : null,
       h('button', { type: 'button', className: 'tt-card-more', title: '刷新', 'aria-label': '刷新', onClick: () => this.onRefresh() }, cardIcon('refresh')),
       h('button', { type: 'button', className: 'tt-card-more', title: '打开完整看板', 'aria-label': '打开完整看板', onClick: async () => { try { await this.hana.cards.open('workspace'); } catch (e) { this.setError(`打开看板失败：${e.message}`); } } }, cardIcon('expand')),
     ].filter(Boolean));

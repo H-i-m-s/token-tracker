@@ -592,9 +592,14 @@ export function renderAnalytics(container, dashboard, state, patch) {
   flowPanel.update(a, days, dashboard.agentNames || {});
   const totals = new Map();
   for (const day of a.daily) for (const [id, n] of Object.entries(day.models)) totals.set(id, (totals.get(id) || 0) + n);
-  const allModels = [...totals].sort((x,y) => y[1]-x[1]).map(([id]) => id);
+  // 空 id = 会话里没记 model 的那批（引擎归到 ''）。它不能当筛选值：点了既筛不出东西，
+  // 界面上又看不出选了什么（asList 会把空串丢掉），人就卡在「已筛选」里出不来。
+  // 图里照旧显示这一层，只是不给它点选。
+  const named = (id) => (String(id ?? '').trim() ? id : '未记录模型');
+  const allModels = [...totals].filter(([id]) => String(id ?? '').trim()).sort((x,y) => y[1]-x[1]).map(([id]) => id);
   const color = id => COLORS[Math.max(0, allModels.indexOf(id)) % COLORS.length];
   const selectModel = (id, event, ordered = allModels) => {
+    if (!String(id ?? '').trim()) return;
     const picked = pickValues(state.model, id, ordered, modsOf(event), anchors.model);
     anchors.model = id;
     patch({ model: picked });
@@ -688,19 +693,20 @@ export function renderAnalytics(container, dashboard, state, patch) {
     const shownSamples = samples.slice(0, 8);
     const shownIds = shownSamples.map((s) => s.id);   // Shift 整段加选的顺序：按这张表里从上到下的排列
     for (const sample of shownSamples) {
-      const chart=svg(240,38,`${sample.id} 会话轮次分布`), d=pathFor(sample.bins,240,34,false,true);
+      const shown = named(sample.id);
+      const chart=svg(240,38,`${shown} 会话轮次分布`), d=pathFor(sample.bins,240,34,false,true);
       chart.append(node('path',{d:`${d} L240,38 L0,38 Z`,fill:color(sample.id),'fill-opacity':.23,stroke:color(sample.id),'stroke-width':1},[title(`${sample.count} 轮 · P50 ${compact(sample.p50)} · P90 ${compact(sample.p90)}`)]));
-      list.append(h('button',{type:'button',className:'tt-dist-row',title:sample.id,
+      list.append(h('button',{type:'button',className:'tt-dist-row',title:shown,
         'aria-pressed': String(asList(state.model).includes(sample.id)),
         onClick:(event)=>selectModel(sample.id,event,shownIds)},
-        h('span',{},h('b',{},sample.id),h('small',{},`${sample.count.toLocaleString()} 轮`)),h('b',{},compact(sample.p50)),h('b',{},compact(sample.p90)),chart));
+        h('span',{},h('b',{},shown),h('small',{},`${sample.count.toLocaleString()} 轮`)),h('b',{},compact(sample.p50)),h('b',{},compact(sample.p90)),chart));
     }
   }
   dist.body.append(h('footer',{},'按一轮对话累计用量统计（含该轮的全部工具调用），不是单次 API 请求。'));
 
   const right=h('div',{className:'tt-board-right'});bottomRow.append(dist.el, right);
   const ridge=panel('0–24 时分布 · 按模型','每条曲线独立缩放 · 平滑显示');right.append(ridge.el);
-  const hourModels=a.modelHours.slice(0,7);
+  const hourModels=a.modelHours.filter(m => String(m?.id ?? '').trim()).slice(0,7);
   if (!hourModels.length) empty(ridge.body,'该范围暂无小时模型数据');
   else {
     const chart=svg(500,114,'各模型小时用量曲线');

@@ -39,8 +39,10 @@ export function normalizeFilterLists(src) {
   const out = { ...(src || {}) };
   for (const key of FILTER_LIST_KEYS) {
     const v = out[key];
-    if (Array.isArray(v)) out[key] = v.filter((x) => x !== null && x !== undefined && String(x) !== "").map(String);
-    else if (typeof v === "string" && v !== "") out[key] = [v];
+    // 空白不算一项：图表里「没记 model」的那批被引擎归成 ''，要是让它进了筛选，
+    // 界面会显示「已筛选」而请求里什么都没筛（asList 会把空串丢掉），点完看不出发生了什么。
+    if (Array.isArray(v)) out[key] = v.filter((x) => x !== null && x !== undefined && String(x).trim() !== "").map(String);
+    else if (typeof v === "string" && v.trim() !== "") out[key] = [v];
     else out[key] = [];
   }
   return out;
@@ -117,7 +119,9 @@ export class AppState {
 
   async patch(patch) {
     if (this.disposed) return this.get();
-    const next = { ...this.cache, ...patch };
+    // 每次写都归一一道四个筛选：空串不算一项（"[]" 与 "['']" 在界面上看着一样「没筛」
+    // 但在请求里就不是一回事了），谁也不该把一个空值留在里面。
+    const next = normalizeFilterLists({ ...this.cache, ...patch });
     if (JSON.stringify(next) === JSON.stringify(this.cache)) return next;
     ++this.readGeneration;
     ++this.pendingWrites;

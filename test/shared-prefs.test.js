@@ -93,3 +93,23 @@ test("两个实例同时对同一份共享记录：后写的那个说了算，�
   const again = await open(entries, "card-aaa-1");
   assert.equal(again.get().range, "all");
 });
+
+// 空串不是一项。图表里「没记 model」的那批被引擎归成 ''，点它就会把 '' 写进筛选：
+// 界面说「已筛选」，请求里却什么都没筛（asList 会把空串丢掉），点完看不出发生了什么。
+test('空值进不了筛选：空串/纯空白一律当没筛，旧版的单值字符串仍然收', async () => {
+  const entries = new Map();
+  const state = await open(entries, "card-aaa-1");
+
+  await state.patch({ model: [""] });
+  assert.deepEqual(state.get().model, [], "空串不算一项");
+  assert.equal(entries.get(SHARED_PREFS_KEY), undefined, "归一后跟原来一样，就不写盘（更不该把空项写进去）");
+
+  await state.patch({ model: ["  "] });
+  assert.deepEqual(state.get().model, [], "纯空白同样不算");
+
+  await state.patch({ model: "A" });
+  assert.deepEqual(state.get().model, ["A"], "旧版存的单值字符串仍然当一项收");
+
+  await state.patch({ model: ["A", "", "B"] });
+  assert.deepEqual(state.get().model, ["A", "B"], "混在里面的空项被摸掉，其余保留");
+});
