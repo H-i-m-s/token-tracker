@@ -1,4 +1,5 @@
-export const MAX_CARD_TABS = 4;
+// 卡片能显示的页签数不设上限：页签多到装不下时，那条带子自己横向滚（见 card.css 的 .tt-card-tabs）。
+// 之前卡在 4 项，是为了不让页签被挤成一条省略号；现在换成滚动，这个限制就不必留了。
 export const CARD_VIEWS = [
   { id: 'overview', label: '用量', title: '用量总览', icon: 'overview' },
   { id: 'balance', label: '余额', title: '账户余额', icon: 'balance' },
@@ -13,13 +14,14 @@ export const CARD_VIEWS = [
 export const DEFAULT_CARD_TABS = ['overview', 'balance', 'realtime'];
 const known = new Set(CARD_VIEWS.map(v => v.id));
 export function cardSelection(state = {}) {
-  const ids = Array.isArray(state.cardTabs) ? [...new Set(state.cardTabs)].filter(id => known.has(id)).slice(0, MAX_CARD_TABS) : [];
+  const ids = Array.isArray(state.cardTabs) ? [...new Set(state.cardTabs)].filter(id => known.has(id)) : [];
   const tabs = ids.length ? ids : [...DEFAULT_CARD_TABS];
   return { tabs, active: tabs.includes(state.cardActive) ? state.cardActive : tabs[0] };
 }
 export function toggleCardTab(state, id) {
   const { tabs, active } = cardSelection(state);
-  if (!known.has(id) || (tabs.includes(id) ? tabs.length === 1 : tabs.length >= MAX_CARD_TABS)) return null;
+  // 只挡两件事：不认识的功能项，和“把最后一个也关掉”（卡片总得显示点什么）。
+  if (!known.has(id) || (tabs.includes(id) && tabs.length === 1)) return null;
   const next = tabs.includes(id) ? tabs.filter(value => value !== id) : [...tabs, id];
   const fallback = next[Math.min(tabs.indexOf(active), next.length - 1)] || next[0];
   return { cardTabs: next, cardActive: next.includes(active) ? active : fallback };

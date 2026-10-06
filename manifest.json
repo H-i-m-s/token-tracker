@@ -59,7 +59,7 @@
       {
         "id": "multi",
         "title": "Token 多功能卡",
-        "description": "一张卡切换用量、余额、明细、实时监控与五种分析图表；三点菜单选择最多四个选项卡。",
+        "description": "一张卡切换用量、余额、明细、实时监控与五种分析图表；三点菜单勾选要显示哪些选项卡，页签多了可横向滚动。",
         "route": "/card.html",
         "realization": "card",
         "cardForm": "flush",

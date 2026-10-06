@@ -7,7 +7,7 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, fmt, formatDateTime, createPills, selectOptions, timeAgo } from "./components.mjs";
+import { h, RANGES, THEME_OPTIONS, fmt, formatDateTime, createPills, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
 import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRate, decodeRows } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
@@ -128,6 +128,8 @@ export class WorkspaceApp {
 
   async init() {
     this.renderShell();
+    // 显示设置那类 <details> 浮层：点外面 / Esc 收起（看板与卡片共用一份行为）。
+    installDetailsDismiss();
     const initial = this.state.get();
     this.filterKey = JSON.stringify([initial.range, initial.from, initial.to, selectionKey(initial.agent), selectionKey(initial.model), selectionKey(initial.provider), selectionKey(initial.type)]);
     this.disposers.push(
@@ -610,7 +612,9 @@ export class WorkspaceApp {
     this.startPolling();
     applyBoardLayout(this.container, state);
     // 界面选择可能来自别处（比如另一张卡改了共享偏好）：跟着切，但不再回写。
-    if (state.view && state.view !== this.view) this.selectView(state.view, { persist: false });
+    // 只对有视图页签的外壳生效：卡片那种没有 viewTabs 的壳，selectView 会遍历 this.viewTabs.children
+    // 直接抛错（被 _notify 静默吞掉），后面这段取数逻辑就整块不执行了。
+    if (state.view && this.viewTabs && state.view !== this.view) this.selectView(state.view, { persist: false });
     // 顶部范围变了，账单图也跟着换时间窗
     const w = this.dsWindowFromState(state);
     if (`${w.from}:${w.to}` !== this.dsKey) this.loadDsUsage(false, { silent: true, window: w });
@@ -714,7 +718,7 @@ export class WorkspaceApp {
     };
     const settings = h("details", { className: "tt-display-settings" }, h("summary", { title: "显示设置" }, "显示设置"),
       h("div", { className: "tt-display-menu", role: "group", "aria-label": "看板显示设置" },
-        ...[["dark", "深黑"], ["light", "浅色"], ["system", "Hana 原生"]].map(([key,label]) =>
+        ...THEME_OPTIONS.map(({ key, label }) =>
           h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label)),
         h("div", { className: "tt-display-sep" }),
         prefRow("card", "对话框卡片"),

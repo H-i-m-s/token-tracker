@@ -1,24 +1,25 @@
 .tt-switch-card { padding: 0; min-width: 0; background: var(--tt-card); font-variant-numeric: tabular-nums; }
 .tt-switch-card [hidden] { display: none !important; }
 .tt-card-header { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; padding: 6px 8px; border-bottom: 1px solid var(--tt-b1); flex: 0 0 auto; z-index: 3; }
-.tt-card-tabs { display: flex; flex: 1; min-width: 0; gap: 3px; }
-.tt-card-tabs button { flex: 1 1 0; min-width: 0; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 5px; color: var(--tt-t2); border: 1px solid transparent; background: transparent; border-radius: 7px; font: 500 11px var(--font-sans); cursor: pointer; white-space: nowrap; }
+/* 页签数量不设上限：装不下就横向滚（滚轮 / 触控板横滑 / 方向键都行，滚动条藏起来不占地方）；
+   能装下时仍旧平分整条，跟以前一样。 */
+.tt-card-tabs { display: flex; flex: 1; min-width: 0; gap: 3px; overflow-x: auto; overscroll-behavior-x: contain; scrollbar-width: none; }
+.tt-card-tabs::-webkit-scrollbar { display: none; }
+.tt-card-tabs button { flex: 1 1 auto; min-width: max-content; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 7px 8px; color: var(--tt-t2); border: 1px solid transparent; background: transparent; border-radius: 7px; font: 500 11px var(--font-sans); cursor: pointer; white-space: nowrap; }
 .tt-card-tabs button span { overflow: hidden; text-overflow: ellipsis; }
 .tt-card-tabs svg { flex: 0 0 15px; width: 15px; height: 15px; }
 .tt-card-tabs button[aria-selected="true"] { color: var(--tt-select-fg); background: var(--tt-select-bg); border-color: var(--tt-select-b); }
-.tt-card-more { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--tt-t2); cursor: pointer; }
+.tt-card-more { display: inline-grid; place-items: center; flex: 0 0 28px; width: 28px; height: 28px; padding: 0; border: 1px solid var(--tt-b1); border-radius: 6px; background: var(--tt-card); color: var(--tt-t2); cursor: pointer; }
 .tt-card-more:hover, .tt-card-tabs button:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
-.tt-card-more[aria-expanded="true"] { background: var(--tt-select-bg); color: var(--tt-select-fg); }
-.tt-card-options { position: absolute; right: 8px; top: calc(100% + 4px); width: min(280px, calc(100vw - 16px)); max-height: calc(100dvh - 68px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; background: var(--tt-card); border: 1px solid var(--tt-b2); border-radius: 10px; padding: 10px; }
-.tt-card-menu-title { display: flex; justify-content: space-between; font-weight: 600; padding: 2px 3px 3px; }
-.tt-card-menu-title span, .tt-card-options p { color: var(--tt-t3); font-size: 10px; }
-.tt-card-options p { padding: 0 3px 8px; }
-.tt-card-options label { display: flex; align-items: center; gap: 8px; padding: 7px 4px; border-radius: 5px; cursor: pointer; font-size: 11px; }
-.tt-card-options label:hover { background: var(--tt-row-hover); }
-.tt-card-options input { accent-color: var(--tt-blue); width: 14px; height: 14px; flex-shrink: 0; }
-.tt-card-options svg { color: var(--tt-t2); flex-shrink: 0; }
-.tt-card-options label.disabled { color: var(--tt-t3); cursor: default; }
-.tt-card-options .tt-card-theme-label { border-top: 1px solid var(--tt-b1); border-radius: 0; margin-top: 5px; justify-content: space-between; }
+/* 显示设置：外壳与看板同一套（token-tracker.css 里的 .tt-display-settings / .tt-display-menu /
+   .tt-display-sep / .tt-inputstatus-row / .tt-switch），这里只按卡片宽度补尺寸。
+   ⋯ 是个图标按钮：尺寸与边框沿用上面那条（.tt-display-settings > summary 只会给它 padding，要压掉）。 */
+.tt-card-settings > summary { display: inline-grid; place-items: center; padding: 0; }
+.tt-card-settings > .tt-display-menu { min-width: 216px; max-width: calc(100vw - 24px); max-height: calc(100dvh - 64px); overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
+.tt-card-settings .tt-inputstatus-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 只剩最后一项时它关不掉：整行压暗，不只压开关（只压开关的话标签还亮着，看着就像能点）。 */
+.tt-card-settings .tt-inputstatus-row[data-blocked] { color: var(--tt-t3); }
+.tt-card-menu-hint { color: var(--tt-t3); font-size: 10px; }
 .tt-switch-card .tt-select { font: 11px var(--font-sans); background: var(--tt-card); color: var(--tt-t1); border: 1px solid var(--tt-b1); border-radius: 5px; padding: 4px 6px; min-width: 0; max-width: 180px; }
 .tt-card-filters { display: flex; align-items: center; gap: 5px; padding: 5px 10px; flex: 0 0 auto; }
 .tt-card-filter-label { flex: 1; color: var(--tt-t3); font-size: 10px; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

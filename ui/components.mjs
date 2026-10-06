@@ -13,6 +13,13 @@ export const RANGES = [
 
 export const PROVIDERS = ["DeepSeek", "GLM", "MiniMax", "商汤", "火山方舟", "OpenCode Go"];
 
+// 主题三档。看板的显示设置与卡片的显示设置都读这一份，同一件事不再各自写一张词表（同 RANGES）。
+export const THEME_OPTIONS = [
+  { key: "dark", label: "深黑" },
+  { key: "light", label: "浅色" },
+  { key: "system", label: "Hana 原生" },
+];
+
 export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
@@ -177,6 +184,28 @@ export function createPills(items, activeKey, onChange, extraClass = "") {
 
 export function renderPills(items, activeKey, onChange, extraClass = "") {
   return createPills(items, activeKey, onChange, extraClass).root;
+}
+
+// <details> 浮层（看板与卡片的显示设置）统一的收起手势：点外面、按 Esc 就收。
+// 原生 details 两种都不认，而两处菜单要长得一样、行为也得一样，所以在这儿装一次、用 document 委托，
+// 与具体是哪张卡无关。重复调用无害（模块级只装一次）。
+let detailsDismissInstalled = false;
+export function installDetailsDismiss(doc = document) {
+  if (detailsDismissInstalled) return;
+  detailsDismissInstalled = true;
+  doc.addEventListener("pointerdown", (event) => {
+    for (const el of doc.querySelectorAll("details.tt-display-settings[open]")) {
+      if (!el.contains(event.target)) el.open = false;
+    }
+  });
+  doc.addEventListener("keydown", (event) => {
+    if (event.key !== "Escape") return;
+    const open = [...doc.querySelectorAll("details.tt-display-settings[open]")];
+    if (!open.length) return;
+    event.preventDefault();
+    for (const el of open) el.open = false;
+    open[0].querySelector("summary")?.focus();
+  });
 }
 
 export function rankAgents(rows, agentNames = {}) {

@@ -1,3 +1,5 @@
+import { RANGES } from "./components.mjs";
+
 export const DEFAULT_APP_STATE = {
   range: "today",
   from: "",
@@ -15,12 +17,19 @@ export const DEFAULT_APP_STATE = {
   cardTabs: null,
 };
 
-// 需要跨卡片实例记住的项：停留在哪个界面、主题选了什么、多功能卡显示哪些页。
-// 这些不跟 cardInstanceId 走——那个 id 每次打开卡片都可能变，跟着它存下次就找不回来了。
+// 需要跨卡片实例记住的项：时间窗、四个筛选、停留在哪个界面、主题、多功能卡显示哪些页。
+// 这些不跟 cardInstanceId 走——那个 id 每次打开卡片都会变（形如 wb-card-...-muwv71pb-9），
+// 只存实例键里，关掉卡片再打开就找不回来了（「选了全部历史，重开还是今日」就是这么来的）。
+// 不记的只有 lastError：那是「这一次」的瞬时状态。
 export const SHARED_PREFS_KEY = "token-tracker-app:prefs";
-export const SHARED_KEYS = ["view", "appearance", "cardActive", "cardTabs"];
+export const SHARED_KEYS = [
+  "range", "from", "to", "agent", "model", "provider", "type", "autoRefresh",
+  "view", "appearance", "cardActive", "cardTabs",
+];
 export const VALID_VIEWS = ["overview", "balance", "details", "realtime"];
 export const VALID_APPEARANCES = ["dark", "light", "system", ""];
+// 时间窗的合法值就取 RANGES（时间范围只此一份口径，不另抄一张表）。
+export const VALID_RANGES = RANGES.map((r) => r.key);
 
 // 多选筛选的四个字段。旧版本把它们存成字符串，升级后一律是数组；
 // 字符串哪怕是逗号分隔的也只当一项——一个 id 里本来就可能带逗号，拆开反而会筛错。
@@ -52,6 +61,15 @@ function sanitizeShared(src) {
   if (out.appearance !== undefined && !VALID_APPEARANCES.includes(out.appearance)) delete out.appearance;
   if (out.cardActive !== undefined && typeof out.cardActive !== "string") delete out.cardActive;
   if (out.cardTabs !== undefined && !Array.isArray(out.cardTabs)) delete out.cardTabs;
+  if (out.range !== undefined && !VALID_RANGES.includes(out.range)) delete out.range;
+  if (out.autoRefresh !== undefined && typeof out.autoRefresh !== "boolean") delete out.autoRefresh;
+  for (const key of ["from", "to"]) {
+    if (out[key] !== undefined && typeof out[key] !== "string") delete out[key];
+  }
+  // 四个筛选：旧版本存的是字符串，所以两种都收，形状不对的丢掉（normalizeFilterLists 会归一成数组）。
+  for (const key of FILTER_LIST_KEYS) {
+    if (out[key] !== undefined && !Array.isArray(out[key]) && typeof out[key] !== "string") delete out[key];
+  }
   return out;
 }
 
@@ -79,7 +97,8 @@ export class AppState {
   async init() {
     const stored = await this._storageGet(this.storageKey, null);
     const shared = sanitizeShared(await this._storageGet(this.prefsKey, null));
-    // 先实例状态，后共享偏好：共享的 view / appearance 盖在上面
+    // 先实例状态，后共享偏好：共享的那几项（时间窗、筛选、界面、主题、卡片页签）盖在上面，
+    // 所以换一个实例打开时，读到的是上一次留下的选择，而不是默认值。
     this.cache = normalizeFilterLists({ ...DEFAULT_APP_STATE, ...(stored || {}), ...shared });
 
     if (this.hana?.storage?.global?.onChanged) {
@@ -106,7 +125,8 @@ export class AppState {
     this._notify(next);
     const write = this.writeQueue.catch(() => {}).then(async () => {
       await this._persist(next);
-      // 改到的是共享项（界面 / 主题）就额外写一份固定 key，下次不管拿到的实例 id 是什么都能读回
+      // 改到的若是共享项（时间窗 / 筛选 / 界面 / 主题 / 卡片页签）就额外写一份固定 key，
+      // 下次不管拿到的实例 id 是什么都能读回
       const shared = sanitizeShared(pickShared(next));
       if (Object.keys(shared).length) await this._persistShared(shared);
     });
@@ -165,7 +185,10 @@ export class AppState {
 
   async _persistShared(shared) {
     if (!this.hana?.storage?.global?.set) return;
-    await this.hana.storage.global.set(this.prefsKey, shared);
+    // 合并写。这份记录是全应用共用的：手上这个实例可能是「还没读到别人刚写的那项」的，
+    // 整份盖下去会把别人的选择抹掉（两张卡片同时开着就会踩到）。读一次、并一次、再写。
+    const current = sanitizeShared(await this._storageGet(this.prefsKey, null));
+    await this.hana.storage.global.set(this.prefsKey, { ...current, ...shared });
   }
 
   async _storageGet(key, fallback) {
