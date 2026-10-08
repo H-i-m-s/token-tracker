@@ -1,5 +1,6 @@
 import { splitRow } from './board-layout.mjs';
 import { h, fmtCost, fmtPct } from './components.mjs';
+import { scaleText } from './units.mjs';
 import { asList, pickValues, modsOf } from './selection.mjs';
 import { splineCurve, splineValueAt } from './curve.mjs';
 
@@ -12,11 +13,11 @@ export function activityLevel(value, peak) {
   return ratio < .01 ? 1 : ratio < .05 ? 2 : ratio < .2 ? 3 : ratio < .5 ? 4 : 5;
 }
 
+// 这一页的版面：数字与单位之间留一个空格（两套单位制都留）；不够最小档就写原数。
+// 单位制见 ui/units.mjs：中文「260.92 亿」，英文「26.09 B」。
 export function compact(n) {
   if (n == null || !Number.isFinite(Number(n))) return '—';
-  if (n >= 1e8) return (n / 1e8).toFixed(2) + ' 亿';
-  if (n >= 1e4) return (n / 1e4).toFixed(1) + ' 万';
-  return Math.round(n).toLocaleString('zh-CN');
+  return scaleText(n, { space: ' ', plain: (v) => Math.round(v).toLocaleString('zh-CN') });
 }
 function node(tag, attrs = {}, children = []) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);

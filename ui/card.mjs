@@ -2,7 +2,7 @@ import { WorkspaceApp } from './workspace.mjs';
 import { bootstrap } from './bootstrap.mjs';
 import { applyAppearance } from './appearance.mjs';
 import { renderAnalytics } from './analytics.mjs';
-import { h, RANGES, THEME_OPTIONS, selectOptions, installDetailsDismiss } from './components.mjs';
+import { h, RANGES, THEME_OPTIONS, createUnitRow, selectOptions, installDetailsDismiss } from './components.mjs';
 import { asList, selectionKey } from './selection.mjs';
 import { enhanceSelects } from './custom-select.mjs';
 import { closeAllPickers } from './custom-pickers.mjs';
@@ -101,6 +101,9 @@ export class CardApp extends WorkspaceApp {
     this.menu.replaceChildren(
       ...THEME_OPTIONS.map(({ key, label }) =>
         h('button', { type: 'button', 'aria-pressed': String(appearance === key), title: `卡片配色：${label}`, onClick: () => this.state.patch({ appearance: key }) }, label)),
+      h('div', { className: 'tt-display-sep' }),
+      // 与看板同一行同一个口子（写法、落盘、重画都在基类的 applyUnits 里）。
+      createUnitRow(key => this.applyUnits(key)),
       h('div', { className: 'tt-display-sep' }),
       ...CARD_VIEWS.map(view => {
         const checked = tabs.includes(view.id), blocked = checked && tabs.length === 1;

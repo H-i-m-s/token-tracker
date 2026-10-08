@@ -3,6 +3,8 @@
 // 这张表的定位是考古（翻到第 900 页找某一天没有意义），所以给的是
 //「按用量倒序 + 设门槛」——把最大的几笔捞到眼前，而不是更多页码。
 
+import { scaleText } from "./units.mjs";
+
 export const DETAIL_SORTS = [
   { key: "time", label: "时间 ↓" },
   { key: "tokens", label: "用量 ↓" },
@@ -14,13 +16,16 @@ export const DETAIL_SORTS = [
 // P50 47万 / P90 362万 / P99 1570万 / 最大 7709万。各档剩多少条也是实测：
 // ≥300万 ≈ 2,000 条（40 页）、≥500万 ≈ 1,050 条（21 页）、≥1000万 ≈ 350 条（8 页）、
 // ≥3000万 = 32 条（1 页）—— 最后一档就是“把最猛的几笔直接摊在一屏里”。
-export const DETAIL_THRESHOLDS = [
-  { key: 0, label: "不限" },
-  { key: 3000000, label: "≥300万" },
-  { key: 5000000, label: "≥500万" },
-  { key: 10000000, label: "≥1000万" },
-  { key: 30000000, label: "≥3000万" },
-];
+// 门槛标签跟着设置里的数字单位走：中文「≥300万」，英文「≥3M」。
+function thresholdLabel(key) {
+  return key === 0 ? "不限" : "≥" + scaleText(key, { trim: true, plain: (v) => String(Math.round(v)) });
+}
+// label 写成 getter：单位制要到 bootstrap 读完设置才定下来，模块加载时就把字符串定死会让切换失效。
+// key 仍然是数字（引擎侧按 minTokens 收数），一个都不变。
+export const DETAIL_THRESHOLDS = [0, 3000000, 5000000, 10000000, 30000000].map((key) => ({
+  key,
+  get label() { return thresholdLabel(key); },
+}));
 
 // 与引擎的 ROW_COLS 同序（引擎那边是唯一出处，这里只是“引擎没给列名”时的兜底；
 // 两边是否还对齐由 test/rows-wire.test.js 对拍）。

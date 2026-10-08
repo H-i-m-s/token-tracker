@@ -12,6 +12,17 @@ const PROVIDERS = {
 };
 const SECRETS = new Set(['token', 'password', 'ak', 'sk', 'cookie']);
 const invalid = (message) => Object.assign(new Error(message), { code: 'INVALID_SETTINGS' });
+
+// display 读出来给前端的形状：表格密度 + 数字单位（中文万/亿 ↔ 英文 K/M/B）。
+// colorScheme 一直是 auto 占位。坏值一律回到默认：设置文件里一个手改的字符串不该把整页数字搞变形。
+function normalizeDisplay(value) {
+  const d = value && typeof value === 'object' ? value : {};
+  return {
+    density: d.density === 'comfortable' ? 'comfortable' : 'compact',
+    units: d.units === 'en' ? 'en' : 'zh',
+    colorScheme: 'auto',
+  };
+}
 function atomicWrite(file, data) {
   const tmp = file + '.tmp';
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
@@ -36,7 +47,7 @@ export function createSettingsService({ dataDir, config }) {
     }
     return { scanInterval: saved.scanInterval ?? config?.get('scanInterval') ?? 60,
       highUsageThreshold: saved.highUsageThreshold ?? config?.get('highUsageThreshold') ?? 30000,
-      display: saved.display || { density: 'compact', colorScheme: 'auto' }, balanceApis };
+      display: normalizeDisplay(saved.display), balanceApis };
   }
   function write(patch) {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw invalid('设置必须是对象');
@@ -48,8 +59,15 @@ export function createSettingsService({ dataDir, config }) {
       }
     }
     if (patch.display !== undefined) {
-      if (!['compact', 'comfortable'].includes(patch.display?.density)) throw invalid('无效的显示密度');
-      next.display = { density: patch.display.density, colorScheme: 'auto' };
+      // 两项都可以单独发（显示设置菜单只换数字单位，设置页两项一起发）：没发的沿用盘上那份。
+      // 盘上那份要先按 read() 的规矩规范化再用：从没存过 display、或文件被手改坏了，
+      // 这里就该拿到默认值，而不是 undefined —— 拿到 undefined 会直接判成「无效的显示密度」。
+      const stored = normalizeDisplay(next.display);
+      const density = patch.display?.density ?? stored.density;
+      if (!['compact', 'comfortable'].includes(density)) throw invalid('无效的显示密度');
+      const units = patch.display?.units ?? stored.units;
+      if (!['zh', 'en'].includes(units)) throw invalid('无效的数字单位');
+      next.display = normalizeDisplay({ density, units });
     }
     const apis = fs.existsSync(apiFile) ? JSON.parse(readTextFile(apiFile)) : {};
     if (patch.balanceApis !== undefined) {

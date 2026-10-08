@@ -2,6 +2,8 @@
 // 之前这里是 7 项（今日/本周/本月/全年/近3天/近7天/近30天），analytics.mjs 里另有一份 4 项，
 // card.mjs 还内联了一份 —— 同一个「近7天」在界面上有三个入口、两套词表。
 // 收敛成：四个滚动窗口 + 本月 + 全部历史；自定义日期由看板的日期选择负责。
+import { scaleText, UNIT_SYSTEMS, setUnitSystem, getUnitSystem } from "./units.mjs";
+
 export const RANGES = [
   { key: "today", label: "今日" },
   { key: "last3", label: "近3天" },
@@ -37,14 +39,12 @@ export function h(tag, attrs = {}, ...children) {
   return el;
 }
 
+// 量级单位走 ui/units.mjs（设置里切中英文）。trim 掉多余的小数尾零：2850.0万 → 2850万。
 export function fmt(n) {
   if (n == null || n === 0) return "0";
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
-  if (v >= 1e8) return (v / 1e8).toFixed(1) + "亿";
-  if (v >= 1e6) return (v / 1e6).toFixed(1) + "M";
-  if (v >= 1e3) return (v / 1e3).toFixed(1) + "k";
-  return v.toLocaleString();
+  return scaleText(v, { trim: true, plain: () => v.toLocaleString() });
 }
 
 export function fmtCost(n) {
@@ -182,6 +182,22 @@ export function createPills(items, activeKey, onChange, extraClass = "") {
   return { root, update };
 }
 
+// 显示设置菜单里的「数字单位」：看板与卡片各要一个，词表与口径只有一份（ui/units.mjs）。
+// 行结构与旁边那几行一致（左标签、右控件）；菜单普遍偏窄，所以标签在上、下拉整行铺开。
+// 下拉用自绘那个（mountSelect）：菜单里放一个浏览器默认样子的原生 select，会跟旁边那排按压行不像一家人。
+// 选中先就地换口径，再交给调用方落盘与重画 —— 单位制是渲染时读的，换了口径不重画也不会变。
+export function createUnitRow(onPick) {
+  const select = h("select", { className: "tt-unit-select", "aria-label": "数字单位" },
+    UNIT_SYSTEMS.map((u) => h("option", { value: u.key, selected: u.key === getUnitSystem() ? "" : undefined }, u.label)));
+  select.addEventListener("change", () => {
+    setUnitSystem(select.value);
+    onPick?.(select.value);
+  });
+  return h("div", { className: "tt-inputstatus-row tt-unit-row" },
+    h("span", { className: "tt-inputstatus-label" }, "数字单位"),
+    select);
+}
+
 export function renderPills(items, activeKey, onChange, extraClass = "") {
   return createPills(items, activeKey, onChange, extraClass).root;
 }
@@ -194,6 +210,10 @@ export function installDetailsDismiss(doc = document) {
   if (detailsDismissInstalled) return;
   detailsDismissInstalled = true;
   doc.addEventListener("pointerdown", (event) => {
+    // 自绘下拉的面板挂在 body 上（fixed，免得被 overflow 容器裁），按 DOM 算它在浮层「外面」。
+    // 可它就是浮层里那个控件的一部分：点它的选项不该把整个显示设置菜单一起收掉（收掉的话
+    // 在那行选个单位，菜单会跟着没了）。
+    if (typeof event.target?.closest === "function" && event.target.closest(".tt-select-panel")) return;
     for (const el of doc.querySelectorAll("details.tt-display-settings[open]")) {
       if (!el.contains(event.target)) el.open = false;
     }

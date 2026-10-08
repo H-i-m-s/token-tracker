@@ -1,13 +1,16 @@
 <!DOCTYPE html>
-<html lang="zh-CN">
+<html lang="zh-CN" class="tts-html">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="token-tracker-app-role" content="settings">
 <title>Token 用量 · 设置</title>
 <link rel="stylesheet" href="./token-tracker.css">
+<!-- 设置页自己的那一层：卡片、字段行、吸底操作条。必须排在 token-tracker.css 之后，
+     它靠后来居上盖掉 .tt-select / .tt-btn 里几处菜单尺度的取值。 -->
+<link rel="stylesheet" href="./settings.css">
 </head>
-<body>
+<body class="tts-body">
 <div id="app-root"></div>
 <script type="module">
   import { bootSettings } from "./settings.mjs";

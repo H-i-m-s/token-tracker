@@ -4,6 +4,7 @@ import { decodeRows } from "./details-view.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { h, RANGES, fmt, fmtCost, fmtPct, renderPills, rankAgents } from "./components.mjs";
 import { selectionKey } from "./selection.mjs";
+import { getUnitSystem, setUnitSystem, unitsFromSnapshot } from "./units.mjs";
 
 export class NavigationApp {
   constructor({ hana, api, state, container, mock = false }) {
@@ -76,6 +77,13 @@ export class NavigationApp {
         } catch {}
         if (!current()) return;
         this.snapshot = snapshot;
+        // 数字单位：引擎把它搭在快照上（可能是别的页面刚改的），变了就跟着换，
+        // 念数字的那两块（摘要、排行）重画一遍。拿不到口径就不动（快照没带这一项是另一回事）。
+        const units = unitsFromSnapshot(snapshot);
+        if (units && units !== getUnitSystem()) {
+          setUnitSystem(units);
+          if (this.dashboard) { this.renderSummary(); this.renderRanking(); }
+        }
         this.renderBalance();
       })(),
       (async () => {

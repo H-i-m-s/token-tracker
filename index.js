@@ -3,6 +3,7 @@ import path from "node:path";
 import { createEventStreams } from "./lib/event-stream.mjs";
 import { EventEmitter } from "node:events";
 import { LocalClient } from "./lib/local-client.mjs";
+import { createDisplayUnitsReader } from "./lib/display-units.mjs";
 import { SessionCacheStatus } from "./lib/session-cache.mjs";
 import { createInputStatusPrefs } from "./lib/input-status-prefs.mjs";
 import { shapeSnapshot, shapeBalances } from "./lib/snapshot-service.mjs";
@@ -51,6 +52,11 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
   // 输入栏状态位卡片的四个开关（card/cache/speed/ttft）：真相落在 app 数据目录下的 input-status.json。
   // 每次读取都反映落盘的最新值（getPrefs 是个即时读盘的口，不在启动时读一次就定格）。
   const inputStatusPrefs = createInputStatusPrefs({ file: dataDir ? path.join(dataDir, "input-status.json") : null, log });
+
+  // 数字单位（中文万/亿 ↔ 英文 K/M/B）：真相在引擎写的 app-settings.json（设置页与显示设置菜单改的都是它），
+  // 主进程只现读那一小段 —— 输入栏状态位的文字要按它写。路径拼贴与解析都在 lib/display-units.mjs，
+  // 那里能测到「读的就是引擎写的那份」。
+  const readDisplayUnits = createDisplayUnitsReader({ dataDir });
 
   const defaultMock = process.env.TOKEN_TRACKER_MOCK === "1";
   const busClient = clientFactory({ ctx, log, defaultMock });
@@ -144,7 +150,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       return [];
     }
   };
-  const sessionCache = new SessionCacheStatus({ bus: ctx.bus, inputStatus: ctx.inputStatus, log, speedQuery, listSessions, getPrefs: () => inputStatusPrefs.read() });
+  const sessionCache = new SessionCacheStatus({ bus: ctx.bus, inputStatus: ctx.inputStatus, log, speedQuery, listSessions, getPrefs: () => inputStatusPrefs.read(), getUnits: readDisplayUnits });
   const unsubSessionCache = sessionCache.start();
 
   const updateEmitter = new EventEmitter();

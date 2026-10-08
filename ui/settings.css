@@ -1,0 +1,288 @@
+/* ==========================================================================
+   Token 用量 · 设置页样式
+   --------------------------------------------------------------------------
+   这一页是宿主设置窗里的一个 iframe，所以两件事必须自己认领：
+   ① 底色透明。宿主主题 CSS 里的 color-scheme 会让 iframe 画出一块不透明的画布底色
+      （深色下是 #181818），于是卡片四周会出现一圈黑边、透不出宿主面板色。
+      html 与 body 都显式写 transparent，画布才是透的。
+   ② 滚动条。宿主在 win32 上不接管滚动条，插件页若不自己收细，视口滚动条就是系统默认
+      那套「深色槽 + 亮色滑块」，在这页上格外扎眼。规则写在 * 上（只写 body 管不到视口）。
+   取色链照 doc-intake / git-save-load 那一套：--hana-*（宿主注入）→ 旧主题名 → 暖色兜底。
+   这里把 --tt-* 就地重挂到这个链上（而不是改 token-tracker.css 里那份全局映射），
+   于是这一页里被复用的自绘下拉、按钮也跟着走宿主真实取值，看板与卡片不受影响。
+   纪律：强调色只出现在焦点环、开关打开、主按钮三处；状态色 ok 走绿、待填走橙、危险走红。
+   ========================================================================== */
+
+/* ① 底色透明。
+   color-scheme 是关键：根元素一旦声明 dark，Chromium 会给这块画布铺一层不透明底色
+   （实测深色下是 #181818），html/body 写 transparent 也压不住 —— 卡片四周就会多出一圈黑边、
+   透不出宿主面板色。所以这里把根元素退回 light（画布不再铺底），
+   深色控件该有的取值改挂在表单控件自己身上（见下面的 html.hana-dark 那组）。
+   类名写 .tts-html 是为了压过 token-tracker.css 里的 html.hana-dark（同权重，靠后加载取胜）。 */
+html.tts-html {
+  background: transparent;
+  color-scheme: light;
+}
+html.hana-dark .tts-input,
+html.hana-dark .tts-field .tt-select,
+html.hana-dark .tts-switch input { color-scheme: dark; }
+
+/* 宿主不接管滚动条，页面自己收细成中性半透明：色值跟宿主样式里那套一致，深浅底色都成立。 */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.32) transparent;
+}
+
+.tts-body {
+  /* 圆角跟随宿主的圆角刻度（Hana 主题可调），与卡片、输入框一起缩放。 */
+  --tts-scale: var(--hana-corner-radius-scale, var(--corner-radius-scale, 1));
+  --tt-radius-card: calc(12px * var(--tts-scale));
+  --tt-radius-inner: calc(8px * var(--tts-scale));
+
+  height: auto;
+  padding: 0 12px;
+  background: transparent;
+}
+.tts-body #app-root { height: auto; }
+
+/* 取色重挂：把 --tt-* 接到宿主的 --hana-* 链上（doc-intake / git-save-load 同一套）。
+   只在这一页生效，看板与卡片仍用 token-tracker.css 里那份。
+   限定 :not([data-tt-appearance])：万一将来有人给这一页挂上 App 自己的三态外观，
+   那份 token 定义在 html 上，这里让位。 */
+html:not([data-tt-appearance]) .tts-body {
+  --tt-t1: var(--hana-text, var(--text, #2f2a24));
+  --tt-t2: var(--hana-text-light, var(--text-light, #6f6659));
+  --tt-t3: var(--hana-text-muted, var(--text-muted, #8d8274));
+  --tt-t4: var(--tt-t3);
+  --tt-em: var(--tt-t1);
+  --tt-num: var(--tt-t1);
+
+  --tt-bg: var(--hana-bg, var(--bg, #faf7f2));
+  --tt-card: var(--hana-bg-card, var(--bg-card, #ffffff));
+  --tt-b2: var(--hana-border, var(--border, rgba(0, 0, 0, 0.12)));
+  /* 描边往卡片色里掺一点：直接拿宿主描边会在淡色主题下显得比卡片本身还重。 */
+  --tt-b1: color-mix(in srgb, var(--tt-b2) 78%, var(--tt-card));
+  --tt-b3: var(--tt-b1);
+  --tt-sep: var(--tt-b1);
+  --tt-row: color-mix(in srgb, var(--tt-t1) 6%, transparent);
+  --tt-row-hover: color-mix(in srgb, var(--tt-t1) 9%, transparent);
+  --tt-empty: color-mix(in srgb, var(--tt-t1) 5%, transparent);
+
+  --tt-select-b: var(--hana-accent, var(--accent, #c2703d));
+  --tt-select-fg: var(--hana-accent, var(--accent, #c2703d));
+  --tt-select-bg: var(--hana-accent-light, var(--accent-light, rgba(194, 112, 61, 0.12)));
+  --tt-blue: var(--tt-select-b);
+
+  --tt-red: var(--hana-danger, var(--danger, #b8544a));
+  --tt-green: var(--hana-green, var(--green, #3d9a63));
+  --tt-orange: var(--hana-warning, var(--warning, #d98b2b));
+}
+
+.tts {
+  box-sizing: border-box;
+  /* 卡片外宽 640（与 doc-intake / 远程访问设置页同一把尺）：大窗里不摊成一整屏输入框。 */
+  max-width: 640px;
+  margin: 0 auto;
+  padding: 6px 0 30px;
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  color: var(--tt-t1);
+  font-size: 14px;
+  line-height: 1.55;
+}
+
+.tts-sub {
+  margin: 0;
+  color: var(--tt-t3);
+  font-size: 12.5px;
+  line-height: 1.5;
+}
+
+/* 卡片容器：三张卡片之间的间隔就是这里。
+   上一版把 gap 只写在 .tts 上，而卡片包在 .tts-cards 里，
+   于是那 16px 只落在「小字 ↔ 卡片组」「卡片组 ↔ 底栏」之间，卡片彼此是 0 间距。 */
+.tts-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+/* ---------- 卡片 ---------- */
+.tts-card {
+  background: var(--tt-card);
+  border: 1px solid var(--tt-b1);
+  border-radius: var(--tt-radius-card);
+  padding: 14px 16px 8px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--tt-t1) 5%, transparent);
+}
+.tts-card__head { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.tts-card__title { margin: 0; font-size: 14px; font-weight: 650; }
+.tts-card__desc { margin: 2px 0 0; color: var(--tt-t3); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.tts-card__desc + .tts-fields,
+.tts-card__desc + .tts-prov { margin-top: 4px; }
+
+/* ---------- 字段行 ---------- */
+.tts-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 11px 0;
+}
+/* 行间分隔只画在「下一行」上：第一行紧贴卡片描述，不需要一条顶线。 */
+.tts-field + .tts-field,
+.tts-field + .tts-prov,
+.tts-prov + .tts-prov { border-top: 1px solid var(--tt-b1); }
+
+.tts-field__label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tts-field__title { font-weight: 550; }
+.tts-field__hint { color: var(--tt-t3); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+.tts-field__error { color: var(--tt-red); font-size: 12px; line-height: 1.5; }
+.tts-field__error[hidden] { display: none; }
+.tts-field__control { flex: 0 0 auto; display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+
+/* ---------- 输入 ---------- */
+.tts-input {
+  box-sizing: border-box;
+  width: 220px;
+  padding: 6px 10px;
+  font: inherit;
+  font-size: 13px;
+  color: var(--tt-t1);
+  caret-color: var(--tt-t1);
+  /* 底色不写死成卡片色：混一层正文色，深浅两种主题下都比周围「凹」一点。 */
+  background: color-mix(in srgb, var(--tt-t1) 4%, transparent);
+  border: 1px solid var(--tt-b1);
+  border-radius: var(--tt-radius-inner);
+  outline: none;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+.tts-input::placeholder { color: var(--tt-t3); }
+.tts-input:hover { border-color: var(--tt-b2); }
+.tts-input:focus-visible {
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+.tts-input--num { width: 148px; text-align: right; font-variant-numeric: tabular-nums; }
+.tts-input[aria-invalid="true"] { border-color: var(--tt-red); }
+
+/* 自绘下拉（custom-select.mjs）在这一页沿用输入框的外观与尺寸。 */
+.tts-field .tt-select {
+  width: 200px;
+  padding: 6px 10px;
+  font-size: 13px;
+  line-height: 1.55;
+  background: color-mix(in srgb, var(--tt-t1) 4%, transparent);
+  border-color: var(--tt-b1);
+}
+.tts-field .tt-select:hover { border-color: var(--tt-select-b); background: var(--tt-row-hover); }
+.tts-field .tt-select:focus-visible,
+.tts-field .tt-select[aria-expanded="true"] {
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+
+/* ---------- 开关 ---------- */
+.tts-switch { position: relative; flex: 0 0 auto; display: inline-flex; align-items: center; cursor: pointer; }
+.tts-switch input { position: absolute; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+.tts-switch__track {
+  position: relative;
+  width: 36px;
+  height: 20px;
+  border: 1px solid var(--tt-b1);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--tt-t1) 22%, transparent);
+  transition: background 0.18s ease, border-color 0.18s ease;
+}
+.tts-switch__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
+  transition: transform 0.18s ease;
+}
+.tts-switch input:checked + .tts-switch__track { background: var(--tt-select-b); border-color: var(--tt-select-b); }
+.tts-switch input:checked + .tts-switch__track .tts-switch__thumb { transform: translateX(16px); }
+.tts-switch input:focus-visible + .tts-switch__track {
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+
+/* ---------- 徽标 ---------- */
+.tts-badge {
+  flex: 0 0 auto;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 550;
+  white-space: nowrap;
+  color: var(--tt-t2);
+  background: color-mix(in srgb, var(--tt-t1) 7%, transparent);
+}
+.tts-badge[data-state="ok"] { color: var(--tt-green); background: color-mix(in srgb, var(--tt-green) 15%, transparent); }
+.tts-badge[data-state="todo"] { color: var(--tt-orange); background: color-mix(in srgb, var(--tt-orange) 16%, transparent); }
+.tts-badge[data-state="off"] { color: var(--tt-t3); background: color-mix(in srgb, var(--tt-t1) 7%, transparent); }
+
+/* ---------- 供应商 ---------- */
+/* 整行即开关：名字和说明都在 label 里，点哪儿都能开合。
+   字段块是它的兄弟节点，否则点输入框也会顺手把开关切掉。 */
+.tts-prov__head { display: flex; align-items: center; gap: 12px; padding: 11px 0; cursor: pointer; }
+.tts-prov__label { flex: 1 1 auto; min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.tts-prov__name { font-weight: 550; }
+.tts-prov__hint { color: var(--tt-t3); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }
+/* 字段块缩进一格，并用一条竖线标出「这几个字属于上面那个供应商」——
+   比再套一层边框轻，也不会在设置页里框上加框。 */
+.tts-prov__body {
+  display: flex;
+  flex-direction: column;
+  margin: 0 0 11px 3px;
+  padding-left: 14px;
+  border-left: 2px solid var(--tt-b1);
+}
+.tts-prov__body[hidden] { display: none !important; }
+
+/* ---------- 底部操作条 ---------- */
+/* 吸底。外面这层只负责在底栏中线以下垫上页面底色，否则滚上来的内容会从卡片底下透出来；
+   上半截保持透明，底栏自己的上圆角才不会被填成直角。 */
+.tts-foot-wrap {
+  position: sticky;
+  bottom: 0;
+  z-index: 3;
+  background: linear-gradient(to bottom, transparent 0, transparent 50%, var(--tt-bg) 50%, var(--tt-bg) 100%);
+}
+.tts-foot {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  background: var(--tt-card);
+  border: 1px solid var(--tt-b1);
+  border-radius: var(--tt-radius-card);
+  padding: 14px 16px;
+  box-shadow: 0 1px 2px color-mix(in srgb, var(--tt-t1) 5%, transparent);
+}
+/* 一页只有一个实心主操作：保存。（.tt-btn 是全局那套小按钮，这里只放大到设置页的尺度。） */
+.tts-foot .tt-btn { padding: 6px 15px; font-size: 13px; border-radius: var(--tt-radius-inner); }
+.tts-foot .tt-btn.primary { background: var(--tt-select-b); border-color: var(--tt-select-b); color: #fff; font-weight: 550; }
+.tts-foot .tt-btn.primary:hover { background: var(--tt-select-b); border-color: var(--tt-select-b); filter: brightness(1.07); color: #fff; }
+.tts-foot .tt-btn.ghost { border-color: var(--tt-b1); color: var(--tt-t2); }
+.tts-foot .tt-btn.ghost:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tts-foot .tt-btn:disabled { opacity: .5; filter: none; }
+.tts-foot__note { color: var(--tt-t3); font-size: 12.5px; }
+.tts-foot__note[data-kind="ok"] { color: var(--tt-green); }
+.tts-foot__note[data-kind="err"] { color: var(--tt-red); }
+
+@media (prefers-reduced-motion: reduce) {
+  .tts-input, .tts-switch__track, .tts-switch__thumb { transition: none; }
+}
+
+@media (max-width: 520px) {
+  .tts-field { flex-direction: column; align-items: stretch; gap: 8px; }
+  .tts-field__control { justify-content: flex-start; }
+  .tts-input, .tts-field .tt-select { width: 100%; }
+  .tts-input--num { width: 140px; }
+}

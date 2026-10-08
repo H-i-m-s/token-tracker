@@ -7,8 +7,9 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, THEME_OPTIONS, fmt, formatDateTime, createPills, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
+import { h, RANGES, THEME_OPTIONS, fmt, formatDateTime, createPills, createUnitRow, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
+import { getUnitSystem, setUnitSystem, unitsFromSnapshot } from "./units.mjs";
 import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRate, decodeRows } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { createViewGestures } from "./view-track.mjs";
@@ -414,6 +415,13 @@ export class WorkspaceApp {
       this.snapshot = await this.api.getSnapshot({ mock: this.mock });
       // 扫描未完成时后端会回 ready:false（不算错误），记下来让 initialLoad 继续重试
       if (this.snapshot && this.snapshot.ready === false) this.notReady = true;
+      // 数字单位可能是在别的页面改的（设置页 / 另一张卡的显示设置）：引擎把它搭在快照上，
+      // 变了就地换口径并重画本页。只在真的变了才重画 —— 快照每几秒来一次，不能每拍都重画一遍。
+      const units = unitsFromSnapshot(this.snapshot);
+      if (units && units !== getUnitSystem()) {
+        setUnitSystem(units);
+        this.repaintForUnits();
+      }
       if (this.snapshot?.realtime) {
         this.sparkHistory.push(Number(this.snapshot.realtime.tps) || 0);
         if (this.sparkHistory.length > MAX_SPARK_POINTS) this.sparkHistory.shift();
@@ -511,21 +519,32 @@ export class WorkspaceApp {
   }
 
   // 账单图的时间窗直接跟着顶部那排范围走，不另设一套选择器。
-  // today → 今天（逐小时）；last3/7/30 → 近 N 天；自定义日期 → 用选定起止。
-  dsWindowFromState(state = this.state.get()) {
+  // 口径必须跟引擎那份对齐（runtime/engine/routes/dashboard.js 的 resolveDateRange）：
+  // 「天」是东八区的一天，「本月」是本月的 1 号 00:00 起。
+  // 这里曾经把 month 照抄成 last30 —— 于是选「本月」和「近30天」拿到同一个窗口：
+  // 看板那边（range 由引擎解释）本来是对的，只有这张图错，两个选项是一回事一眼就看出来了。
+  // nowSec 只给测试用：钉住「现在」，不然断言只能是同义反复。
+  dsWindowFromState(state = this.state.get(), nowSec = Date.now() / 1000) {
     const day = 86400;
-    const todayStart = Math.floor(new Date(new Date().setHours(0, 0, 0, 0)).getTime() / 1000);
+    const cnOffset = 8 * 3600;
+    // 东八区的今天零点：先把时钟拨到东八区、按整天取整，再拨回来。
+    const todayStart = Math.floor((nowSec + cnOffset) / day) * day - cnOffset;
     switch (state.range) {
       case "today": return { from: todayStart, to: todayStart + day };
       case "last3": return { from: todayStart - 2 * day, to: todayStart + day };
       case "last7": return { from: todayStart - 6 * day, to: todayStart + day };
       case "last30": return { from: todayStart - 29 * day, to: todayStart + day };
-      case "week": return { from: todayStart - 6 * day, to: todayStart + day };
-      case "month": return { from: todayStart - 29 * day, to: todayStart + day };
+      case "month": {
+        // 东八区的本月 1 号。前面已经把时钟拨到东八区，用 UTC 字段读就是东八区的日历。
+        const c = new Date((todayStart + cnOffset) * 1000);
+        const monthStart = Math.floor(Date.UTC(c.getUTCFullYear(), c.getUTCMonth(), 1) / 1000) - cnOffset;
+        return { from: monthStart, to: todayStart + day };
+      }
       default: {
         if (state.from && state.to) {
-          const f = Math.floor(new Date(state.from + "T00:00:00").getTime() / 1000);
-          const t = Math.floor(new Date(state.to + "T00:00:00").getTime() / 1000) + day;
+          // 自定义日期：与引擎同样按东八区的天算，to 那天整天都算在内。
+          const f = Math.floor(new Date(state.from + "T00:00:00+08:00").getTime() / 1000);
+          const t = Math.floor(new Date(state.to + "T00:00:00+08:00").getTime() / 1000) + day;
           if (Number.isFinite(f) && Number.isFinite(t) && t > f) return { from: f, to: t };
         }
         // 「全部历史」：不设下限（from=0），由后端交出库里最早到现在的整段。
@@ -688,6 +707,29 @@ export class WorkspaceApp {
     }
   }
 
+  // 数字单位（万/亿 ↔ K/M/B）：词表与口径只有一份（ui/units.mjs），显示设置菜单里那个下拉用的就是它。
+  // 与主题那三档不同，单位制是渲染时读的 —— 换完口径必须把这一页重画，否则屏幕上的数字还是旧写法。
+  // 落盘走 /settings 的 display.units（设置页改的是同一格，输入栏状态位也从那一格读）。
+  async applyUnits(value) {
+    try {
+      await this.api.saveSettings({ display: { units: value } });
+    } catch (err) {
+      this.setError?.(`数字单位没能存下来（本次只在当前画面生效）：${err?.message || err}`);
+    }
+    this.repaintForUnits();
+  }
+
+  // 单位换了就把读到口径的那几块重画一遍。两个入口：这个菜单里刚换完、快照里发现别的页面换过。
+  repaintForUnits() {
+    this.renderBoardControls();
+    this.renderOverview({ preserveScroll: true });
+    this.renderDetails({ preserveScroll: true });
+    if (this.view === "realtime") {
+      this.renderRealtime();
+      if (this.diagData) this.renderDiagnostics();
+    }
+  }
+
   // ---------- overview module ----------
 
   renderBoardControls() {
@@ -721,6 +763,9 @@ export class WorkspaceApp {
         ...THEME_OPTIONS.map(({ key, label }) =>
           h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label)),
         h("div", { className: "tt-display-sep" }),
+        // 单位制是全局口径，跟主题同属「画成什么样」，所以紧跟在主题三档之后。
+        createUnitRow((key) => this.applyUnits(key)),
+        h("div", { className: "tt-display-sep" }),
         prefRow("card", "对话框卡片"),
         prefRow("cache", "缓存"),
         prefRow("speed", "速度"),
@@ -729,6 +774,8 @@ export class WorkspaceApp {
     if (wasOpen) settings.open = true;
     this.appearanceControls?.replaceChildren(
       h("button", { type: "button", className: "tt-theme-toggle", "aria-label": isDark ? "切换浅色主题" : "切换深黑主题", onClick: () => this.state.patch({ appearance: isDark ? "light" : "dark" }) }, isDark ? "浅色" : "深黑"), settings);
+    // 菜单里那颗自绘下拉此时才挂进 DOM（mountSelect 要求先入树）。closeAllPickers 已在上面清过旧的。
+    if (this.appearanceControls) enhanceSelects(this.appearanceControls);
     // 自绘日期字段：返回元素带 .value（YYYY-MM-DD，空串=未选），取值语义与原生日期输入一致。
     const from = createDateField({ value: state.from, ariaLabel: "开始日期" });
     const to = createDateField({ value: state.to, ariaLabel: "结束日期" });

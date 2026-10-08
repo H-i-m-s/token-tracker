@@ -1,3 +1,5 @@
+import { scaleText } from "./units.mjs";
+
 export function drawSparkline(container, data, opts = {}) {
   if (!container) return null;
   const values = Array.isArray(data) ? data.filter((n) => Number.isFinite(n)) : [];
@@ -71,13 +73,9 @@ export function drawSparkline(container, data, opts = {}) {
 // ── 区间趋势：面积 = 总 token（左轴），折线 = 缓存命中率（右轴 0~100%）──
 // points: [{ t:unix秒, tokens:Number, hitRate:Number|null }]，按时间升序。
 // opts.bucket 为官网给的粒度（86400 天 / 3600 小时），用来决定横轴标签的写法。
-export const fmtTokensShort = (n) => {
-  const v = Number(n) || 0;
-  if (v >= 1e9) return (v / 1e9).toFixed(2).replace(/\.?0+$/, "") + "B";
-  if (v >= 1e6) return (v / 1e6).toFixed(2).replace(/\.?0+$/, "") + "M";
-  if (v >= 1e3) return (v / 1e3).toFixed(1).replace(/\.?0+$/, "") + "K";
-  return String(Math.round(v));
-};
+// 图表轴与卡片上的短数字，跟着设置里的数字单位走（中文「10亿」，英文「1B」）。
+// trim：去掉多余的小数尾零，刻度上不留 1.00B 这种写法。
+export const fmtTokensShort = (n) => scaleText(Number(n) || 0, { trim: true, plain: (v) => String(Math.round(v)) });
 
 // 把一串 [x,y] 连成平滑曲线（单调三次插值，Fritsch–Carlson，转成三次贝塞尔）。
 // 用它的原因：普通样条在数据起伏时容易“过冲”，画出数据里没有的谷和峰，

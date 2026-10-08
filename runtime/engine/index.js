@@ -319,6 +319,9 @@ export default class TokenTrackerPlugin {
         balanceUpdatedAt: shared.balanceSnapshot?.updatedAt || null,
         agentNames: shared.agentNames || cacheData?.agentNames || {},
         lastScan: cacheData?.lastScan || null,
+        // 数字单位跟着快照走：看板与卡片每几秒取一次快照，在设置页（或另一张卡）改完单位，
+        // 它们能在下一拍就地重画，不用等用户重开页面。就两三个小 JSON 的读。
+        display: { units: settings.read().display.units },
         // 落盘统计（第 0 步的可观测性）：写入次数、累计字节、上次原因与耗时、今日累计
         persist: shared.persist?.stats || cacheData?.persist || null,
         ready: !!shared.ready

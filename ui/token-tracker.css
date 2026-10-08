@@ -841,77 +841,8 @@ body {
 }
 
 /* ── forms / settings ── */
-.tt-form {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  max-width: 560px;
-}
-
-.tt-form-row {
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.tt-form-row.horizontal {
-  flex-direction: row;
-  align-items: center;
-  gap: 10px;
-}
-
-.tt-form-row label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--tt-em);
-}
-
-.tt-form-row input[type="text"],
-.tt-form-row input[type="number"],
-.tt-form-row input[type="password"],
-.tt-form-row textarea {
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 9px;
-  border: 1px solid var(--tt-b2);
-  border-radius: var(--tt-radius-inner);
-  background: var(--tt-card);
-  color: var(--tt-t1);
-}
-
-/* 自绘下拉触发器在表单里沿用输入框的外观；原生 select 已视觉隐藏。 */
-.tt-form-row .tt-select {
-  font: inherit;
-  font-size: 12px;
-  padding: 6px 9px;
-  border: 1px solid var(--tt-b2);
-  border-radius: var(--tt-radius-inner);
-  background: var(--tt-card);
-  color: var(--tt-t1);
-}
-
-.tt-form-row input:focus,
-.tt-form-row textarea:focus {
-  outline: none;
-  border-color: var(--tt-select-b);
-}
-
-.tt-form-row .tt-select:focus-visible,
-.tt-form-row .tt-select[aria-expanded="true"] {
-  outline: none;
-  border-color: var(--tt-select-b);
-}
-
-.tt-form-hint {
-  font-size: 10px;
-  color: var(--tt-t3);
-}
-
-.tt-form-actions {
-  display: flex;
-  gap: 8px;
-  margin-top: 6px;
-}
+/* 设置页的表单已改成 settings.css 里那套卡片（.tts-*）：一行一个字段，标签在左、控件在右。
+   原来这里那组 .tt-form* 只有 settings.mjs 用，随它一起退休了。 */
 
 /* ── responsive layout tweaks ── */
 @media (max-width: 720px) {
@@ -998,6 +929,12 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-display-sep { border-top: 1px solid var(--tt-b3); margin: 2px 0; }
 /* 输入栏卡片开关：一行一个，左标签右胶囊，字号与菜单里其它项同档（12px）。 */
 .tt-inputstatus-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 12px var(--font-sans); color: var(--tt-t2); }
+/* 数字单位：标签在上、下拉整行铺开 —— 135px 宽的菜单里塞不下并排的标签 + 下拉
+   （选项文字是「中文（万 / 亿）」这种长标签，短写就成另一套词表了）。 */
+.tt-unit-row { flex-direction: column; align-items: stretch; gap: 6px; }
+/* 写双类名是为了压过 card.css 里的 `.tt-switch-card .tt-select`（同为两段类名，靠后来者胜）——
+   两处菜单里这一行得是同一档字号，跟旁边那几行同为 12px。 */
+.tt-display-menu .tt-unit-select.tt-select { display: flex; width: 100%; font: 12px var(--font-sans); color: var(--tt-t2); }
 /* 开关本体：克制的小胶囊滑块，不是 iOS 大开关。选择器带上 .tt-display-menu 是为了压过上面那两条通用 button 规则。
    开态学 git-save-load：强调色实心铺满，圆点纯白（用卡片色会在饱和底上发闷）。 */
 .tt-display-menu .tt-switch { position: relative; flex: 0 0 auto; width: 26px; height: 15px; padding: 0; border: 1px solid var(--tt-b1); border-radius: 999px; background: var(--tt-b1); cursor: pointer; transition: background .2s ease, border-color .2s ease, opacity .2s ease; }
