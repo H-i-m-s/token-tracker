@@ -175,7 +175,13 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   };
   const appVersion = readAppVersion();
-  const updateCheck = updateCheckFactory({ dataDir, appVersion, log });
+  // 出站只能走宿主的受控通道：v2 App 的子进程不开 --allow-net，裸 fetch 会被运行时拒掉，
+  // 报出来还只是一句「fetch failed」。白名单在 manifest.json 顶层的 network.allowedHosts。
+  const netFetch = typeof ctx?.network?.fetch === "function"
+    ? (url, init) => ctx.network.fetch(url, init)
+    : null;
+  if (!netFetch) log("warn", "宿主没有给出站网络通道 ctx.network.fetch，更新检查会直说没网络能力");
+  const updateCheck = updateCheckFactory({ dataDir, appVersion, log, fetchImpl: netFetch });
   // 已经推过的快照签名：只有影响「提不提醒」的东西变了，才值得再推一次给界面。
   let pushedSignature = updateCheck.signature();
 

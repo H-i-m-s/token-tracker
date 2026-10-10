@@ -242,17 +242,35 @@ test("取回失败：说人话、保留手里的旧说明、不清缓存", async
   assert.equal(snap.latest.version, "8.6.0");
 });
 
-test("304：算命中缓存，不算失败", async () => {
+// 条件请求看着划算，实际上走不通：宿主的受控通道拿不到 200–599 之外的状态码时造 Response
+// 会直接抛（"Invalid response status code 304"），一次 304 就表现成一次「取回失败」。
+// 这一条锁住“不带 If-None-Match”，别以后又“优化”回去。
+test("不带走条件请求：手里有上一次的响应也不带 If-None-Match", async () => {
+  const dir = tmp();
+  const first = stubFetch(ATOM);
+  await createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: first.impl }).check();
+  assert.equal(first.calls[0].headers["If-None-Match"], undefined);
+
+  const again = stubFetch(ATOM);
+  const snap = await createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: again.impl }).check({ force: true });
+  assert.equal(again.calls[0].headers["If-None-Match"], undefined, "落盘里没有 etag 这种后患了");
+  assert.equal(snap.error, "");
+  assert.equal(snap.latest.version, "8.6.0");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "update-notice.json"), "utf8")).etag, undefined);
+});
+
+// 万一 304 还是出现了（比如宿主自己做了条件请求），它的语义是「没变」，不是「失败」。
+test("真撞上 304：当缓存命中吃掉，不摆成检查失败", async () => {
   const dir = tmp();
   const first = stubFetch(ATOM);
   await createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: first.impl }).check();
 
-  const notModified = stubFetch("", { status: 304 });
-  const second = createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: notModified.impl });
-  const snap = await second.check({ force: true });
-  assert.equal(snap.error, "");
+  const bridge = stubFetch("", { throwCode: "" });
+  bridge.impl = async () => { throw new Error("Response constructor: Invalid response status code 304"); };
+  const snap = await createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: bridge.impl }).check({ force: true });
+  assert.equal(snap.error, "", "不是失败");
   assert.equal(snap.fromCache, true);
-  assert.equal(notModified.calls[0].headers["If-None-Match"], '"abc"', "带上了上次的 ETag");
+  assert.equal(snap.latest.version, "8.6.0", "手里那份照用");
 });
 
 test("没有网络能力时给一句明确的话，不抛异常", async () => {
@@ -268,6 +286,23 @@ test("取回失败的人话映射", () => {
   assert.equal(humanizeFetchError(new Error("HTTP 500")), "GitHub 那边出了点问题");
   assert.equal(humanizeFetchError({ name: "AbortError" }), "请求超时");
   assert.equal(humanizeFetchError(new Error("说不清")), "取回更新说明失败");
+});
+
+// App 运行时的出站闸门拒人时，也是一句笼统的 "fetch failed"；
+// 报成「网络不通」会把人引去排查网线，而真正要做的是补声明或放行权限。
+test("被出站闸门拒掉时，说的是没权限，不是网络不通", () => {
+  assert.equal(humanizeFetchError({ message: "fetch failed", cause: { code: "PLUGIN_NETWORK_NOT_DECLARED" } }), "这个版本没有出站网络权限");
+  assert.equal(humanizeFetchError({ message: "fetch failed", cause: { code: "ERR_ACCESS_DENIED" } }), "这个版本没有出站网络权限");
+  assert.equal(humanizeFetchError({ code: "PLUGIN_NETWORK_RESPONSE_TOO_LARGE" }), "更新说明太长，超过单次取回上限");
+  assert.equal(humanizeFetchError({ code: "PLUGIN_NETWORK_HOST_NOT_ALLOWED" }), "github.com 不在本版本声明的网络白名单里");
+});
+
+// 默认不给出站通道：裸 fetch 出站会被运行时拒掉，默认它等于默认静默失败。
+test("不传网络通道时，就是没网络能力，而不是偷偷去裸 fetch", async () => {
+  const uc = createUpdateCheck({ dataDir: tmp(), appVersion: "8.5.0" });
+  const snap = await uc.check({ force: true });
+  assert.equal(snap.error, "当前环境没有网络能力");
+  assert.equal(snap.hasUpdate, false);
 });
 
 test("状态文件损坏时回落到默认，不把整个功能拖下水", async () => {

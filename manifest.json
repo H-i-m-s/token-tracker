@@ -17,6 +17,12 @@
     "app/hooks.provider-before-request",
     "app/hooks.observe"
   ],
+  "network": {
+    "allowedHosts": ["github.com"],
+    "methods": ["GET"],
+    "defaultTimeoutMs": 15000,
+    "maxResponseBytes": 2097152
+  },
   "contributes": {
     "settings": {
       "title": "Token 用量",

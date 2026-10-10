@@ -47,10 +47,10 @@ function makeC({ query = {}, body = null } = {}) {
   };
 }
 
-async function boot() {
+async function boot({ hostNetwork = false } = {}) {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), "tt-route-"));
   const host = makeHost();
-  const seen = { scan: null, methods: [], fetches: 0 };
+  const seen = { scan: null, methods: [], fetches: 0, netFetches: 0, netUrls: [] };
   const client = {
     subscribe(topic, cb) {
       if (topic === "token-tracker.updated") seen.scan = cb;
@@ -64,20 +64,29 @@ async function boot() {
     logger: { info() {}, warn() {}, error() {} },
     routes: { register(fn) { fn(host.app); return () => {}; } },
     bus: { async request() { return { sessions: [] }; }, subscribe() { return () => {}; }, handle() { return () => {}; }, emit() {} },
+    // 宿主受控出站通道。真机上就是它把请求按 manifest.network.allowedHosts 过一道闸。
+    network: {
+      async fetch(url) {
+        seen.netFetches += 1;
+        seen.netUrls.push(url);
+        return { ok: true, status: 200, headers: { get: () => '"etag-host"' }, text: async () => ATOM };
+      },
+    },
   };
   const { apply } = await import("../index.js");
-  const dispose = apply(ctx, {
-    clientFactory: () => client,
+  const options = { clientFactory: () => client };
+  if (!hostNetwork) {
     // 网络那一层注掉：路由测试不该真去打 GitHub，返回什么由这里说了算。
-    updateCheckFactory: (options) => createUpdateCheck({
-      ...options,
+    options.updateCheckFactory = (checkOptions) => createUpdateCheck({
+      ...checkOptions,
       fetchImpl: async () => ({
         ok: true, status: 200,
         headers: { get: () => '"etag-1"' },
         text: async () => { seen.fetches += 1; return ATOM; },
       }),
-    }),
-  });
+    });
+  }
+  const dispose = apply(ctx, options);
   return { dataDir, routes: host.routes, seen, dispose, call: (name, opts) => host.routes.get(name)(makeC(opts)) };
 }
 
@@ -174,6 +183,16 @@ test("别的界面点完「我已知晓」，这条广播要发得出去", async
   assert.ok(notices.length >= 1, `事件流里应有 updateNotice 帧，实际收到 ${JSON.stringify(frames.map((f) => f.type))}`);
   assert.equal(notices.at(-1).updateNotice.shouldAutoShow, false);
   assert.equal(notices.at(-1).updateNotice.ackVersion, "v99.0.0");
+});
+
+test("取数走宿主受控通道：App 进程里裸 fetch 出站会被运行时拒掉", async () => {
+  const { call, seen } = await boot({ hostNetwork: true });
+  const res = await call("GET /update-check", { query: { force: "1" } });
+  assert.equal(res.payload.ok, true);
+  assert.equal(res.payload.update.latest.version, "99.0.0");
+  assert.equal(seen.netFetches, 1, "请求真的从 ctx.network.fetch 出去了");
+  assert.match(seen.netUrls[0], /^https:\/\/github\.com\/H-i-m-s\/token-tracker\/releases\.atom$/);
+  assert.equal(seen.fetches, 0, "没有走裸 fetch");
 });
 
 test("预览模式：给一份固定样张，且不会自己浮起来", async () => {
