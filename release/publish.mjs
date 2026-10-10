@@ -251,7 +251,7 @@ function preflight(config, ctx, args) {
       const lines = remote.stdout.trim().split("\n").filter(Boolean);
       // annotated tag 会多一行 <sha> refs/tags/x^{}（解引用后的提交），优先取它
       const pick = lines.find((l) => l.endsWith("^{}")) || lines.find((l) => l.endsWith(`refs/tags/${ctx.tag}`));
-      checkExistingTag("远端", pick ? pick.split(/\s+/)[0] : "");
+      noteExistingTag("远端", pick ? pick.split(/\s+/)[0] : "");
     } else {
       warn("这个仓库没有 origin 远端，跳过远端 tag 检查");
     }
