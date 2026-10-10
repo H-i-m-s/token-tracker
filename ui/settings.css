@@ -99,9 +99,9 @@ html:not([data-tt-appearance]) .tts-body {
   line-height: 1.5;
 }
 
-/* 卡片容器：三张卡片之间的间隔就是这里。
+/* 卡片容器：卡片之间的间隔就是这里。
    上一版把 gap 只写在 .tts 上，而卡片包在 .tts-cards 里，
-   于是那 16px 只落在「小字 ↔ 卡片组」「卡片组 ↔ 底栏」之间，卡片彼此是 0 间距。 */
+   于是那 16px 只落在「小字 ↔ 卡片组」「卡片组 ↔ 页尾」之间，卡片彼此是 0 间距。 */
 .tts-cards {
   display: flex;
   flex-direction: column;
@@ -245,36 +245,31 @@ html:not([data-tt-appearance]) .tts-body {
 }
 .tts-prov__body[hidden] { display: none !important; }
 
-/* ---------- 底部操作条 ---------- */
-/* 吸底。外面这层只负责在底栏中线以下垫上页面底色，否则滚上来的内容会从卡片底下透出来；
-   上半截保持透明，底栏自己的上圆角才不会被填成直角。 */
-.tts-foot-wrap {
-  position: sticky;
-  bottom: 0;
-  z-index: 3;
-  background: linear-gradient(to bottom, transparent 0, transparent 50%, var(--tt-bg) 50%, var(--tt-bg) 100%);
+/* ---------- 卡片的提交状态 ----------
+   这一页没有保存按钮：每张卡改完自己存，所以状态写在卡片头上，而不是写在页尾。
+   默认什么都不显示（:empty 不占位置），动过之后才浮出来，两秒后自己走。 */
+.tts-card__right { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.tts-card__state { font-size: 11.5px; color: var(--tt-t3); white-space: nowrap; }
+.tts-card__state:empty { display: none; }
+.tts-card__state[data-state="saved"] { color: var(--tt-green); }
+.tts-card__state[data-state="error"] { color: var(--tt-red); }
+/* 「恢复上次的值」：只在这张卡真的变过之后才出现，平时不占位置。 */
+.tts-card__restore {
+  border: 0; padding: 0; background: none; cursor: pointer;
+  color: var(--tt-t3); font: 11.5px var(--font-sans);
+  text-decoration: underline dotted color-mix(in srgb, var(--tt-t3) 60%, transparent);
+  text-underline-offset: 3px;
 }
-.tts-foot {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-  background: var(--tt-card);
-  border: 1px solid var(--tt-b1);
-  border-radius: var(--tt-radius-card);
-  padding: 14px 16px;
-  box-shadow: 0 1px 2px color-mix(in srgb, var(--tt-t1) 5%, transparent);
-}
-/* 一页只有一个实心主操作：保存。（.tt-btn 是全局那套小按钮，这里只放大到设置页的尺度。） */
-.tts-foot .tt-btn { padding: 6px 15px; font-size: 13px; border-radius: var(--tt-radius-inner); }
-.tts-foot .tt-btn.primary { background: var(--tt-select-b); border-color: var(--tt-select-b); color: #fff; font-weight: 550; }
-.tts-foot .tt-btn.primary:hover { background: var(--tt-select-b); border-color: var(--tt-select-b); filter: brightness(1.07); color: #fff; }
-.tts-foot .tt-btn.ghost { border-color: var(--tt-b1); color: var(--tt-t2); }
-.tts-foot .tt-btn.ghost:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
-.tts-foot .tt-btn:disabled { opacity: .5; filter: none; }
-.tts-foot__note { color: var(--tt-t3); font-size: 12.5px; }
-.tts-foot__note[data-kind="ok"] { color: var(--tt-green); }
-.tts-foot__note[data-kind="err"] { color: var(--tt-red); }
+.tts-card__restore:hover { color: var(--tt-t1); }
+.tts-card__restore[hidden] { display: none; }
+
+/* 页面级提示：读取失败、某次保存失败的详细原因。平时是空的。 */
+.tts-page-note { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--tt-t3); overflow-wrap: anywhere; }
+.tts-page-note:empty { display: none; }
+.tts-page-note[data-kind="err"] { color: var(--tt-red); }
+
+/* 检查间隔那一行的副文案填得不对时就地变红（正常时沿用 .tts-about__hint 的灰）。 */
+.tts-about__hint[data-kind="err"] { color: var(--tt-red); }
 
 @media (prefers-reduced-motion: reduce) {
   .tts-input, .tts-switch__track, .tts-switch__thumb { transition: none; }

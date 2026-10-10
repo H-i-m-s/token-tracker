@@ -69,11 +69,32 @@ const RANGES = {
 };
 const NUMBER_LABELS = { "scan-interval": "扫描间隔", "high-threshold": "高消耗阈值" };
 
+// 检查间隔的合法区间与服务端 lib/update-check.mjs 同源。本地先拦一道给个立即可见的反馈，
+// 真正的规矩在服务端（文本输入能绕过前端）。
+const INTERVAL_MIN = 1;
+const INTERVAL_MAX = 10080;
+function parseInterval(raw) {
+  const s = String(raw ?? "").trim();
+  if (!/^\d+$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isInteger(n) && n >= INTERVAL_MIN && n <= INTERVAL_MAX ? n : null;
+}
+
+// 「已保存」浮多久。默认什么都不显示，动过之后才浮一下，然后自己走，不留噪声。
+const SAVED_FADE_MS = 2000;
+
 // 设置页自己的样例：拿一个够大的数，按选中的那套写一遍。
 // 这一页除了阈值没有别的数字，不给样例就看不出两套写法的差别。空格与看板一致（看板上是「260.92 亿」）。
 const SAMPLE_TOKENS = 123456789;
 const unitSample = (key) => scaleText(SAMPLE_TOKENS, { system: key, space: " " });
 
+// ── 这一页的契约 ──
+// 改了就是改了，没有整页保存。每张卡自己提交：下拉、开关一改就写；文本框在失焦或回车时写。
+// 每次只发这一张卡的那几项，服务端按份合并（见 runtime/engine/services/settings.js 的 write），
+// 所以「扫描间隔 + 阈值」不需要一起发也不会写出半份状态。
+//
+// 「关于」卡另外两格走的是另一条通道（更新提示开关与检查间隔存在插件进程的状态文件里），
+// 但用户看到的仍然只有一种契约：改完就生效。
 export class SettingsApp {
   constructor({ hana, api, container, mock = false, update = null }) {
     this.hana = hana;
@@ -84,15 +105,14 @@ export class SettingsApp {
     this.update = update;
     this.unsubscribeUpdate = null;
     this.settings = null;
-    this.baseline = "";
-    this.message = null;   // 结论性提示（已保存 / 保存失败）：留着，直到下一次改动
-    this.saving = false;
     this.provRows = [];
+    // 每张卡的提交口，按 id 存。renderForm 重建卡片时会整体换掉。
+    this.cards = new Map();
   }
 
   async init() {
     this.renderShell();
-    this.setNote("读取设置…");
+    this.setPageNote("读取设置…");
     // 「关于」卡片跟着更新快照走：不管弹窗有没有浮起来，版本号和标记都要是最新的。
     this.unsubscribeUpdate = this.update?.subscribe(() => this.syncAbout()) || null;
     try {
@@ -100,10 +120,15 @@ export class SettingsApp {
     } catch (err) {
       this.settings = this.defaultSettings();
       this.renderForm();
-      this.setNote(`读取设置失败：${err.message}`, "err");
+      this.setPageNote(`读取设置失败：${err.message}`, "err");
       return;
     }
     this.renderForm();
+    this.setPageNote("");
+    // 关页面前把还停在输入框里、没来得及失焦的那一笔补上。
+    const flush = () => this.flushPending();
+    window.addEventListener("pagehide", flush, { once: true });
+    document.addEventListener("visibilitychange", () => { if (document.hidden) this.flushPending(); });
   }
 
   defaultSettings() {
@@ -115,26 +140,21 @@ export class SettingsApp {
     };
   }
 
-  // ── 骨架：卡片容器与吸底操作条各建一次。重画只换卡片，底部那颗「已保存」不会被顺手抹掉。
+  // ── 骨架 ──
+  // 整页只有一行小字和卡片组：没有保存按钮，所以没有「有未保存的改动」这种状态要维护。
   renderShell() {
     this.container.innerHTML = "";
     this.container.className = "";
     this.root = h("main", { className: "tts" });
-
     this.cardsEl = h("div", { className: "tts-cards" });
-    this.saveBtn = h("button", { type: "button", className: "tt-btn primary", onClick: () => this.onSave() }, "保存");
-    this.resetBtn = h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.onDiscard() }, "放弃改动");
-    this.noteEl = h("span", { className: "tts-foot__note", role: "status" });
-
+    // 页面级提示：读取失败、某次保存失败的详细原因。平时是空的（CSS 里 :empty 不占位置）。
+    this.pageNoteEl = h("p", { className: "tts-page-note", role: "status" });
     this.root.append(
-      h("p", { className: "tts-sub" }, "扫描、阈值和余额 API 都在这儿改；改完点下面的保存。"),
+      h("p", { className: "tts-sub" }, "扫描、阈值和余额 API 都在这儿改；每张卡改完就自己存，不用点保存。"),
+      this.pageNoteEl,
       this.cardsEl,
-      h("div", { className: "tts-foot-wrap" },
-        h("footer", { className: "tts-foot" }, this.saveBtn, this.resetBtn, this.noteEl),
-      ),
     );
     this.container.append(this.root);
-    this.refreshFooter();
   }
 
   renderForm() {
@@ -142,6 +162,7 @@ export class SettingsApp {
     // 自绘下拉的浮层挂在 body 上：重建容器前先收掉，免得留下孤儿面板。
     closeOpenSelect(this.cardsEl);
     this.cardsEl.innerHTML = "";
+    this.cards.clear();
     this.provRows = [];
     this.cardsEl.append(this.basicCard(s), this.balanceCard(s), this.displayCard(s), this.aboutCard());
     enhanceSelects(this.cardsEl);
@@ -149,32 +170,157 @@ export class SettingsApp {
     for (const row of this.provRows) row.sync();
     this.syncBalanceCount();
     this.syncAbout();
-    this.baseline = this.snapshot();
-    this.message = null;
-    this.refreshFooter();
+    // 基线＝这次打开设置页时每张卡是什么值。「恢复上次的值」就是回到这里。
+    for (const card of this.cards.values()) this.markClean(card);
+  }
+
+  /**
+   * 注册一张卡的提交口。三件事必须成套给，缺一样这张卡就没法自洽：
+   *   read()         从 DOM 收这一张卡的值（DOM 仍是唯一状态源，读完不留影子状态）
+   *   write(values)  怎么落盘；抛错就由外面摆成「保存失败」
+   *   apply(values)  把值写回 DOM（「恢复上次的值」用）
+   */
+  registerCard(id, { read, write, apply }) {
+    const stateEl = h("span", { className: "tts-card__state" });
+    const restoreEl = h("button", {
+      type: "button",
+      className: "tts-card__restore",
+      hidden: true,
+      title: "恢复成这次打开设置页时的值",
+      onClick: () => this.restoreCard(id),
+    }, "恢复上次的值");
+    const card = { id, read, write, apply, stateEl, restoreEl, baseline: "", busy: false, pending: false, fade: null };
+    this.cards.set(id, card);
+    return card;
+  }
+
+  /** 卡片头：标题在左，右边依次是这张卡自己的东西（徽章之类）、恢复入口、提交状态。 */
+  cardHead(title, card, extra = null) {
+    return h("div", { className: "tts-card__head" },
+      h("h2", { className: "tts-card__title" }, title),
+      h("div", { className: "tts-card__right" }, extra, card.restoreEl, card.stateEl),
+    );
+  }
+
+  // ── 提交 ──
+  /** 值变了：立即提交这一张卡（下拉、开关、回车都走这里）。 */
+  async commitCard(id, { force = false } = {}) {
+    const card = this.cards.get(id);
+    if (!card) return;
+    // 上一次还没回来：记住这一笔，等它结束再提交，不丢改动。
+    if (card.busy) { card.pending = true; return; }
+    if (!force && this.cardValue(card) === card.baseline) { this.syncRestoreEntry(card); return; }
+    // 本地先拦一道：数字两项填得不对就不发，错误已经写在那一行下面了。
+    const problems = id === "basic" ? this.validateNumbers() : [];
+    if (problems.length) {
+      this.setCardState(card, "error", "填得不对");
+      this.setPageNote(problems.join("；"), "err");
+      this.syncRestoreEntry(card);
+      return;
+    }
+    card.busy = true;
+    this.setCardState(card, "saving", "保存中…");
+    const values = card.read();
+    try {
+      await card.write(values);
+      this.markClean(card);
+      this.setPageNote("");
+      this.setCardState(card, "saved", "已保存", true);
+    } catch (err) {
+      // 失败之后基线不动：这一笔还在她眼前，点「恢复上次的值」能收回来。
+      this.setCardState(card, "error", "保存失败");
+      this.setPageNote(`保存失败：${err?.message || err}`, "err");
+      this.syncRestoreEntry(card);
+    } finally {
+      card.busy = false;
+      if (card.pending) { card.pending = false; void this.commitCard(id); }
+    }
+  }
+  /** 回到基线值，然后照常走一遍提交（失败提示、校验还是同一套）。 */
+  async restoreCard(id) {
+    const card = this.cards.get(id);
+    if (!card || !card.baseline) return;
+    try { card.apply(JSON.parse(card.baseline)); } catch {}
+    this.syncRestoreEntry(card);
+    // force：还原之后 DOM 等于基线，普通提交会被「没变就不发」这条挡掉，而盘上那一份还是改过的值。
+    await this.commitCard(id, { force: true });
+  }
+
+  /** 关页面时把没来得及失焦的那一笔补上。异步可能跑不完，总比什么都不做强。 */
+  flushPending() {
+    for (const card of this.cards.values()) {
+      if (card.busy) continue;
+      if (this.cardValue(card) !== card.baseline) void this.commitCard(card.id);
+    }
+  }
+
+  cardValue(card) {
+    if (!card) return "";
+    try { return JSON.stringify(card.read()); } catch { return card.baseline; }
+  }
+
+  markClean(card) {
+    card.baseline = this.cardValue(card);
+    this.syncRestoreEntry(card);
+  }
+
+  syncRestoreEntry(card) {
+    if (!card?.restoreEl) return;
+    card.restoreEl.hidden = this.cardValue(card) === card.baseline;
+  }
+
+  setCardState(card, state, text, fade = false) {
+    if (!card.stateEl) return;
+    if (card.fade) { clearTimeout(card.fade); card.fade = null; }
+    card.stateEl.textContent = text || "";
+    if (state) card.stateEl.dataset.state = state;
+    else delete card.stateEl.dataset.state;
+    if (fade) card.fade = setTimeout(() => this.setCardState(card, "", ""), SAVED_FADE_MS);
+  }
+
+  setPageNote(text, kind = "") {
+    if (!this.pageNoteEl) return;
+    this.pageNoteEl.textContent = text || "";
+    if (kind) this.pageNoteEl.dataset.kind = kind;
+    else delete this.pageNoteEl.dataset.kind;
   }
 
   // ── 卡片 1：扫描
   basicCard(s) {
+    const card = this.registerCard("basic", {
+      read: () => ({
+        scanInterval: this.numberValue("scan-interval"),
+        highUsageThreshold: this.numberValue("high-threshold"),
+      }),
+      write: async (values) => {
+        this.settings = await this.api.saveSettings(values, { mock: this.mock });
+      },
+      apply: (values) => {
+        this.setNumberValue("scan-interval", values.scanInterval);
+        this.setNumberValue("high-threshold", values.highUsageThreshold);
+      },
+    });
     return h("section", { className: "tts-card" },
-      h("div", { className: "tts-card__head" }, h("h2", { className: "tts-card__title" }, "扫描")),
+      this.cardHead("扫描", card),
       h("p", { className: "tts-card__desc" }, "后台扫描的节奏，以及明细里「高消耗」这条线画在哪里。"),
       h("div", { className: "tts-fields" },
         this.numberField({
+          card: "basic",
           id: "scan-interval",
           title: "扫描间隔（秒）",
           hint: "后台多久扫一次新用量",
-          min: 10,
-          max: 86400,
+          min: RANGES["scan-interval"][0],
+          max: RANGES["scan-interval"][1],
           step: 10,
           value: s.scanInterval ?? 60,
         }),
         this.numberField({
+          card: "basic",
           id: "high-threshold",
           title: "高消耗阈值（Token）",
           hint: "单个会话超过这个数，明细里会标出来",
-          min: 0,
-          max: 1e12,
+          min: RANGES["high-threshold"][0],
+          max: RANGES["high-threshold"][1],
           step: 1000,
           value: s.highUsageThreshold ?? 30000,
         }),
@@ -182,7 +328,9 @@ export class SettingsApp {
     );
   }
 
-  numberField({ id, title, hint, min, max, step, value }) {
+  // 数字两项：打字时不写盘（数字打到一半写进去没有意义），只实时校验 + 更新恢复入口；
+  // 失焦或回车（原生 change）才提交。
+  numberField({ card, id, title, hint, min, max, step, value }) {
     const input = h("input", {
       className: "tts-input tts-input--num",
       type: "number",
@@ -193,7 +341,11 @@ export class SettingsApp {
       inputmode: "numeric",
       value: String(value ?? ""),
     });
-    input.addEventListener("input", () => this.onEdit());
+    input.addEventListener("input", () => {
+      this.validateNumbers();
+      this.syncRestoreEntry(this.cards.get(card));
+    });
+    input.addEventListener("change", () => { void this.commitCard(card); });
     return h("div", { className: "tts-field" },
       h("div", { className: "tts-field__label" },
         h("span", { className: "tts-field__title" }, title),
@@ -207,21 +359,58 @@ export class SettingsApp {
   // ── 卡片 2：余额与配额
   balanceCard(s) {
     const apis = s.balanceApis || {};
+    const card = this.registerCard("balance", {
+      read: () => ({
+        balanceApis: Object.fromEntries(PROVIDERS.map((spec) => {
+          const cfg = { enabled: this.root.querySelector(`#enable-${spec.id}`)?.checked === true };
+          for (const f of spec.fields) {
+            const input = this.root.querySelector(`#field-${spec.id}-${f.key}`);
+            if (input) cfg[f.key] = input.value;
+          }
+          return [spec.id, cfg];
+        })),
+      }),
+      write: async (values) => {
+        this.settings = await this.api.saveSettings({ balanceApis: values.balanceApis }, { mock: this.mock });
+        // 凭据从不回显：写成功之后把密码框清空，改由徽章和占位符表示「已配置，留空保留」。
+        for (const spec of PROVIDERS) {
+          for (const f of spec.fields) {
+            if (f.secret !== true) continue;
+            const input = this.root.querySelector(`#field-${spec.id}-${f.key}`);
+            if (!input) continue;
+            input.value = "";
+            input.placeholder = this.settings?.balanceApis?.[spec.id]?.configured?.[f.key] ? "已配置，留空保留" : "";
+          }
+        }
+        this.syncProvBadges();
+      },
+      apply: (values) => {
+        for (const spec of PROVIDERS) {
+          const cfg = values.balanceApis?.[spec.id] || {};
+          const checkbox = this.root.querySelector(`#enable-${spec.id}`);
+          if (checkbox) checkbox.checked = cfg.enabled === true;
+          for (const f of spec.fields) {
+            const input = this.root.querySelector(`#field-${spec.id}-${f.key}`);
+            if (!input) continue;
+            // 密钥框本来就只放占位符：还原成空 = 服务端那份不动（空值不覆盖已存的凭据）。
+            input.value = f.secret === true ? "" : (typeof cfg[f.key] === "string" ? cfg[f.key] : "");
+          }
+        }
+        this.syncProvBadges();
+      },
+    });
+
     this.balanceCountEl = h("span", { className: "tts-badge" });
     const rows = PROVIDERS.map((spec) => {
       const row = this.providerRow(spec, apis[spec.id] || {});
       this.provRows.push(row);
       return row.node;
     });
-    const card = h("section", { className: "tts-card" },
-      h("div", { className: "tts-card__head" },
-        h("h2", { className: "tts-card__title" }, "余额与配额"),
-        this.balanceCountEl,
-      ),
+    return h("section", { className: "tts-card" },
+      this.cardHead("余额与配额", card, this.balanceCountEl),
       h("p", { className: "tts-card__desc" }, "开着才会去看板的「余额」里出现。密钥只写进本机数据目录，界面不回显；留空表示不动已存的值。"),
       rows,
     );
-    return card;
   }
 
   providerRow(spec, cfg = {}) {
@@ -254,7 +443,7 @@ export class SettingsApp {
     checkbox.addEventListener("change", () => {
       sync();
       this.syncBalanceCount();
-      this.onEdit();
+      void this.commitCard("balance");
     });
     sync();
 
@@ -288,7 +477,12 @@ export class SettingsApp {
       spellcheck: "false",
       placeholder: isSecret && stored ? "已配置，留空保留" : "",
     });
-    input.addEventListener("input", () => this.onEdit());
+    // 打字时只更新徽章与恢复入口，失焦或回车才真的写盘。
+    input.addEventListener("input", () => {
+      this.syncProvBadges();
+      this.syncRestoreEntry(this.cards.get("balance"));
+    });
+    input.addEventListener("change", () => { void this.commitCard("balance"); });
     return h("div", { className: "tts-field" },
       h("div", { className: "tts-field__label" },
         h("span", { className: "tts-field__title" }, field.label),
@@ -300,11 +494,14 @@ export class SettingsApp {
 
   // 一行「左标签右下拉」。做成一个口子是因为这一张卡片里两行同构，不必各写一遍标记。
   // hint 传字符串就是静态说明，传函数就用它的返回值（样例需要跟着选中项实时重算）。
-  selectField({ id, title, hint, options, value, onChange }) {
+  selectField({ card, id, title, hint, options, value, onChange }) {
     const select = h("select", { id, className: "tts-select" },
       options.map((o) => h("option", { value: o.key, selected: o.key === value ? "" : undefined }, o.label)),
     );
-    select.addEventListener("change", () => onChange(select.value));
+    select.addEventListener("change", () => {
+      onChange(select.value);
+      void this.commitCard(card);
+    });
     const hintEl = h("span", { className: "tts-field__hint" }, typeof hint === "function" ? hint(value) : hint);
     return {
       hintEl,
@@ -322,15 +519,43 @@ export class SettingsApp {
   displayCard(s) {
     const density = s.display?.density === "comfortable" ? "comfortable" : "compact";
     const units = normalizeUnitSystem(s.display?.units);
+    const card = this.registerCard("display", {
+      read: () => ({
+        display: {
+          density: this.root.querySelector("#display-density")?.value || "compact",
+          units: normalizeUnitSystem(this.root.querySelector("#display-units")?.value),
+        },
+      }),
+      write: async (values) => {
+        this.settings = await this.api.saveSettings({ display: values.display }, { mock: this.mock });
+        // 密度是这个 App 所有页面的公共档位：这一页自己也跟着变，改完立刻能看见。
+        document.documentElement.dataset.density = this.settings.display?.density || "compact";
+      },
+      apply: (values) => {
+        const set = (id, v) => {
+          const el = this.root.querySelector(`#${id}`);
+          if (!el) return;
+          el.value = v;
+          // 自绘下拉的触发器是另一个节点：改完原生 select 得让它重画文案，否则屏幕上还是旧值。
+          el._ttSelect?.sync?.();
+        };
+        const units = normalizeUnitSystem(values.display?.units);
+        set("display-density", values.display?.density || "compact");
+        set("display-units", units);
+        if (unitsField) unitsField.hintEl.textContent = `当前写法：${unitSample(units)}`;
+      },
+    });
     const densityField = this.selectField({
+      card: "display",
       id: "display-density",
       title: "表格密度",
       hint: "紧凑少一行高，舒适留白多一点",
       options: DENSITIES,
       value: density,
-      onChange: () => this.onEdit(),
+      onChange: () => {},
     });
     const unitsField = this.selectField({
+      card: "display",
       id: "display-units",
       title: "数字单位",
       hint: (key) => `当前写法：${unitSample(key)}`,
@@ -338,11 +563,10 @@ export class SettingsApp {
       value: units,
       onChange: (key) => {
         unitsField.hintEl.textContent = `当前写法：${unitSample(key)}`;
-        this.onEdit();
       },
     });
     return h("section", { className: "tts-card" },
-      h("div", { className: "tts-card__head" }, h("h2", { className: "tts-card__title" }, "显示")),
+      this.cardHead("显示", card),
       h("p", { className: "tts-card__desc" }, "只影响这个 App 自己的页面：看板、卡片、明细和输入栏状态位都跟着走。"),
       h("div", { className: "tts-fields" }, densityField.node, unitsField.node),
     );
@@ -351,7 +575,29 @@ export class SettingsApp {
   // ── 卡片 4：关于
   // 版本与更新说明。说明一字不落地来自 GitHub Release（插件进程去取），不随 App 打包。
   // 这一格也是「关掉自动弹窗」之后仍然看得见版本与新版标记的地方。
+  //
+  // 这一张卡的另外两格（更新提示开关、检查间隔）存在插件进程的状态文件里，不走 /settings；
+  // 但对用户来说是同一条规则：改完就存。间隔非法时只标红、不提交。
   aboutCard() {
+    const card = this.registerCard("about", {
+      read: () => ({
+        enabled: this.aboutToggle.checked,
+        // 输入框非法时退回服务端现在的值：否则点一下开关会把一个坏数字一起发出去。
+        intervalMinutes: parseInterval(this.aboutInterval.value) ?? (this.update?.data?.intervalMinutes ?? 360),
+      }),
+      write: async (values) => {
+        await this.api.dismissUpdate({ action: "toggle", enabled: values.enabled, mock: this.mock });
+        await this.api.setUpdateInterval(values.intervalMinutes, { mock: this.mock });
+        // 新间隔可能已经过期，顺手问一次（间隔没到它不会真出门）。
+        void this.update?.refresh();
+      },
+      apply: (values) => {
+        if (this.aboutToggle) this.aboutToggle.checked = values.enabled !== false;
+        if (this.aboutInterval) this.aboutInterval.value = String(values.intervalMinutes ?? 360);
+        this.setIntervalHint("");
+      },
+    });
+
     this.aboutCurrent = h("b", { className: "tts-about__ver" }, "—");
     this.aboutLatest = h("b", { className: "tts-about__ver" }, "—");
     this.aboutTag = h("button", {
@@ -362,51 +608,36 @@ export class SettingsApp {
 
     const toggle = h("input", { type: "checkbox", id: "tt-update-notice" });
     this.aboutToggle = toggle;
-    toggle.addEventListener("change", async () => {
-      const on = toggle.checked;
-      this.setNote(on ? "已开启更新提示" : "已关闭更新提示", "ok");
-      try {
-        await this.api.dismissUpdate({ action: "toggle", enabled: on, mock: this.mock });
-      } catch (err) {
-        this.setNote(`更新提示没能存下来：${err.message}`, "err");
-      }
-    });
+    toggle.addEventListener("change", () => { void this.commitCard("about"); });
 
     // 检查间隔：文本输入框，单位分钟（默认 360，即 6 小时）。
-    // 本地先挡一道给个立即可见的反馈，真正的规矩在服务端：它还要防绕过。
+    // 填得不对就只标红、不提交，也不替她改成默认值；失焦或回车才试一次写入。
     const interval = h("input", {
       type: "text", inputMode: "numeric", id: "tt-update-interval", className: "tts-about__num",
       autocomplete: "off", spellcheck: false,
     });
     this.aboutInterval = interval;
-    const restoreInterval = () => {
-      interval.value = String(this.update?.data?.intervalMinutes ?? 360);
-    };
-    interval.addEventListener("change", async () => {
-      const raw = interval.value.trim();
-      const minutes = Number(raw);
-      if (!/^\d+$/.test(raw) || !Number.isInteger(minutes) || minutes < 1 || minutes > 10080) {
-        this.setNote("检查间隔要填 1 到 10080 之间的整数分钟数", "err");
-        restoreInterval();
+    this.intervalHintEl = h("span", { className: "tts-about__hint" }, "超过就自动检查");
+    interval.addEventListener("input", () => {
+      // 打字时只做一件事：改对了就把红字收回。打到一半不判它错。
+      if (parseInterval(interval.value) !== null) this.setIntervalHint("");
+      this.syncRestoreEntry(card);
+    });
+    interval.addEventListener("change", () => {
+      if (parseInterval(interval.value) === null) {
+        this.setIntervalHint("bad");
+        this.syncRestoreEntry(card);
         return;
       }
-      if (minutes === this.update?.data?.intervalMinutes) return;
-      try {
-        await this.api.setUpdateInterval(minutes, { mock: this.mock });
-        this.setNote(`检查间隔已存为 ${minutes} 分钟`, "ok");
-        // 新间隔可能已经过期，顺手问一次（间隔没到它不会真出门）。
-        void this.update?.refresh();
-      } catch (err) {
-        this.setNote(`检查间隔没能存下来：${err.message}`, "err");
-        restoreInterval();
-      }
+      this.setIntervalHint("");
+      void this.commitCard("about");
     });
 
     const row = (label, ...kids) => h("div", { className: "tts-about__row" },
       h("span", { className: "tts-about__label" }, label), ...kids);
 
     return h("section", { className: "tts-card" },
-      h("div", { className: "tts-card__head" }, h("h2", { className: "tts-card__title" }, "关于")),
+      this.cardHead("关于", card),
       h("p", { className: "tts-card__desc" }, "版本与更新说明。说明内容来自 GitHub Release，不随 App 打包；关掉更新提示后仍可在这里手动看。检查间隔到点就会自动去查一次。"),
       h("div", { className: "tts-about" },
         row("当前版本", this.aboutCurrent),
@@ -421,7 +652,7 @@ export class SettingsApp {
         ),
         h("label", { className: "tts-about__row tts-about__row--interval" },
           h("span", { className: "tts-about__label" }, "检查间隔"),
-          h("span", { className: "tts-about__hint" }, "超过就自动检查"),
+          this.intervalHintEl,
           h("span", { className: "tts-about__numwrap" }, interval, h("em", {}, "分钟")),
         ),
         row("检查",
@@ -430,6 +661,19 @@ export class SettingsApp {
         ),
       ),
     );
+  }
+
+  /** 检查间隔那一行的副文案：平时是一句说明，填得不对时就地变红说清范围。 */
+  setIntervalHint(state) {
+    const el = this.intervalHintEl;
+    if (!el) return;
+    if (state === "bad") {
+      el.textContent = `要填 ${INTERVAL_MIN} – ${INTERVAL_MAX} 的整数分钟`;
+      el.dataset.kind = "err";
+    } else {
+      el.textContent = "超过就自动检查";
+      delete el.dataset.kind;
+    }
   }
 
   // 快照一到就刷这一格：版本号、新版标记、开关状态。不自己算版本高低，只听服务端的判断。
@@ -446,49 +690,21 @@ export class SettingsApp {
     if (this.aboutInterval && document.activeElement !== this.aboutInterval) {
       const minutes = d?.intervalMinutes ?? 360;
       if (this.aboutInterval.value !== String(minutes)) this.aboutInterval.value = String(minutes);
+      this.setIntervalHint("");
     }
+    this.syncRestoreEntry(this.cards.get("about"));
   }
 
-  // ── 取值与状态
-  snapshot() {
-    return JSON.stringify(this.collectSettings());
-  }
-
-  isDirty() {
-    return this.snapshot() !== this.baseline;
-  }
-
-  collectSettings() {
-    const apis = {};
-    for (const p of PROVIDERS) {
-      const cfg = { enabled: this.root.querySelector(`#enable-${p.id}`)?.checked === true };
-      for (const f of p.fields) {
-        const input = this.root.querySelector(`#field-${p.id}-${f.key}`);
-        if (input) cfg[f.key] = input.value;
-      }
-      apis[p.id] = cfg;
-    }
-    return {
-      scanInterval: this.numberValue("scan-interval"),
-      highUsageThreshold: this.numberValue("high-threshold"),
-      balanceApis: apis,
-      display: {
-        density: this.root.querySelector("#display-density")?.value || "compact",
-        units: normalizeUnitSystem(this.root.querySelector("#display-units")?.value),
-      },
-    };
-  }
-
+  // ── 取值与校验
   numberValue(id) {
     const raw = this.root.querySelector(`#${id}`)?.value ?? "";
     const v = Number(raw);
     return raw.trim() !== "" && Number.isFinite(v) ? v : null;
   }
 
-  onEdit() {
-    this.message = null;
-    this.refreshFooter();
-    this.syncProvBadges();
+  setNumberValue(id, value) {
+    const input = this.root.querySelector(`#${id}`);
+    if (input) input.value = String(value ?? "");
   }
 
   syncProvBadges() {
@@ -503,22 +719,8 @@ export class SettingsApp {
     this.balanceCountEl.dataset.state = on ? "ok" : "off";
   }
 
-  refreshFooter() {
-    const dirty = this.isDirty();
-    this.saveBtn.disabled = !dirty || this.saving;
-    this.resetBtn.disabled = !dirty || this.saving;
-    if (this.saving || this.message) return;
-    this.setNote(dirty ? "有未保存的改动" : "");
-  }
-
-  setNote(text, kind = "") {
-    this.noteEl.textContent = text || "";
-    if (kind) this.noteEl.dataset.kind = kind;
-    else delete this.noteEl.dataset.kind;
-  }
-
   // 校验只做数字两项：区间与服务端同一组，错误就地写在那一行下面，别让人滚回去找。
-  validate() {
+  validateNumbers() {
     const problems = [];
     for (const [id, [min, max]] of Object.entries(RANGES)) {
       const input = this.root.querySelector(`#${id}`);
@@ -538,39 +740,6 @@ export class SettingsApp {
       if (msg) problems.push(`${NUMBER_LABELS[id]}：${msg}`);
     }
     return problems;
-  }
-
-  async onSave() {
-    const problems = this.validate();
-    if (problems.length) {
-      this.message = { text: problems.join("；"), kind: "err" };
-      this.setNote(this.message.text, "err");
-      return;
-    }
-    this.saving = true;
-    this.refreshFooter();
-    this.setNote("保存中…");
-    try {
-      this.settings = await this.api.saveSettings(this.collectSettings(), { mock: this.mock });
-      const density = this.settings.display?.density || "compact";
-      document.documentElement.dataset.density = density;
-      this.renderForm();
-      this.message = { text: "已保存", kind: "ok" };
-      this.setNote(this.message.text, "ok");
-    } catch (err) {
-      this.message = { text: `保存失败：${err.message}`, kind: "err" };
-      this.setNote(this.message.text, "err");
-    } finally {
-      this.saving = false;
-      this.refreshFooter();
-    }
-  }
-
-  // 放弃改动＝回到读进来的那一份，不再往返一次服务端：没保存过，磁盘上就是它。
-  onDiscard() {
-    this.renderForm();
-    this.message = { text: "已放弃未保存的改动", kind: "" };
-    this.setNote(this.message.text);
   }
 }
 
