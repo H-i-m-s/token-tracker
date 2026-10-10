@@ -1,0 +1,56 @@
+Token 用量 — 第三方代码声明
+Copyright (c) 2026 H-i-m-s
+
+本 App 整体以 Mozilla Public License v. 2.0（MPL-2.0）授权，许可证全文见同目录 LICENSE。
+MPL-2.0 以文件为单位生效：MPL 覆盖的文件必须保留其许可与版权声明，并继续以 MPL-2.0
+发布（含本仓库对它们的修改）；本仓库其余文件为本项目原创。
+
+
+## 衍生自 GitHana 的文件
+
+GitHana 以 MPL-2.0 授权，版权归 Copyright (c) 2026 Nyasers 所有，
+源码地址：https://github.com/Nyasers/GitHana
+
+大部分内容为 GitHana 同名文件的衍生（已修改）：
+  release/pack.mjs
+
+包含部分衍生代码（已修改）：
+  release/selfcheck.mjs
+
+以上文件的修改后版本同为 MPL-2.0，其 Source Code Form 可从本仓库获取：
+https://github.com/H-i-m-s/token-tracker
+
+
+## 取自 git-save-load 的发布工具链
+
+`release/` 下的出包 / 发版 / 投稿工具链整体取自同作者的 git-save-load
+（https://github.com/H-i-m-s/git-save-load）。以下十个文件逐字复制、未作修改：
+
+  发布.cmd   ship.ps1   publish.mjs   market.mjs   pack.mjs   exec.mjs   console.mjs
+  投稿规范.md   pr-assets/README.md   自测.md
+
+其中 pack.mjs 的源头可上溯到 GitHana（见上一节）。
+
+另外两个文件为插件专属，不属于逐字复制：
+  release/config.json     发布身份与打包范围
+  release/selfcheck.mjs   检查项按本插件结构重写（含 GitHana 衍生代码，见上一节）
+
+
+## 宿主 UI SDK 与第三方组件
+
+`ui/sdk/` 下的宿主 UI SDK 与第三方组件各有各的许可，原文见：
+  ui/sdk/THIRD_PARTY_NOTICES.txt
+  ui/sdk/components.js.LEGAL.txt
+
+
+## 许可通知
+
+This Source Code Form is subject to the terms of the Mozilla Public
+License, v. 2.0. If a copy of the MPL was not distributed with this
+file, You can obtain one at https://mozilla.org/MPL/2.0/.
+
+This Source Code Form is "Incompatible With Secondary Licenses", as
+defined by the Mozilla Public License, v. 2.0.
+
+Source code for this distribution is available at:
+https://github.com/H-i-m-s/token-tracker

@@ -183,9 +183,11 @@ node --test test/*.test.js     # 或 npm test；241 项
 
 ## 许可证
 
-本仓库当前**还没有 LICENSE 文件**。已知的第三方与衍生关系：
+本仓库以 **Mozilla Public License v. 2.0** 授权，全文见 [`LICENSE`](LICENSE)，
+第三方与衍生关系见 [`NOTICE`](NOTICE)。
 
-- `scripts/pack.mjs` 衍生自同作者项目的同名文件（那一个又部分衍生自 GitHana），以 MPL-2.0 授权，本文件头部保留了原始声明。
+MPL-2.0 以文件为单位生效，需要单独留意的两处：
+
+- `release/pack.mjs` 与 `release/selfcheck.mjs` 含衍生自 GitHana 的代码（MPL-2.0），
+  文件头部保留了原始声明；`release/` 下其余文件取自同作者的 git-save-load。
 - `ui/sdk/` 下的宿主 UI SDK 与第三方组件，许可原文见 `ui/sdk/THIRD_PARTY_NOTICES.txt` 与 `ui/sdk/components.js.LEGAL.txt`。
-
-仓库自身的授权范围待定。
