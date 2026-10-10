@@ -86,8 +86,8 @@ export function sleepSync(ms) {
 // ─────────────────────────────────────────────────────────────────────────────
 // git / gh
 // ─────────────────────────────────────────────────────────────────────────────
-export const git = (args, opts = {}) => runRetry("git", args, { ...opts, label: `git ${args[0]}` });
-export const gh = (args, opts = {}) => runRetry("gh", args, { ...opts, label: `gh ${args[0]}` });
+export const git = (args, opts = {}) => runRetry("git", args, { ...opts, label: opts.label || `git ${args[0]}` });
+export const gh = (args, opts = {}) => runRetry("gh", args, { ...opts, label: opts.label || `gh ${args[0]}` });
 
 export const gitQuiet = (args) => run("git", args);
 
@@ -102,12 +102,21 @@ export function ghApi(endpoint, opts = {}) {
     args.push("--input", "-");
     input = JSON.stringify(opts.body);
   }
-  const result = gh(args, { input, acceptNonZero: opts.acceptNonZero });
+  // label 带上方法和 endpoint：错的时候才知道是哪一个请求挂了。
+  // 不带的话所有调用都只报「gh api 失败」，一个 404 能把人查半天。
+  const result = gh(args, {
+    input,
+    acceptNonZero: opts.acceptNonZero,
+    label: `gh api ${opts.method || "GET"} ${endpoint}`,
+  });
   return result;
 }
 
 export function ghApiJson(endpoint, opts = {}) {
-  const result = ghApi(endpoint, opts);
+  // 失败一律返回 null，而不是抛。调用点全都写成 `if (!x?.sha) die("具体哪一步失败了")`，
+  // 这里先抛的话，那些更准确的错误永远轮不到。
+  // （原来的注释写的就是「失败返回 null」，是实现跟注释不一致，实测踩到了。）
+  const result = ghApi(endpoint, { ...opts, acceptNonZero: true });
   if (result.status !== 0) return null;
   try {
     return JSON.parse(result.stdout);
