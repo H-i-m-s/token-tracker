@@ -185,7 +185,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
   // 已经推过的快照签名：只有影响「提不提醒」的东西变了，才值得再推一次给界面。
   let pushedSignature = updateCheck.signature();
 
-  /** 看一眼有没有新版。内部按 TTL 节流，所以挂在扫描事件上随便调也不会把 GitHub 问爆。 */
+  /** 看一眼有没有新版。内部按用户设的检查间隔节流，所以挂在扫描事件上随便调也不会把 GitHub 问爆。 */
   async function refreshNotice({ force = false } = {}) {
     let snap;
     try {

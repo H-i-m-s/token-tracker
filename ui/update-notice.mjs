@@ -165,7 +165,9 @@ export function installUpdateNotice({ hana, api, mock = false, log = () => {} } 
       h("button", { type: "button", className: "tt-update-x", "aria-label": "关闭", onClick: bail }, "×"),
     );
 
-    const node = h("dialog", { className: "tt-update-dialog", "aria-label": "检查更新" }, head);
+    // tabindex=-1：让弹窗自己能接住初始焦点。不写的话浏览器会把焦点放在
+    // 第一个可聚焦的元素上（右上角那个 ×），并给它画一圈系统描边。
+    const node = h("dialog", { className: "tt-update-dialog", "aria-label": "检查更新", tabindex: "-1" }, head);
 
     function paint(snapshot) {
       view = snapshot;
@@ -292,6 +294,8 @@ export function installUpdateNotice({ hana, api, mock = false, log = () => {} } 
     document.body.appendChild(dialog);
     try { dialog.showModal(); }
     catch { try { dialog.setAttribute("open", ""); } catch {} }
+    // 焦点收回到弹窗自己身上（上一步浏览器已经把它给了 ×）。
+    try { dialog.focus(); } catch {}
   }
 
   /** 结果回来了就地换内容：节点不换，所以不会重播入场动效。 */
@@ -416,7 +420,7 @@ export function installUpdateNotice({ hana, api, mock = false, log = () => {} } 
   };
   document.addEventListener("visibilitychange", onVisibility);
 
-  // 打开界面就先看一次（服务端有 TTL，短时间反复打开界面不会把 GitHub 问爆）。
+  // 打开界面就先看一次（服务端按她设的间隔判，间隔没到就直接用手里那份）。
   void refresh();
 
   const controller = {

@@ -1704,9 +1704,23 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
   border-radius: 10px;
   background: var(--tt-card);
   color: var(--tt-t1);
-  padding: 15px;
+  padding: 16px;
+  /* 这一层是「要读的东西」，不是仪表盘上的注脚，字号整体比页面大一档。
+     基数字号定在这里，底部按钮（.tt-btn 是 font: inherit）跟着它走。 */
+  font-size: 13.5px;
   box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
 }
+/* 焦点圈：弹窗一打开，浏览器会把初始焦点放在第一个可聚焦的元素上（就是右上角那个 ×），
+   顺手把它那圈系统描边画出来（外白 + 内系统强调色），深色底上很扎眼。
+   这一层一律不画 outline：初始焦点交给弹窗自己（tabindex=-1），键盘走到按钮上时
+   用底色变化交代焦点，跟设置页同一套写法。 */
+.tt-update-dialog:focus,
+.tt-update-dialog:focus-visible,
+.tt-update-dialog :focus,
+.tt-update-dialog :focus-visible { outline: none; }
+.tt-update-x:focus-visible { color: var(--tt-t1); border-color: var(--tt-b2); background: var(--tt-row-hover); }
+.tt-update-ft .tt-btn:focus-visible { background: var(--tt-row-hover); color: var(--tt-em); }
+.tt-update-ft .tt-btn.primary:focus-visible { filter: brightness(1.08); }
 /* 居中不能指望 UA：本文件顶部那条 `* { margin: 0 }` 把对话框自带的 margin: auto 一并抹掉了，
    于是它停在左上角。这里把定位与居中显式写回来（inset: 0 + margin: auto）。 */
 .tt-update-dialog[open] { position: fixed; inset: 0; margin: auto; display: flex; flex-direction: column; }
@@ -1734,14 +1748,14 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
   border-radius: 14px;
 }
 .tt-update-hd { display: flex; align-items: flex-start; gap: 10px; }
-.tt-update-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.tt-update-title { margin: 0; font-size: 17px; font-weight: 600; letter-spacing: -.01em; }
 .tt-update-x {
-  margin-left: auto; flex: 0 0 auto; width: 22px; height: 22px; display: grid; place-items: center;
+  margin-left: auto; flex: 0 0 auto; width: 24px; height: 24px; display: grid; place-items: center;
   border: 1px solid transparent; border-radius: 6px; background: none; color: var(--tt-t3);
-  font: 13px/1 var(--font-sans); cursor: pointer;
+  font: 15px/1 var(--font-sans); cursor: pointer;
 }
 .tt-update-x:hover { color: var(--tt-t1); border-color: var(--tt-b2); background: var(--tt-row-hover); }
-.tt-update-state { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; font-size: 10.5px; color: var(--tt-t2); }
+.tt-update-state { display: flex; align-items: center; gap: 6px; margin: 8px 0 0; font-size: 12.5px; color: var(--tt-t2); }
 .tt-update-state .tt-update-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--tt-t3); flex: 0 0 auto; }
 .tt-update-state.new { color: var(--tt-select-fg); }
 .tt-update-state.new .tt-update-dot { background: var(--tt-select-b); }
@@ -1751,14 +1765,14 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 .tt-update-state.checking { color: var(--tt-select-fg); }
 .tt-update-state.checking .tt-update-dot { background: var(--tt-select-b); }
 .tt-update-vers {
-  display: flex; align-items: baseline; gap: 12px; margin-top: 12px; padding: 10px 12px;
+  display: flex; align-items: baseline; gap: 12px; margin-top: 13px; padding: 11px 13px;
   border: 1px solid var(--tt-b1); border-radius: 8px; background: var(--tt-bg);
 }
 .tt-update-vers > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
-.tt-update-vers span { font-size: 9.5px; color: var(--tt-t3); }
-.tt-update-vers b { font: 600 13px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.tt-update-vers span { font-size: 11.5px; color: var(--tt-t3); }
+.tt-update-vers b { font: 600 15px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
 .tt-update-vers .new b { color: var(--tt-select-fg); }
-.tt-update-vers i { font-style: normal; font-size: 9.5px; color: var(--tt-t2); }
+.tt-update-vers i { font-style: normal; font-size: 11.5px; color: var(--tt-t2); }
 .tt-update-vr { width: 1px; align-self: stretch; background: var(--tt-b1); }
 /* 内容区长的时候自己滚，弹窗不跟着长；点、拖、滚都不会关掉它。 */
 .tt-update-body {
@@ -1766,30 +1780,30 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
   scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent;
   border-top: 1px solid var(--tt-b1); border-bottom: 1px solid var(--tt-b1); padding: 10px 2px 10px 0;
 }
-.tt-update-note { margin: 0 0 8px; font-size: 10.5px; line-height: 1.5; color: var(--tt-t2); }
+.tt-update-note { margin: 0 0 8px; font-size: 12.5px; line-height: 1.55; color: var(--tt-t2); }
 .tt-update-note.err { color: var(--tt-orange); }
 .tt-update-ver + .tt-update-ver { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--tt-b3); }
 .tt-update-ver-hd { display: flex; align-items: baseline; gap: 7px; margin-bottom: 8px; }
-.tt-update-ver-hd b { font: 600 12px/1 var(--font-mono); }
-.tt-update-ver-hd span { font-size: 9.5px; color: var(--tt-t3); }
-.tt-update-ver-hd em { margin-left: auto; font-style: normal; font-size: 9px; color: var(--tt-t4); }
+.tt-update-ver-hd b { font: 600 14px/1 var(--font-mono); }
+.tt-update-ver-hd span { font-size: 11.5px; color: var(--tt-t3); }
+.tt-update-ver-hd em { margin-left: auto; font-style: normal; font-size: 11px; color: var(--tt-t4); }
 /* 分组标题的颜色按关键词给（新增/修复/优化），认不出就不上色。 */
 .tt-update-grp { margin: 0 0 9px; }
 .tt-update-grp:last-child { margin-bottom: 0; }
-.tt-update-grp h4 { margin: 0 0 5px; font-size: 9px; font-weight: 600; letter-spacing: .06em; color: var(--tt-t3); }
+.tt-update-grp h4 { margin: 0 0 5px; font-size: 11px; font-weight: 600; letter-spacing: .06em; color: var(--tt-t3); }
 .tt-update-grp.new h4 { color: var(--tt-blue); }
 .tt-update-grp.fix h4 { color: var(--tt-orange); }
 .tt-update-grp.tune h4 { color: var(--tt-green); }
-.tt-update-grp ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.tt-update-grp ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 6px; }
 .tt-update-grp li {
-  position: relative; padding-left: 11px; font-size: 11px; line-height: 1.5;
+  position: relative; padding-left: 12px; font-size: 13px; line-height: 1.55;
   color: var(--tt-t1); overflow-wrap: anywhere;
 }
 .tt-update-grp li::before {
-  content: ''; position: absolute; left: 2px; top: 7px;
+  content: ''; position: absolute; left: 2px; top: 8.5px;
   width: 3px; height: 3px; border-radius: 50%; background: var(--tt-b2);
 }
-.tt-update-ft { display: flex; align-items: center; gap: 8px; margin-top: 13px; }
+.tt-update-ft { display: flex; align-items: center; gap: 8px; margin-top: 14px; }
 .tt-update-ft .tt-btn.primary { margin-left: auto; }
 /* 系统开了「减少动态效果」：上面那组出场/退场动效根本不会声明，弹窗直接出现、直接消失。 */
 @media (prefers-reduced-motion: reduce) { .tt-update-dialog { scroll-behavior: auto; } }
