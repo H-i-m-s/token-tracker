@@ -168,13 +168,54 @@ test("检查：有新版就给说明，并算出「该不该自动浮起来」",
   assert.equal(calls.length, 1);
   assert.equal(calls[0].url, ATOM_URL);
 
-  // TTL 之内不再打网络
+  // 间隔之内不再打网络
   t += 60_000;
   await uc.check();
-  assert.equal(calls.length, 1, "一小时之内重复调用不该再问 GitHub");
+  assert.equal(calls.length, 1, "间隔没到不该再问 GitHub");
   // force 才真的去问
   await uc.check({ force: true });
   assert.equal(calls.length, 2);
+});
+
+// 检查间隔由用户定（状态里的 intervalMinutes，单位分钟），默认 6 小时 = 360 分钟。
+// 「超过这个时间上限就要自动检查更新」就是这一条的落点。
+test("检查间隔：默认 360 分钟，到了就自动再查一次，改小了也立刻按新的来", async () => {
+  let t = 1_000_000;
+  const { impl, calls } = stubFetch(ATOM);
+  const uc = createUpdateCheck({ dataDir: tmp(), appVersion: "8.5.0", fetchImpl: impl, now: () => t });
+  assert.equal(uc.snapshot().intervalMinutes, 360, "默认 6 小时");
+
+  await uc.check();
+  assert.equal(calls.length, 1);
+  t += 359 * 60_000;
+  await uc.check();
+  assert.equal(calls.length, 1, "还差一分钟，用手里那份");
+  t += 2 * 60_000;
+  await uc.check();
+  assert.equal(calls.length, 2, "过了 360 分钟，自动再查一次");
+
+  uc.setIntervalMinutes(5);
+  assert.equal(uc.snapshot().intervalMinutes, 5);
+  t += 6 * 60_000;
+  await uc.check();
+  assert.equal(calls.length, 3, "间隔改小之后按新的判");
+});
+
+test("检查间隔：非法值写明报错，不动已有设置", () => {
+  const uc = createUpdateCheck({ dataDir: tmp(), appVersion: "8.5.0", fetchImpl: null });
+  for (const bad of ["", "abc", "0", "-5", "3.5", "1e3", "99999", null, undefined]) {
+    assert.throws(() => uc.setIntervalMinutes(bad), (e) => e.code === "INVALID_INTERVAL", `应拒掉：${String(bad)}`);
+  }
+  assert.equal(uc.snapshot().intervalMinutes, 360, "被拒之后还是原来的值");
+  assert.equal(uc.setIntervalMinutes("15").intervalMinutes, 15, "字符串数字认");
+  assert.equal(uc.setIntervalMinutes(1).intervalMinutes, 1, "下限也认");
+});
+
+test("检查间隔：文件里那个数坏了就回落默认，不让整个功能起不来", () => {
+  const dir = tmp();
+  fs.writeFileSync(path.join(dir, "update-notice.json"), JSON.stringify({ enabled: true, intervalMinutes: 0 }));
+  const uc = createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: null });
+  assert.equal(uc.snapshot().intervalMinutes, 360);
 });
 
 test("检查：落后多个版本时，中间那几版的说明一起给，从新到旧", async () => {
@@ -215,6 +256,19 @@ test("不弹的两级：「先不看」只在本次进程里，「我已知晓�
   const reborn2 = createUpdateCheck({ dataDir: dir, appVersion: "8.5.0", fetchImpl: impl });
   assert.equal(reborn2.snapshot().shouldAutoShow, false, "新进程也不再提醒");
   assert.equal(reborn2.snapshot().hasUpdate, true, "「已知晓」不等于「没有新版」");
+});
+
+// 界面靠 settled 分辨“别的界面把这次提醒处理掉了”和“例行检查发回来的新快照”。
+// 分辨不出来的话，她自己那一次检查就会把自己刚推开的弹窗收掉，一收一开就是一闪。
+test("settled：只有真被处理过才是 true，例行检查不算", async () => {
+  const { impl } = stubFetch(ATOM);
+  const uc = createUpdateCheck({ dataDir: tmp(), appVersion: "8.5.0", fetchImpl: impl });
+  const fresh = await uc.check();
+  assert.equal(fresh.settled, false, "刚查到新版，还没处理");
+  assert.equal(uc.snapshot().settled, false, "例行再看一次也不算处理过");
+
+  uc.dismiss("v8.6.0", "later");
+  assert.equal(uc.snapshot().settled, true, "先不看算处理过");
 });
 
 test("关掉更新提示：一律不自动弹，但手动查仍然能看到有没有新版", async () => {

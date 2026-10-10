@@ -14,7 +14,7 @@ import { okResponse, errResponse } from "./lib/api-errors.mjs";
 import { buildDetailsCSV } from "./runtime/engine/services/details-csv.js";
 import { mockDashboardRows } from "./lib/mock-data.mjs";
 // 更新说明：内容来自 GitHub Release，不硬编码进界面（见 lib/update-check.mjs 顶部的来源说明）。
-import { createUpdateCheck, displayVersion } from "./lib/update-check.mjs";
+import { createUpdateCheck, displayVersion, DEFAULT_INTERVAL_MINUTES } from "./lib/update-check.mjs";
 
 export const APP_ID = "token-tracker-app";
 
@@ -457,6 +457,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       error: "",
       fromCache: true,
       enabled: true,
+      intervalMinutes: DEFAULT_INTERVAL_MINUTES,
       ackVersion: "",
       dismissedThisSession: false,
       shouldAutoShow: false,
@@ -466,6 +467,9 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
 
   async function handleUpdateCheck(c) {
     if (isMock(c)) return jsonResponse(c, okResponse({ update: mockNotice() }));
+    // cached=1：只把手里的结果交出去，不出网络。「查看更新说明」走这条，
+    // 所以它永远是「上次检查的结果」，不会因为点一下就去打 GitHub。
+    if (c.req.query("cached") === "1") return jsonResponse(c, okResponse({ update: updateCheck.snapshot() }));
     try {
       const update = await refreshNotice({ force: c.req.query("force") === "1" });
       return jsonResponse(c, okResponse({ update }));
@@ -489,8 +493,14 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       update = updateCheck.dismiss(body.version, action === "ack" ? "read" : "later");
     } else if (action === "toggle") {
       update = updateCheck.setEnabled(body.enabled !== false);
+    } else if (action === "interval") {
+      try {
+        update = updateCheck.setIntervalMinutes(body.minutes);
+      } catch (e) {
+        return jsonResponse(c, errResponse(e?.code || "INVALID_INTERVAL", e?.message || "检查间隔不合法"), 400);
+      }
     } else {
-      return jsonResponse(c, errResponse("UNKNOWN_ACTION", "action 只认 ack / later / toggle"), 400);
+      return jsonResponse(c, errResponse("UNKNOWN_ACTION", "action 只认 ack / later / toggle / interval"), 400);
     }
     pushedSignature = updateCheck.signature(update);
     updateEmitter.emit("update", { type: "update", updateNotice: update });

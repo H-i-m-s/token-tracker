@@ -372,12 +372,42 @@ export class SettingsApp {
       }
     });
 
+    // 检查间隔：文本输入框，单位分钟（默认 360，即 6 小时）。
+    // 本地先挡一道给个立即可见的反馈，真正的规矩在服务端：它还要防绕过。
+    const interval = h("input", {
+      type: "text", inputMode: "numeric", id: "tt-update-interval", className: "tts-about__num",
+      autocomplete: "off", spellcheck: false,
+    });
+    this.aboutInterval = interval;
+    const restoreInterval = () => {
+      interval.value = String(this.update?.data?.intervalMinutes ?? 360);
+    };
+    interval.addEventListener("change", async () => {
+      const raw = interval.value.trim();
+      const minutes = Number(raw);
+      if (!/^\d+$/.test(raw) || !Number.isInteger(minutes) || minutes < 1 || minutes > 10080) {
+        this.setNote("检查间隔要填 1 到 10080 之间的整数分钟数", "err");
+        restoreInterval();
+        return;
+      }
+      if (minutes === this.update?.data?.intervalMinutes) return;
+      try {
+        await this.api.setUpdateInterval(minutes, { mock: this.mock });
+        this.setNote(`检查间隔已存为 ${minutes} 分钟`, "ok");
+        // 新间隔可能已经过期，顺手问一次（间隔没到它不会真出门）。
+        void this.update?.refresh();
+      } catch (err) {
+        this.setNote(`检查间隔没能存下来：${err.message}`, "err");
+        restoreInterval();
+      }
+    });
+
     const row = (label, ...kids) => h("div", { className: "tts-about__row" },
       h("span", { className: "tts-about__label" }, label), ...kids);
 
     return h("section", { className: "tts-card" },
       h("div", { className: "tts-card__head" }, h("h2", { className: "tts-card__title" }, "关于")),
-      h("p", { className: "tts-card__desc" }, "版本与更新说明。说明内容来自 GitHub Release，不随 App 打包；关掉更新提示后仍可在这里手动看。"),
+      h("p", { className: "tts-card__desc" }, "版本与更新说明。说明内容来自 GitHub Release，不随 App 打包；关掉更新提示后仍可在这里手动看。检查间隔到点就会自动去查一次。"),
       h("div", { className: "tts-about" },
         row("当前版本", this.aboutCurrent),
         row("最新版本", this.aboutLatest, this.aboutTag),
@@ -388,6 +418,11 @@ export class SettingsApp {
             toggle,
             h("span", { className: "tts-switch__track" }, h("span", { className: "tts-switch__thumb" })),
           ),
+        ),
+        h("label", { className: "tts-about__row tts-about__row--interval" },
+          h("span", { className: "tts-about__label" }, "检查间隔"),
+          h("span", { className: "tts-about__hint" }, "超过就自动检查"),
+          h("span", { className: "tts-about__numwrap" }, interval, h("em", {}, "分钟")),
         ),
         row("检查",
           h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.update?.openManual() }, "检查更新"),
@@ -407,6 +442,11 @@ export class SettingsApp {
     this.aboutTag.hidden = !showTag;
     if (showTag) this.aboutTag.textContent = `有新版本 v${d.latest.version}`;
     if (this.aboutToggle) this.aboutToggle.checked = d ? d.enabled !== false : true;
+    // 输入框正在填的时候别去覆盖它，否则打字打到一半会被刷走。
+    if (this.aboutInterval && document.activeElement !== this.aboutInterval) {
+      const minutes = d?.intervalMinutes ?? 360;
+      if (this.aboutInterval.value !== String(minutes)) this.aboutInterval.value = String(minutes);
+    }
   }
 
   // ── 取值与状态

@@ -309,3 +309,34 @@ html:not([data-tt-appearance]) .tts-body {
 .tts-about__tag[hidden] { display: none; }
 .tts-about__tag:hover { color: #fff; background: color-mix(in srgb, var(--tt-select-bg) 78%, var(--tt-select-b)); }
 .tts-about .tt-btn { padding: 4px 10px; font-size: 11px; }
+/* 焦点圈：这一页此前没写自己的 focus 规则，浏览器就把它那圈系统描边顶上来了
+   （外白 + 内系统强调色），在深色底上很扎眼，跟这套深蓝也不合拍。
+   按钮改用与 hover 同一套底色变化交代焦点，不画任何框；输入类沿用各自的边框高亮。 */
+.tts :focus { outline: none; }
+.tts :focus-visible { outline: none; }
+.tts .tt-btn:focus-visible,
+.tts .tt-icon-btn:focus-visible {
+  background: var(--tt-row-hover);
+  color: var(--tt-em);
+  border-color: transparent;
+}
+.tts .tt-btn.primary:focus-visible {
+  background: var(--tt-select-bg);
+  color: var(--tt-select-fg);
+  border-color: var(--tt-select-b);
+}
+
+/* 检查间隔：文本输入框，单位分钟。数字用等宽右对齐，位数变化不跳。 */
+.tts-about__row--interval .tts-about__hint { flex: 1 1 auto; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.tts-about__numwrap { margin-left: auto; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 6px; }
+.tts-about__num {
+  width: 72px; padding: 4px 8px; box-sizing: border-box; text-align: right;
+  border: 1px solid var(--tt-b2); border-radius: 6px; background: var(--tt-bg); color: var(--tt-t1);
+  font: 500 12px var(--font-mono); font-variant-numeric: tabular-nums;
+}
+.tts-about__num:focus-visible {
+  outline: none;
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+.tts-about__numwrap em { font-style: normal; font-size: 11px; color: var(--tt-t3); }

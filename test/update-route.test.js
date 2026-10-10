@@ -195,6 +195,28 @@ test("取数走宿主受控通道：App 进程里裸 fetch 出站会被运行时
   assert.equal(seen.fetches, 0, "没有走裸 fetch");
 });
 
+test("GET /update-check?cached=1：只交手里的结果，一次网络都不出", async () => {
+  const { call, seen } = await boot();
+  await call("GET /update-check", { query: {} });
+  assert.equal(seen.fetches, 1);
+  const res = await call("GET /update-check", { query: { cached: "1" } });
+  assert.equal(res.payload.ok, true);
+  assert.equal(res.payload.update.latest.version, "99.0.0", "交的是上次那份结果");
+  assert.equal(seen.fetches, 1, "cached=1 不该再出去一次");
+});
+
+test("POST /update-check：检查间隔改得动，非法值明确报 400", async () => {
+  const { call } = await boot();
+  const good = await call("POST /update-check", { body: { action: "interval", minutes: 15 } });
+  assert.equal(good.status, 200);
+  assert.equal(good.payload.update.intervalMinutes, 15);
+
+  const bad = await call("POST /update-check", { body: { action: "interval", minutes: "abc" } });
+  assert.equal(bad.status, 400);
+  assert.equal(bad.payload.error.code, "INVALID_INTERVAL");
+  assert.match(bad.payload.error.message, /整数分钟/);
+});
+
 test("预览模式：给一份固定样张，且不会自己浮起来", async () => {
   const { call } = await boot();
   const res = await call("GET /update-check", { query: { mock: "1" } });

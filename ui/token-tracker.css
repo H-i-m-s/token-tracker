@@ -1710,6 +1710,21 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 /* 居中不能指望 UA：本文件顶部那条 `* { margin: 0 }` 把对话框自带的 margin: auto 一并抹掉了，
    于是它停在左上角。这里把定位与居中显式写回来（inset: 0 + margin: auto）。 */
 .tt-update-dialog[open] { position: fixed; inset: 0; margin: auto; display: flex; flex-direction: column; }
+/* 进出场。深色毛玻璃适合安静地浮起来：位移只几像素，主要靠淡入；收回比弹出短一截，
+   收得干脆才不黏。退场时长由 JS 现读一次（要等它走完才摘节点），所以改这里就能生效。 */
+@keyframes tt-update-in { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes tt-update-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(3px) scale(.995); } }
+@keyframes tt-update-scrim-in { from { opacity: 0; } to { opacity: 1; } }
+@keyframes tt-update-scrim-out { from { opacity: 1; } to { opacity: 0; } }
+@keyframes tt-update-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+@media (prefers-reduced-motion: no-preference) {
+  .tt-update-dialog[open] { animation: tt-update-in 190ms cubic-bezier(.2, .8, .3, 1) both; }
+  .tt-update-dialog[open]::backdrop { animation: tt-update-scrim-in 190ms ease both; }
+  /* 退场：与 [open] 同权重，靠写在后面取胜；退场中不再接手指，免得多点一下重复提交。 */
+  .tt-update-dialog.is-closing { animation: tt-update-out 130ms cubic-bezier(.4, 0, .7, 1) both; pointer-events: none; }
+  .tt-update-dialog.is-closing::backdrop { animation: tt-update-scrim-out 130ms ease both; }
+  .tt-update-state.checking .tt-update-dot { animation: tt-update-pulse 1s ease-in-out infinite; }
+}
 /* 背景整层模糊：这一层就是「聚焦更新说明」的全部实现。 */
 .tt-update-dialog::backdrop {
   background: rgba(4, 6, 10, .52);
@@ -1732,6 +1747,9 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 .tt-update-state.new .tt-update-dot { background: var(--tt-select-b); }
 .tt-update-state.error { color: var(--tt-red); }
 .tt-update-state.error .tt-update-dot { background: var(--tt-red); }
+/* 「正在检查」：蓝点加一点呼吸，告膏这事在跑。 */
+.tt-update-state.checking { color: var(--tt-select-fg); }
+.tt-update-state.checking .tt-update-dot { background: var(--tt-select-b); }
 .tt-update-vers {
   display: flex; align-items: baseline; gap: 12px; margin-top: 12px; padding: 10px 12px;
   border: 1px solid var(--tt-b1); border-radius: 8px; background: var(--tt-bg);
@@ -1773,4 +1791,5 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 }
 .tt-update-ft { display: flex; align-items: center; gap: 8px; margin-top: 13px; }
 .tt-update-ft .tt-btn.primary { margin-left: auto; }
+/* 系统开了「减少动态效果」：上面那组出场/退场动效根本不会声明，弹窗直接出现、直接消失。 */
 @media (prefers-reduced-motion: reduce) { .tt-update-dialog { scroll-behavior: auto; } }

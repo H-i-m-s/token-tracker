@@ -150,21 +150,29 @@ export class AppApi {
   }
 
   // 更新说明：内容与版本判断都在插件进程（那边去读 GitHub Release），这里只取快照、回报「看了没」。
-  async getUpdateCheck({ force = false, mock = false } = {}) {
+  // force=1 强制去查一次；cached=1 只拿手里那份，不出网络（「查看更新说明」走这条）。
+  async getUpdateCheck({ force = false, cached = false, mock = false } = {}) {
     const qs = new URLSearchParams();
     if (force) qs.set("force", "1");
+    if (cached) qs.set("cached", "1");
     if (mock) qs.set("mock", "1");
     const query = qs.toString();
     const data = await this.fetchJson(`/update-check${query ? `?${query}` : ""}`);
     return data.update;
   }
 
+  /** 改自动检查的间隔（分钟）。服务端校验，非法值会原样报回来。 */
+  setUpdateInterval(minutes, { mock = false } = {}) {
+    return this.dismissUpdate({ action: "interval", minutes, mock });
+  }
+
   // action：ack = 我已知晓（落盘，直到下个版本）；later = 先不看（只在插件进程内存里）；
-  // toggle = 更新提示开关。三个都走同一格，写完插件会广播给其他界面。
-  async dismissUpdate({ action, version = "", enabled = null, mock = false } = {}) {
+  // toggle = 更新提示开关；interval = 自动检查的间隔分钟数。都走同一格，写完插件会广播给其他界面。
+  async dismissUpdate({ action, version = "", enabled = null, minutes = null, mock = false } = {}) {
     const body = { action };
     if (version) body.version = version;
     if (enabled !== null) body.enabled = !!enabled;
+    if (minutes !== null) body.minutes = minutes;
     const data = await this.fetchJson(`/update-check${this._mockQs(mock)}`, {
       method: "POST",
       headers: { "content-type": "application/json" },
