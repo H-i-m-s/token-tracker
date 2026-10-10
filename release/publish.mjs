@@ -383,8 +383,15 @@ function commitAndTag(config, ctx, args) {
     info("manifest.json 没有变化，跳过提交");
   }
 
-  git(["tag", ctx.tag]);
-  info(`打 tag ${ctx.tag}`);
+  // tag 可能已经打过了：上一次发到一半（Release 发了、投稿没做成）重跑时会走到这里。
+  // 不用 -f 去覆盖：git tag 默认就拒绝覆盖，顺着它来。这个 tag 已经对外存在，
+  // 一旦它指向的提交和现在这批代码不同，-f 会把它悄悄挪走，那比报错麻烦得多。
+  if (gitQuiet(["rev-parse", "-q", "--verify", `refs/tags/${ctx.tag}`]).status === 0) {
+    info(`tag ${ctx.tag} 已存在，跳过打 tag`);
+  } else {
+    git(["tag", ctx.tag]);
+    info(`打 tag ${ctx.tag}`);
+  }
 
   git(["push", "origin", config.defaultBranch]);
   git(["push", "origin", ctx.tag]);
