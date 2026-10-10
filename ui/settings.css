@@ -286,3 +286,26 @@ html:not([data-tt-appearance]) .tts-body {
   .tts-input, .tts-field .tt-select { width: 100%; }
   .tts-input--num { width: 140px; }
 }
+
+/* ---------- 关于（版本与更新说明） ----------
+   版本、新版标记、更新提示开关与两个手动入口。关掉自动弹窗之后，
+   这里就是唯一能看见「有新版本」的地方，所以标记跟着版本号放。 */
+.tts-about { margin-top: 10px; border: 1px solid var(--tt-b1); border-radius: 10px; overflow: hidden; }
+.tts-about__row {
+  display: flex; align-items: center; gap: 10px; min-height: 38px;
+  padding: 9px 12px; border-bottom: 1px solid var(--tt-b3);
+}
+.tts-about__row:last-child { border-bottom: 0; }
+.tts-about__row--toggle { cursor: pointer; }
+.tts-about__row--toggle .tts-switch { margin-left: auto; }
+.tts-about__label { flex: 0 0 68px; color: var(--tt-t3); font-size: 12px; }
+.tts-about__ver { font: 600 12px var(--font-mono); font-variant-numeric: tabular-nums; }
+.tts-about__hint { color: var(--tt-t3); font-size: 12px; }
+.tts-about__tag {
+  padding: 2px 8px; border-radius: 999px; cursor: pointer;
+  border: 1px solid var(--tt-select-b); background: var(--tt-select-bg); color: var(--tt-select-fg);
+  font: 10px var(--font-sans);
+}
+.tts-about__tag[hidden] { display: none; }
+.tts-about__tag:hover { color: #fff; background: color-mix(in srgb, var(--tt-select-bg) 78%, var(--tt-select-b)); }
+.tts-about .tt-btn { padding: 4px 10px; font-size: 11px; }

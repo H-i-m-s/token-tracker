@@ -1689,3 +1689,82 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 .tt-diag-note { display: flex; align-items: center; gap: 8px; font-size: 10.5px; color: var(--tt-t3); }
 .tt-diag-note .tt-btn { padding: 2px 7px; font-size: 10px; }
 .tt-diag-foot { margin-top: 5px; font-size: 9.5px; color: var(--tt-t4); }
+
+/* ── 更新说明弹窗 ──────────────────────────────────────────────────────────
+   模态：native <dialog>.showModal 把底下界面挡死，::backdrop 那层负责模糊与压暗。
+   三条关闭路径（点背景 / × / 我已知晓）接在 ui/update-notice.mjs，这里只管长相。
+   弹窗内容全部来自 GitHub Release，样式不假设会有哪些分组。 */
+.tt-update-dialog {
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(86vh, 640px);
+  box-sizing: border-box;
+  border: 1px solid var(--tt-b2);
+  border-radius: 10px;
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  padding: 15px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+.tt-update-dialog[open] { display: flex; flex-direction: column; }
+/* 背景整层模糊：这一层就是「聚焦更新说明」的全部实现。 */
+.tt-update-dialog::backdrop {
+  background: rgba(4, 6, 10, .52);
+  backdrop-filter: blur(6px) saturate(115%);
+  -webkit-backdrop-filter: blur(6px) saturate(115%);
+}
+.tt-update-hd { display: flex; align-items: flex-start; gap: 10px; }
+.tt-update-title { margin: 0; font-size: 15px; font-weight: 600; letter-spacing: -.01em; }
+.tt-update-x {
+  margin-left: auto; flex: 0 0 auto; width: 22px; height: 22px; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 6px; background: none; color: var(--tt-t3);
+  font: 13px/1 var(--font-sans); cursor: pointer;
+}
+.tt-update-x:hover { color: var(--tt-t1); border-color: var(--tt-b2); background: var(--tt-row-hover); }
+.tt-update-state { display: flex; align-items: center; gap: 6px; margin: 7px 0 0; font-size: 10.5px; color: var(--tt-t2); }
+.tt-update-state .tt-update-dot { width: 5px; height: 5px; border-radius: 50%; background: var(--tt-t3); flex: 0 0 auto; }
+.tt-update-state.new { color: var(--tt-select-fg); }
+.tt-update-state.new .tt-update-dot { background: var(--tt-select-b); }
+.tt-update-state.error { color: var(--tt-red); }
+.tt-update-state.error .tt-update-dot { background: var(--tt-red); }
+.tt-update-vers {
+  display: flex; align-items: baseline; gap: 12px; margin-top: 12px; padding: 10px 12px;
+  border: 1px solid var(--tt-b1); border-radius: 8px; background: var(--tt-bg);
+}
+.tt-update-vers > div { display: flex; align-items: baseline; gap: 7px; min-width: 0; }
+.tt-update-vers span { font-size: 9.5px; color: var(--tt-t3); }
+.tt-update-vers b { font: 600 13px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
+.tt-update-vers .new b { color: var(--tt-select-fg); }
+.tt-update-vers i { font-style: normal; font-size: 9.5px; color: var(--tt-t2); }
+.tt-update-vr { width: 1px; align-self: stretch; background: var(--tt-b1); }
+/* 内容区长的时候自己滚，弹窗不跟着长；点、拖、滚都不会关掉它。 */
+.tt-update-body {
+  margin-top: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent;
+  border-top: 1px solid var(--tt-b1); border-bottom: 1px solid var(--tt-b1); padding: 10px 2px 10px 0;
+}
+.tt-update-note { margin: 0 0 8px; font-size: 10.5px; line-height: 1.5; color: var(--tt-t2); }
+.tt-update-note.err { color: var(--tt-orange); }
+.tt-update-ver + .tt-update-ver { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--tt-b3); }
+.tt-update-ver-hd { display: flex; align-items: baseline; gap: 7px; margin-bottom: 8px; }
+.tt-update-ver-hd b { font: 600 12px/1 var(--font-mono); }
+.tt-update-ver-hd span { font-size: 9.5px; color: var(--tt-t3); }
+.tt-update-ver-hd em { margin-left: auto; font-style: normal; font-size: 9px; color: var(--tt-t4); }
+/* 分组标题的颜色按关键词给（新增/修复/优化），认不出就不上色。 */
+.tt-update-grp { margin: 0 0 9px; }
+.tt-update-grp:last-child { margin-bottom: 0; }
+.tt-update-grp h4 { margin: 0 0 5px; font-size: 9px; font-weight: 600; letter-spacing: .06em; color: var(--tt-t3); }
+.tt-update-grp.new h4 { color: var(--tt-blue); }
+.tt-update-grp.fix h4 { color: var(--tt-orange); }
+.tt-update-grp.tune h4 { color: var(--tt-green); }
+.tt-update-grp ul { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+.tt-update-grp li {
+  position: relative; padding-left: 11px; font-size: 11px; line-height: 1.5;
+  color: var(--tt-t1); overflow-wrap: anywhere;
+}
+.tt-update-grp li::before {
+  content: ''; position: absolute; left: 2px; top: 7px;
+  width: 3px; height: 3px; border-radius: 50%; background: var(--tt-b2);
+}
+.tt-update-ft { display: flex; align-items: center; gap: 8px; margin-top: 13px; }
+.tt-update-ft .tt-btn.primary { margin-left: auto; }
+@media (prefers-reduced-motion: reduce) { .tt-update-dialog { scroll-behavior: auto; } }

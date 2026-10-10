@@ -149,6 +149,30 @@ export class AppApi {
     return data;
   }
 
+  // 更新说明：内容与版本判断都在插件进程（那边去读 GitHub Release），这里只取快照、回报「看了没」。
+  async getUpdateCheck({ force = false, mock = false } = {}) {
+    const qs = new URLSearchParams();
+    if (force) qs.set("force", "1");
+    if (mock) qs.set("mock", "1");
+    const query = qs.toString();
+    const data = await this.fetchJson(`/update-check${query ? `?${query}` : ""}`);
+    return data.update;
+  }
+
+  // action：ack = 我已知晓（落盘，直到下个版本）；later = 先不看（只在插件进程内存里）；
+  // toggle = 更新提示开关。三个都走同一格，写完插件会广播给其他界面。
+  async dismissUpdate({ action, version = "", enabled = null, mock = false } = {}) {
+    const body = { action };
+    if (version) body.version = version;
+    if (enabled !== null) body.enabled = !!enabled;
+    const data = await this.fetchJson(`/update-check${this._mockQs(mock)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    return data.update;
+  }
+
   async loadSettings({ mock = false } = {}) {
     const data = await this.fetchJson(`/settings${this._mockQs(mock)}`);
     return data.settings;

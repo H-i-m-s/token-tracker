@@ -1,5 +1,7 @@
 import { mkdir } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { createEventStreams } from "./lib/event-stream.mjs";
 import { EventEmitter } from "node:events";
 import { LocalClient } from "./lib/local-client.mjs";
@@ -11,6 +13,8 @@ import { okResponse, errResponse } from "./lib/api-errors.mjs";
 // 明细导出：CSV 的拼装在引擎侧（前端分页后手里只有一页），mock 预览用同一份拼装器与同一份 mock 行。
 import { buildDetailsCSV } from "./runtime/engine/services/details-csv.js";
 import { mockDashboardRows } from "./lib/mock-data.mjs";
+// 更新说明：内容来自 GitHub Release，不硬编码进界面（见 lib/update-check.mjs 顶部的来源说明）。
+import { createUpdateCheck, displayVersion } from "./lib/update-check.mjs";
 
 export const APP_ID = "token-tracker-app";
 
@@ -25,7 +29,7 @@ function textResponse(c, text, status = 200) {
 }
 
 
-export function apply(ctx, { clientFactory = options => new LocalClient(options) } = {}) {
+export function apply(ctx, { clientFactory = options => new LocalClient(options), updateCheckFactory = createUpdateCheck } = {}) {
   const log = (level, ...args) => {
     const sink = level === "warn" ? "warn" : level === "error" ? "error" : "log";
     try { ctx?.logger?.[level]?.(...args); } catch {}
@@ -157,9 +161,46 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
   updateEmitter.setMaxListeners(25);
   const streams = createEventStreams(updateEmitter);
 
+  // ── 更新说明 ──
+  // 当前版本只认包根的 manifest.json。release.ps1 已经把 manifest 定为唯一事实源
+  // （tag 由它推出、发布门禁也校验它），package.json 里的 version 历史上跟它漂过，不参与。
+  const APP_ROOT = path.dirname(fileURLToPath(import.meta.url));
+  const readAppVersion = () => {
+    try {
+      const text = readFileSync(path.join(APP_ROOT, "manifest.json"), "utf8").replace(/^\uFEFF/, "");
+      return String(JSON.parse(text)?.version || "");
+    } catch (e) {
+      log("warn", `manifest.json 读不到，版本号留空：${e?.message || e}`);
+      return "";
+    }
+  };
+  const appVersion = readAppVersion();
+  const updateCheck = updateCheckFactory({ dataDir, appVersion, log });
+  // 已经推过的快照签名：只有影响「提不提醒」的东西变了，才值得再推一次给界面。
+  let pushedSignature = updateCheck.signature();
+
+  /** 看一眼有没有新版。内部按 TTL 节流，所以挂在扫描事件上随便调也不会把 GitHub 问爆。 */
+  async function refreshNotice({ force = false } = {}) {
+    let snap;
+    try {
+      snap = await updateCheck.check({ force });
+    } catch (e) {
+      log("warn", `更新说明检查失败：${e?.message || e}`);
+      snap = updateCheck.snapshot();
+    }
+    const signature = updateCheck.signature(snap);
+    if (signature !== pushedSignature) {
+      pushedSignature = signature;
+      updateEmitter.emit("update", { type: "update", updateNotice: snap });
+    }
+    return snap;
+  }
+
   // Subscribe to this App's embedded service. No external plugin is required.
   const unsubscribeUpdates = busClient.subscribe("token-tracker.updated", (payload) => {
     updateEmitter.emit("update", { ...payload, type: "update" });
+    // 扫描出新用量时顺手看一眼版本：这就是「扫描出有新版本就提醒」的触发点，不另起定时器。
+    void refreshNotice();
   }, { mock: defaultMock });
 
   function isMock(c) {
@@ -394,11 +435,69 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     return jsonResponse(c, okResponse({ prefs }));
   }
 
+  // 预览模式没有真实版本可比：给一份固定的样张，好让弹窗在预览里也能看形状。
+  function mockNotice() {
+    const sections = [
+      { heading: "新增", items: ["明细表可以按「未命中缓存」排序", "更新说明弹窗：内容来自 GitHub Release"] },
+      { heading: "修复", items: ["中文供应商名筛选一直返回 0 行"] },
+    ];
+    return {
+      current: displayVersion(appVersion) || "8.5.0",
+      latest: { version: "8.7.0", tag: "v8.7.0", date: new Date().toISOString(), url: "", title: "Token 用量 v8.7.0" },
+      hasUpdate: true,
+      notes: [{ version: "8.7.0", tag: "v8.7.0", date: new Date().toISOString(), url: "", sections }],
+      releaseUrl: "",
+      checkedAt: Date.now(),
+      error: "",
+      fromCache: true,
+      enabled: true,
+      ackVersion: "",
+      dismissedThisSession: false,
+      shouldAutoShow: false,
+      mock: true,
+    };
+  }
+
+  async function handleUpdateCheck(c) {
+    if (isMock(c)) return jsonResponse(c, okResponse({ update: mockNotice() }));
+    try {
+      const update = await refreshNotice({ force: c.req.query("force") === "1" });
+      return jsonResponse(c, okResponse({ update }));
+    } catch (err) {
+      log("error", "GET /update-check error:", err?.message || err);
+      return jsonResponse(c, errResponse("UPDATE_CHECK_FAILED", err?.message || "检查更新失败"), 503);
+    }
+  }
+
+  // 「我已知晓」与「先不看」都走这里。后者只记在插件进程内存里，App 一重启就忘。
+  // 写完立刻广播：两个界面同时开着时，谁先关，另一个的弹窗跟着一起关。
+  async function handleUpdateDismiss(c) {
+    if (isMock(c)) return jsonResponse(c, okResponse({ update: mockNotice() }));
+    let body = {};
+    try {
+      body = await c.req.json();
+    } catch { return jsonResponse(c, errResponse("INVALID_JSON", "请求体必须是 JSON"), 400); }
+    const action = String(body?.action || "");
+    let update;
+    if (action === "ack" || action === "later") {
+      update = updateCheck.dismiss(body.version, action === "ack" ? "read" : "later");
+    } else if (action === "toggle") {
+      update = updateCheck.setEnabled(body.enabled !== false);
+    } else {
+      return jsonResponse(c, errResponse("UNKNOWN_ACTION", "action 只认 ack / later / toggle"), 400);
+    }
+    pushedSignature = updateCheck.signature(update);
+    updateEmitter.emit("update", { type: "update", updateNotice: update });
+    return jsonResponse(c, okResponse({ update }));
+  }
+
   let unregisterRoutes = null;
   try {
     unregisterRoutes = ctx.routes.register((app) => {
       app.get("/spike", (c) => textResponse(c, `${APP_ID} spike route ok`));
       app.get("/snapshot", handleSnapshot);
+      app.get("/update-check", handleUpdateCheck);
+      app.post("/update-check", handleUpdateDismiss);
       app.get("/dashboard", handleDashboard);
       app.get("/details.csv", handleDetailsCsv);
       app.get("/details", handleDetails);
@@ -428,7 +527,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     throw err;
   }
 
-  log("info", "routes registered: /snapshot /dashboard /details.csv /details /turn /diagnostics /balance /ds-usage /refresh /settings /input-status-prefs /events");
+  log("info", "routes registered: /snapshot /update-check /dashboard /details.csv /details /turn /diagnostics /balance /ds-usage /refresh /settings /input-status-prefs /events");
 
   let disposed = false;
   return async () => {

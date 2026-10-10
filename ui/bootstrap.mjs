@@ -2,6 +2,7 @@ import { AppApi } from "./app-api.mjs";
 import { AppState } from "./app-state.mjs";
 import { initTheme } from "./theme.mjs";
 import { setUnitSystem } from "./units.mjs";
+import { installUpdateNotice } from "./update-notice.mjs";
 
 export const APP_ID = "token-tracker-app";
 
@@ -37,8 +38,19 @@ export async function bootstrap(options = {}) {
   await initTheme(hana);
 
   const api = new AppApi({ apiFetch: hana.api.fetch.bind(hana.api) });
+
+  // 更新说明弹窗：每个界面都装一份（设置页与卡片主界面都要能弹），跨界面靠事件流同步。
+  // 预览模式拿的是插件给的固定样张，不自动浮起来，但「查看更新说明」仍能看形状。
+  const mockMode = options.mock || new URLSearchParams(window.location.search).get("mock") === "1";
+  const update = installUpdateNotice({
+    hana,
+    api,
+    mock: !!mockMode,
+    log: (message) => { try { console.warn("[token-tracker]", message); } catch {} },
+  });
+
   if (options.stateless) {
-    return { hana, slot, cardInstanceId, api, state: null };
+    return { hana, slot, cardInstanceId, api, state: null, update };
   }
 
   try {
@@ -51,5 +63,5 @@ export async function bootstrap(options = {}) {
   const state = new AppState({ hana, slot, cardInstanceId });
   await state.init();
 
-  return { hana, slot, cardInstanceId, api, state };
+  return { hana, slot, cardInstanceId, api, state, update };
 }

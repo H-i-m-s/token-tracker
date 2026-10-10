@@ -75,11 +75,14 @@ const SAMPLE_TOKENS = 123456789;
 const unitSample = (key) => scaleText(SAMPLE_TOKENS, { system: key, space: " " });
 
 export class SettingsApp {
-  constructor({ hana, api, container, mock = false }) {
+  constructor({ hana, api, container, mock = false, update = null }) {
     this.hana = hana;
     this.api = api;
     this.container = container;
     this.mock = mock;
+    // 更新说明的控制器（弹窗、快照、开关都归它）。预览模式可能拿不到，所以先允许空。
+    this.update = update;
+    this.unsubscribeUpdate = null;
     this.settings = null;
     this.baseline = "";
     this.message = null;   // 结论性提示（已保存 / 保存失败）：留着，直到下一次改动
@@ -90,6 +93,8 @@ export class SettingsApp {
   async init() {
     this.renderShell();
     this.setNote("读取设置…");
+    // 「关于」卡片跟着更新快照走：不管弹窗有没有浮起来，版本号和标记都要是最新的。
+    this.unsubscribeUpdate = this.update?.subscribe(() => this.syncAbout()) || null;
     try {
       this.settings = await this.api.loadSettings({ mock: this.mock });
     } catch (err) {
@@ -138,11 +143,12 @@ export class SettingsApp {
     closeOpenSelect(this.cardsEl);
     this.cardsEl.innerHTML = "";
     this.provRows = [];
-    this.cardsEl.append(this.basicCard(s), this.balanceCard(s), this.displayCard(s));
+    this.cardsEl.append(this.basicCard(s), this.balanceCard(s), this.displayCard(s), this.aboutCard());
     enhanceSelects(this.cardsEl);
     // 徽章与计数都读实时 DOM（比如「凭据填了没有」要看输入框），所以必须等这一批卡片挂进页面之后再算一次。
     for (const row of this.provRows) row.sync();
     this.syncBalanceCount();
+    this.syncAbout();
     this.baseline = this.snapshot();
     this.message = null;
     this.refreshFooter();
@@ -342,6 +348,67 @@ export class SettingsApp {
     );
   }
 
+  // ── 卡片 4：关于
+  // 版本与更新说明。说明一字不落地来自 GitHub Release（插件进程去取），不随 App 打包。
+  // 这一格也是「关掉自动弹窗」之后仍然看得见版本与新版标记的地方。
+  aboutCard() {
+    this.aboutCurrent = h("b", { className: "tts-about__ver" }, "—");
+    this.aboutLatest = h("b", { className: "tts-about__ver" }, "—");
+    this.aboutTag = h("button", {
+      type: "button", className: "tts-about__tag", hidden: true,
+      title: "打开更新说明",
+      onClick: () => this.update?.openManual(),
+    }, "有新版本");
+
+    const toggle = h("input", { type: "checkbox", id: "tt-update-notice" });
+    this.aboutToggle = toggle;
+    toggle.addEventListener("change", async () => {
+      const on = toggle.checked;
+      this.setNote(on ? "已开启更新提示" : "已关闭更新提示", "ok");
+      try {
+        await this.api.dismissUpdate({ action: "toggle", enabled: on, mock: this.mock });
+      } catch (err) {
+        this.setNote(`更新提示没能存下来：${err.message}`, "err");
+      }
+    });
+
+    const row = (label, ...kids) => h("div", { className: "tts-about__row" },
+      h("span", { className: "tts-about__label" }, label), ...kids);
+
+    return h("section", { className: "tts-card" },
+      h("div", { className: "tts-card__head" }, h("h2", { className: "tts-card__title" }, "关于")),
+      h("p", { className: "tts-card__desc" }, "版本与更新说明。说明内容来自 GitHub Release，不随 App 打包；关掉更新提示后仍可在这里手动看。"),
+      h("div", { className: "tts-about" },
+        row("当前版本", this.aboutCurrent),
+        row("最新版本", this.aboutLatest, this.aboutTag),
+        h("label", { className: "tts-about__row tts-about__row--toggle" },
+          h("span", { className: "tts-about__label" }, "更新提示"),
+          h("span", { className: "tts-about__hint" }, "扫描到新版本就弹窗提醒"),
+          h("span", { className: "tts-switch" },
+            toggle,
+            h("span", { className: "tts-switch__track" }, h("span", { className: "tts-switch__thumb" })),
+          ),
+        ),
+        row("检查",
+          h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.update?.openManual() }, "检查更新"),
+          h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.update?.openCached() }, "查看更新说明"),
+        ),
+      ),
+    );
+  }
+
+  // 快照一到就刷这一格：版本号、新版标记、开关状态。不自己算版本高低，只听服务端的判断。
+  syncAbout() {
+    if (!this.aboutCurrent) return;
+    const d = this.update?.data;
+    this.aboutCurrent.textContent = d?.current ? `v${d.current}` : "—";
+    this.aboutLatest.textContent = d ? (d.latest ? `v${d.latest.version}` : "—") : "…";
+    const showTag = !!d?.hasUpdate;
+    this.aboutTag.hidden = !showTag;
+    if (showTag) this.aboutTag.textContent = `有新版本 v${d.latest.version}`;
+    if (this.aboutToggle) this.aboutToggle.checked = d ? d.enabled !== false : true;
+  }
+
   // ── 取值与状态
   snapshot() {
     return JSON.stringify(this.collectSettings());
@@ -472,7 +539,7 @@ export async function bootSettings(options = {}) {
   const mock = options.mock || new URLSearchParams(window.location.search).get("mock") === "1";
   const container = document.getElementById("app-root");
   if (!container) throw new Error("#app-root not found");
-  const app = new SettingsApp({ hana: ctx.hana, api: ctx.api, container, mock });
+  const app = new SettingsApp({ hana: ctx.hana, api: ctx.api, container, mock, update: ctx.update });
   await app.init();
   return app;
 }
