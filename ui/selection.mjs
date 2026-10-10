@@ -52,11 +52,17 @@ export function pickValues(current, id, ordered, mods = {}, anchor = null) {
 }
 
 // 查询串取值：每个值编码后用半角逗号连接，引擎侧按同一规则切回来。
-// 编两次是有原因的：插件层拿到 query 时会先解一次码，如果只编一次，
-// 值里本来带的逗号（%2C）会在路上变回真逗号，被引擎当成分隔符切坏。
-// 编两次后：插件解一次 → 还是 %2C → 引擎先切分再解码 → 还原成原来的逗号。
+//
+// 这条链上「编码」与「解码」的次数必须配平，而传输那一跳也算数：
+//   UI 编一次（本函数）→ app-api 把结果 set 进 URLSearchParams，传输层自己再转义一次
+//   （% → %25）→ 宿主 c.req.query() 解一次码 → 引擎 toList() 先按逗号切分、再解一次码。
+// 两编两解，值原样到达；值里带的逗号也不会被切坏，因为到引擎手上时它还是 %2C 的形态。
+//
+// 所以这里只能编一次。URLSearchParams 那一跳已经在编了，本函数再编一次就成了「三编两解」，
+// 最后会剩一层壳脱不掉：中文这类非 ASCII 的值永远到不了终点，筛选静默地筛出 0 行。
+// （2026-10-01 的「多选」提交就是漏算了传输那一跳。）
 export function selectionParam(value) {
-  return asList(value).map((v) => encodeURIComponent(encodeURIComponent(v))).join(",");
+  return asList(value).map((v) => encodeURIComponent(v)).join(",");
 }
 
 // 选中集合的稳定键：同一组值不管点的先后顺序，键都一样，免得白重取一次看板。

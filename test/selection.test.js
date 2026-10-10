@@ -71,20 +71,26 @@ test("pickValues：结果按显示顺序排，不因点选先后而变（请求�
   assert.deepEqual(pickValues(["A", "B"], "B", ORDER, { multi: true }), ["A"]);
 });
 
-test("selectionParam：编码后逗号连接；值里的逗号不会被参数切坏", () => {
+test("selectionParam：每个值编一次，再用半角逗号连接", () => {
   assert.equal(selectionParam(["A", "B"]), "A,B");
-  assert.equal(selectionParam("A"), "A", "普通 id 编一次与编两次长得一样");
-  // a,b 里那个逗号必须能完整走完一圈：UI 编两次 → 插件解一次 → 引擎 toList 切分再解码
-  assert.equal(selectionParam(["a,b"]), "a%252Cb");
+  assert.equal(selectionParam("A"), "A", "普通 id 编码前后一样");
+  assert.equal(selectionParam(["a,b"]), "a%2Cb", "值里的逗号编成 %2C，不会在路上被当成分隔符");
   assert.equal(selectionParam([]), "");
   assert.equal(selectionParam(null), "");
 });
 
-test("跨层契约：UI 编码 → 插件解一次码 → 引擎 toList 还原成同一组值", () => {
-  const ids = ["deepseek-flash", "a,b", "名字 带空格", "100%", "slash/and,comma"];
-  const wire = selectionParam(ids);
-  const asPluginSeesIt = decodeURIComponent(wire);   // 插件层 c.req.query(name) 会解一次码
-  assert.deepEqual(toList(asPluginSeesIt), ids);
+// 传输那一跳必须算进来：app-api 把 selectionParam 的结果 set 进 URLSearchParams，
+// 后者会把值里的 % 再转义成 %25。漏掉这一步，测试会绿着而线上筛不出东西
+// （中文供应商名曾因此一直返回 0 行）。
+const onTheWire = (key, ids) => new URLSearchParams({ [key]: selectionParam(ids) }).toString();
+// 宿主那一层：c.req.query(name) 对线上的值解一次码（Hono 的行为）。
+const hostHandsToPlugin = (wire) => decodeURIComponent(wire.slice(wire.indexOf("=") + 1));
+
+test("跨层契约：UI 编一次 → 传输转义 → 宿主解一次 → 引擎 toList 还原成同一组值", () => {
+  const ids = ["deepseek-flash", "a,b", "名字 带空格", "100%", "slash/and,comma", "商汤科技"];
+  assert.deepEqual(toList(hostHandsToPlugin(onTheWire("model", ids))), ids);
+  // 把非 ASCII 那一项单独钉住：它曾是「筛选静默返回 0 行」的现场。
+  assert.deepEqual(toList(hostHandsToPlugin(onTheWire("provider", ["商汤科技"]))), ["商汤科技"]);
   assert.deepEqual(toList(""), [], "空串 = 不筛");
   assert.deepEqual(toList(["A"]), ["A"], "数组直接收（RPC 里也能是数组）");
   assert.deepEqual(toList("A"), ["A"], "旧单值字符串仍然吃得下");
