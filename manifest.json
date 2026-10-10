@@ -2,7 +2,7 @@
   "manifestVersion": 2,
   "id": "token-tracker-app",
   "name": "Token 用量",
-  "description": "本机 Token 用量看板：把会话与账本扫成可筛可导的用量记录，按时间、模型、Agent 看用量与花费；余额额度一并查，附五种分析图表与实时速度。数据不出本机，自带历史归档，无需配套插件。",
+  "description": "本机 Token 用量看板：把会话与账本扫成可筛可导的用量记录，按时间、模型、Agent 看用量与花费；余额额度一并查，另有五种分析图表，以及挂在输入框下的缓存命中、生成速度与首字响应时间。数据不出本机，自带历史归档，无需配套插件。",
   "version": "8.6.0",
   "minAppVersion": "0.1050.9",
   "entry": "index.js",
