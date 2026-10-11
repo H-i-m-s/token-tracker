@@ -82,6 +82,11 @@ function parseInterval(raw) {
 
 // 「已保存」浮多久。默认什么都不显示，动过之后才浮一下，然后自己走，不留噪声。
 const SAVED_FADE_MS = 2000;
+// 淡入淡出走多久（与 settings.css 里 .tts-card__state 的 opacity 过渡对齐）。
+// 退场是「先淡、淡完再清文字」，所以还要多等这一小段才把内容抹掉。
+const FADE_MS = 200;
+// 下一帧再加 .is-on。同一帧里既写文字又点亮的话，浏览器可能还没算过初始样式，过渡不会跑。
+const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame : (fn) => setTimeout(fn, 0);
 
 // 设置页自己的样例：拿一个够大的数，按选中的那套写一遍。
 // 这一页除了阈值没有别的数字，不给样例就看不出两套写法的差别。空格与看板一致（看板上是「260.92 亿」）。
@@ -185,11 +190,10 @@ export class SettingsApp {
     const restoreEl = h("button", {
       type: "button",
       className: "tts-card__restore",
-      hidden: true,
       title: "恢复成这次打开设置页时的值",
       onClick: () => this.restoreCard(id),
     }, "恢复上次的值");
-    const card = { id, read, write, apply, stateEl, restoreEl, baseline: "", busy: false, pending: false, fade: null };
+    const card = { id, read, write, apply, stateEl, restoreEl, baseline: "", busy: false, pending: false, fade: null, fadeOut: null };
     this.cards.set(id, card);
     return card;
   }
@@ -264,18 +268,46 @@ export class SettingsApp {
     this.syncRestoreEntry(card);
   }
 
+  /**
+   * 「恢复上次的值」只在「眼前这一份 ≠ 上一次保存成功的那一份」时点亮。
+   * 用 class 而不是 hidden：淡入淡出得有个一直渲染着的节点才谈得上过渡，
+   * 平时 opacity: 0 且不接手点击，所以占位不挡事。
+   */
   syncRestoreEntry(card) {
     if (!card?.restoreEl) return;
-    card.restoreEl.hidden = this.cardValue(card) === card.baseline;
+    card.restoreEl.classList.toggle("is-on", this.cardValue(card) !== card.baseline);
   }
 
+  /**
+   * 卡片头的提交状态。出现淡入、消失淡出（节奏在 settings.css 的 .tts-card__state 里）。
+   * 「已保存」两秒后自己走：先摘 .is-on 让它淡出去，等淡完再把文字清掉 —— 顺序反了
+   * 会先塌成一格再淡，看着像闪。红字（填得不对 / 保存失败）留着不动，等人看见。
+   */
   setCardState(card, state, text, fade = false) {
-    if (!card.stateEl) return;
+    const el = card?.stateEl;
+    if (!el) return;
     if (card.fade) { clearTimeout(card.fade); card.fade = null; }
-    card.stateEl.textContent = text || "";
-    if (state) card.stateEl.dataset.state = state;
-    else delete card.stateEl.dataset.state;
-    if (fade) card.fade = setTimeout(() => this.setCardState(card, "", ""), SAVED_FADE_MS);
+    if (card.fadeOut) { clearTimeout(card.fadeOut); card.fadeOut = null; }
+    if (text) {
+      el.textContent = text;
+      if (state) el.dataset.state = state;
+      else delete el.dataset.state;
+      raf(() => el.classList.add("is-on"));
+    } else {
+      el.classList.remove("is-on");
+      delete el.dataset.state;
+    }
+    if (text && fade) {
+      card.fade = setTimeout(() => {
+        card.fade = null;
+        el.classList.remove("is-on");                       // 先淡出去
+        card.fadeOut = setTimeout(() => {
+          card.fadeOut = null;
+          el.textContent = "";                              // 淡完再清字，不然会先塌成一格
+          delete el.dataset.state;
+        }, FADE_MS);
+      }, SAVED_FADE_MS);
+    }
   }
 
   setPageNote(text, kind = "") {

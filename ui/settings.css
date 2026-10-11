@@ -249,19 +249,27 @@ html:not([data-tt-appearance]) .tts-body {
    这一页没有保存按钮：每张卡改完自己存，所以状态写在卡片头上，而不是写在页尾。
    默认什么都不显示（:empty 不占位置），动过之后才浮出来，两秒后自己走。 */
 .tts-card__right { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.tts-card__state { font-size: 11.5px; color: var(--tt-t3); white-space: nowrap; }
-.tts-card__state:empty { display: none; }
+/* 出现淡入、消失淡出。空着的时候不写 :empty { display: none } —— 那样节点从来没被
+   渲染过，下一次点亮时浏览器不会给过渡，第一帧就直接蹦出来。空的 inline 元素
+   本来就是零宽，不占位置（magpie-hana 那边同一条规矩）。 */
+.tts-card__state {
+  font-size: 11.5px; color: var(--tt-t3); white-space: nowrap;
+  opacity: 0; transition: opacity 160ms ease;
+}
+.tts-card__state.is-on { opacity: 1; }
 .tts-card__state[data-state="saved"] { color: var(--tt-green); }
 .tts-card__state[data-state="error"] { color: var(--tt-red); }
-/* 「恢复上次的值」：只在这张卡真的变过之后才出现，平时不占位置。 */
+/* 「恢复上次的值」：只在这张卡真的变过之后才点亮；平时在位上但透明，也不接手点击。 */
 .tts-card__restore {
   border: 0; padding: 0; background: none; cursor: pointer;
   color: var(--tt-t3); font: 11.5px var(--font-sans);
   text-decoration: underline dotted color-mix(in srgb, var(--tt-t3) 60%, transparent);
   text-underline-offset: 3px;
+  opacity: 0; pointer-events: none;
+  transition: opacity 160ms ease, color 0.15s ease;
 }
+.tts-card__restore.is-on { opacity: 1; pointer-events: auto; }
 .tts-card__restore:hover { color: var(--tt-t1); }
-.tts-card__restore[hidden] { display: none; }
 
 /* 页面级提示：读取失败、某次保存失败的详细原因。平时是空的。 */
 .tts-page-note { margin: 6px 0 0; font-size: 12.5px; line-height: 1.5; color: var(--tt-t3); overflow-wrap: anywhere; }
@@ -272,7 +280,8 @@ html:not([data-tt-appearance]) .tts-body {
 .tts-about__hint[data-kind="err"] { color: var(--tt-red); }
 
 @media (prefers-reduced-motion: reduce) {
-  .tts-input, .tts-switch__track, .tts-switch__thumb { transition: none; }
+  .tts-input, .tts-switch__track, .tts-switch__thumb,
+  .tts-card__state, .tts-card__restore { transition: none; }
 }
 
 @media (max-width: 520px) {
