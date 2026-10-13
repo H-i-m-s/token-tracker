@@ -6,6 +6,11 @@ import { splineCurve, splineValueAt } from './curve.mjs';
 
 const COLORS = ['#d1b477', '#7ea3cf', '#81b4a1', '#c68487', '#aa97c8', '#a7b779', '#bd987b', '#8897aa'];
 
+// 减少动效：这条偏好在这份文件里只有图例高度/位置两处动效需要问它，不单独抽工具模块。
+const prefersReducedMotion = () => typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+// 图例高度过渡与逐项位移同长，跟 CSS 那条 height 过渡、曲线那条 d 过渡对齐。
+const LEGEND_MS = 260;
+
 // Use one scale for every visible row: equal daily usage gets equal intensity.
 export function activityLevel(value, peak) {
   if (!(value > 0) || !(peak > 0)) return 0;
@@ -180,6 +185,75 @@ function createFlowPanel() {
   for (let i = 0; i < 3; i++) axesBox.append(gridRows[i], yLabelSpans[i]);
   const plot = h('div', { className: 'tt-flow-plot', 'data-tt-select': '' }, chart, axesBox, hud);
   const legendBox = h('div', { className: 'tt-board-legend tt-legend-totals' });
+  // ── 图例的换行与高度过渡 ──
+  // 模型一多（十几个是常态），图例一行放不下。CSS 那边已经把容器放开成多行，
+  // 这里只管把“高度变化”做成过渡：换内容前把高度塌到 0 量出新内容的自然高度，
+  // 再回到旧高度、开启过渡放到新高度。这样量得准是因为图例的 overflow 是 visible，
+  // 塌到 0 时 scrollHeight 就是内容高度；若锁在旧高度上，内容变短时 scrollHeight 会恒等于旧高。
+  // 整段同步跑完，中间没有合成帧，用户看不到塌下去那一下。
+  // 高度一变，上面的 .tt-flow-canvas → .tt-board-body → section 与 .tt-board 里的 max-content 行
+  // 会逐帧跟着重算，面板因此是滑着长高/回落，而不是“啪”地跳一格。
+  let legendTimer = 0, legendDrawn = false;
+  const setLegend = (nodes) => {
+    const from = legendBox.hidden ? 0 : legendBox.offsetHeight;
+    // 首次入画不做过渡：那次没有“从哪儿来”，从 0 滑到满高反而多出一段莫名其妙的抽动。
+    if (!legendDrawn || !from || prefersReducedMotion()) { legendBox.replaceChildren(...nodes); legendDrawn = true; return; }
+    // 量自然高度：脱开过渡、把高度交回 auto，量到的 offsetHeight 才是带边框与内边距的真值。
+    // （不能靠“塔到 0 再读 scrollHeight”：那条路会把边框漏掉 1px。）
+    // 这整段同步跑完，中间没有合成帧，用户看不到“先量后放”那个中间态。
+    legendBox.style.transition = 'none';
+    legendBox.style.height = 'auto';
+    legendBox.replaceChildren(...nodes);
+    const to = legendBox.offsetHeight;
+    legendBox.style.height = from + 'px';
+    void legendBox.offsetHeight;                 // 逼一次布局：把旧高度与“无过渡”先落定
+    legendBox.style.transition = '';
+    legendBox.style.height = Math.abs(to - from) >= 1 ? to + 'px' : '';
+    clearTimeout(legendTimer);
+    // 过渡完把内联高度交还给 auto：不交回去，窗口一缩图例就只能沿旧高度溢出。
+    legendTimer = setTimeout(() => { legendBox.style.height = ''; }, LEGEND_MS + 80);
+  };
+  // 宽度变化（拖窗口、拉分栏）会让图例重新折行，项与项的位置是瞬跳的。
+  // 用 FLIP 补上：行数一变，就拿上一帧稳定时的位置反推偏移，再补间到 0。
+  // 只认“行数变化”这一种，不是每帧 resize 都做：拖窗口时每帧都 FLIP 会拖出一条滞后的尾巴。
+  // 位置一律取 offsetLeft/offsetTop：它们是布局值，不受自己身上正在跑的 transform 影响。
+  // 若用 getBoundingClientRect，过渡进行到一半时量到的是“己经移了一半”的位置，
+  // 行数会被误判（一次换行被当成两次），补间也跟着跑偏。
+  let legendLayout = snapshotLegend();
+  function snapshotLegend() {
+    const items = new Map(), tops = new Set();
+    for (const btn of legendBox.children) {
+      const pos = { left: btn.offsetLeft, top: btn.offsetTop };
+      items.set(btn, pos);
+      tops.add(pos.top);
+    }
+    return { items, lines: tops.size };
+  }
+  function flipLegend(prev) {
+    if (prefersReducedMotion()) return;
+    for (const btn of legendBox.children) {
+      const before = prev.items.get(btn);
+      if (!before) continue;
+      const dx = before.left - btn.offsetLeft, dy = before.top - btn.offsetTop;
+      if (Math.abs(dx) < .5 && Math.abs(dy) < .5) continue;
+      btn.style.transition = 'none';
+      btn.style.transform = `translate(${dx}px,${dy}px)`;
+      requestAnimationFrame(() => {
+        btn.style.transition = `transform ${LEGEND_MS}ms cubic-bezier(.4,0,.2,1)`;
+        btn.style.transform = '';
+        setTimeout(() => { btn.style.transition = ''; }, LEGEND_MS + 60);
+      });
+    }
+  }
+  if (typeof ResizeObserver === 'function') {
+    new ResizeObserver(() => {
+      const lines = snapshotLegend().lines;
+      if (lines === legendLayout.lines) return;   // 行数未变：只是同一行里挪了挪，不必补间
+      const prev = legendLayout;
+      legendLayout = snapshotLegend();
+      flipLegend(prev);
+    }).observe(legendBox);
+  }
   const emptyBox = h('div', { className: 'tt-board-empty' }, '所选范围暂无用量');
   const sw = h('div', { className: 'tt-flow-switch' });
   const body = h('div', { className: 'tt-board-body' });
@@ -489,8 +563,7 @@ function createFlowPanel() {
         style: `left:${((t.x / W) * 100).toFixed(3)}%;top:${((t.y / H) * 100).toFixed(3)}%;transform:translate(-50%,-50%)`,
       }, t.text));
     }    const grand = (splittable ? [...totals.values()].reduce((s, v) => s + v, 0) : cellsTotal) || 1;
-    legendBox.replaceChildren(
-      ...ids.map((id, i) => h('button', {
+    setLegend(ids.map((id, i) => h('button', {
         type: 'button',
         // 不用原生 title：它长得跟这套深色玻璃不搭，改用自带样式的说明（见 .tt-legend-tip）
         'aria-pressed': String(flowFocus.includes(id)),
@@ -511,6 +584,7 @@ function createFlowPanel() {
               ? h('small', {}, `占总量 ${((totalOf(id) / grand) * 100).toFixed(1)}%`)
               : h('small', {}, '只有总量')),
           splittable ? h('small', {}, '点一下只看这一层 · Shift / Ctrl 点可多看几层 · 再点取消') : null))));
+    legendLayout = snapshotLegend();
     // 叠加模式下各层独立成线，叠满不等于总量，页脚不能再那么写。
     const scaleNote = !splittable
       ? '按模型或供应商筛选时只显示总量'
