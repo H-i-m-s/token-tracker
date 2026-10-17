@@ -650,6 +650,10 @@ export function renderAnalytics(container, dashboard, state, patch) {
   // 所以：一级一个主数，二级两个诊断，三级一行不带框的注脚，费用单独一格留给以后。
   const assistantCount = summary.assistantCount || 0;
   const turns = a?.turnSize?.overall || null;
+  // 真正的轮数：turns 表一行 = 一条 user 消息切出的一段对话。
+  // 別拿 assistantCount 当轮次 —— 那是「带 usage 的 assistant 消息数」，即 API 请求数：
+  // 一轮里每跑一次工具就再加一条消息，整位数会比真实轮数大好几倍。
+  const turnCount = a?.turnSize?.turnCount || turns?.count || 0;
   // 费用：引擎给 0 就是“价格表里没有可用单价”，不是“花了 0 元”。这两种情况不能写成一个样子。
   const costKnown = total > 0 ? !!summary.estimatedCost : true;
   // 同一年的区间把年份只写一次（只进 title，不上屏）。
@@ -658,36 +662,43 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const primaryHint = days.length
     ? `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天，日均 ${compact(total / days.length)}`
     : '所选范围没有记录';
-  // 注脚：只剩两个派生比值。它们不是读数，是从上面几个数除出来的，所以不进卡片位。
+  // 三级：两个派生比值。不是读数基数，所以不做块，只给长条。
   const footprint = [
-    assistantCount && total ? [`平均每轮 ${compact(total / assistantCount)} Token`, '合计 Token ÷ 轮次；含该轮全部工具调用与缓存读'] : null,
-    summary.outputTokens > 0 ? [`输入输出比 ${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取，所以这个比值主要反映上下文有多长，不是模型在喷字'] : null,
+    turnCount && total ? ['平均每轮', compact(total / turnCount), '合计 Token ÷ 轮次；含该轮全部工具调用与缓存读'] : null,
+    summary.outputTokens > 0 ? ['输入输出比', `${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取，所以这个比值主要反映上下文有多长，不是模型在喷字'] : null,
   ].filter(Boolean);
-  // 格子内只留标签和数字两行。口径全部退到 title（悬停可见），不上屏。
+  // 格子内只留标签和数字。口径全部退到 title（悬停可见），不上屏。
   const tile = (className, label, value, hint) => h('div', {
     className: `tt-kpi ${className}`, title: hint, 'data-tt-select': '',
   }, h('span', {}, label), h('strong', {}, value));
+  // 三级：长条形，标签与数字横排，不换行。形状本身就说明它比块状轻一档。
+  const strip = (label, value, hint) => h('div', {
+    className: 'tt-kpi tt-kpi-strip', title: hint, 'data-tt-select': '',
+  }, h('span', {}, label), h('strong', {}, value));
   container.append(h('div', { className: 'tt-board-kpis' },
-    // 一级：全范围唯一的锚
-    tile('tt-kpi-primary', '合计 Token', compact(total), primaryHint),
-    // 二级：四个能直接决定判断的数，各占一格、各有标签。
-    // 会话数与轮次原来挤在注脚里，只写成“1.7K 会话、165.8K 轮”—— 没标题、没单位归属，读完不知道是什么。
-    tile('tt-kpi-secondary', '缓存命中率', fmtPct(summary.cacheHitRate, 1),
-      '缓存读取 Token / 总 Token；命中部分按折后单价计'),
-    tile('tt-kpi-secondary', '单轮 P90', turns ? compact(turns.p90) : '—',
-      '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
-    tile('tt-kpi-secondary', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
-      '有记录用量的日志会话数量'),
-    tile('tt-kpi-secondary', '轮次', assistantCount ? compact(assistantCount) : '—',
-      '有 usage 记录的 assistant 消息数量'),
-    // 费用：以后会有值，先留住这一格；没有单价时明说“未配置”，不写 $0 制造假精确
-    h('div', {
-      className: 'tt-kpi tt-kpi-cost',
-      title: costKnown ? '按已配置价格估算；不是供应商结算账单' : '价格表里还没有可用单价，费用无法估算',
-      'data-tt-select': '',
-      ...(costKnown ? {} : { 'data-unpriced': '' }),
-    }, h('span', {}, '预估费用 · USD'),
-      h('strong', {}, costKnown ? fmtCost(summary.estimatedCost) : '—')),
+    // 一级：左侧竖直整块，高度自动等于右侧两行之和（grid 跨行撑开，不写死像素）。
+    h('div', { className: 'tt-kpi tt-kpi-primary', title: primaryHint, 'data-tt-select': '' },
+      h('span', {}, '合计 Token'), h('strong', {}, compact(total))),
+    // 二级：右侧上行，块状卡片。
+    h('div', { className: 'tt-kpi-row tt-kpi-row-secondary' },
+      tile('', '缓存命中率', fmtPct(summary.cacheHitRate, 1),
+        '缓存读取 Token / 总 Token；命中部分按折后单价计'),
+      tile('', '单轮 P90', turns ? compact(turns.p90) : '—',
+        '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
+      tile('', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
+        '有记录用量的日志会话数量（含桌面、子代理、后台、桥接四类）'),
+      tile('', '轮次', turnCount ? compact(turnCount) : '—',
+        '一条 user 消息到下一次 user 消息之间算一轮；不是 API 请求数'),
+      h('div', {
+        className: 'tt-kpi tt-kpi-cost',
+        title: costKnown ? '按已配置价格估算；不是供应商结算账单' : '价格表里还没有可用单价，费用无法估算',
+        'data-tt-select': '',
+        ...(costKnown ? {} : { 'data-unpriced': '' }),
+      }, h('span', {}, '预估费用 · USD'),
+        h('strong', {}, costKnown ? fmtCost(summary.estimatedCost) : '—'))),
+    // 三级：右侧下行，长条形。
+    footprint.length ? h('div', { className: 'tt-kpi-row tt-kpi-row-tertiary' },
+      ...footprint.map(([label, value, hint]) => strip(label, value, hint))) : null,
   ));
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。

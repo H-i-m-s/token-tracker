@@ -1006,19 +1006,33 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
    一旦抻高，块内部的 footer{margin-top:auto} 就会把页脚推到最底，中间空出一大片。
    KPI 那一行同样用 max-content：现在是三级结构，高度由字决定，写死像素的话换单位制就会溢出。 */
 .tt-board { height: 100%; min-height: 0; display: grid; grid-template-rows: max-content max-content max-content 14px; gap: 12px; overflow-y: auto; align-content: start; scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent; }
-/* ── KPI 三级版式（你确认过的那一版）──
-   一级（主数）2fr，二级（两个诊断）各 1fr，费用 1fr；末行注脚横跨整行、不带框。
-   等宽七格的问题不是难看，是它在视觉上宣称七个数同等重要。级差靠两件东西建立：宽度与字号。
-   container-type 让卡片内部用 cqi 计量 —— 同一套字号规则在看板、卡片窄栏里都能自适应。 */
-.tt-board-kpis { display: grid; grid-template-columns: minmax(0,1.7fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); gap: 12px; min-width: 0; align-items: stretch; }
-/* 格内只有两行：标签 + 数字。口径不进正文，全部退到 title（悬停可见）。
-   不用 justify-content: space-between —— 两行时它把标签和数字抳到两头，中间空一大块；居中并收紧间距更整。 */
+/* ── KPI 版式：左大右分 ──
+   左边一块纵向撑满（grid-row: 1/-1），右边上行二级块状卡片、下行三级长条。
+   两行之和自动等于左侧高度：这是 grid 跨行撑开的自然结果，不写死像素。
+   级差靠形状建立，不靠字号：块状是二级，条状是三级。这样主数可以放大，
+   而旁边每格的字号一格都不用动。 */
+.tt-board-kpis { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,2.35fr); grid-template-rows: minmax(0,1fr) auto; gap: 12px; min-width: 0; }
+.tt-kpi-primary { grid-row: 1 / -1; }
+.tt-kpi-row { min-width: 0; display: grid; gap: 12px; }
+/* 上行：五块均分（命中率 / P90 / 会话 / 轮次 / 费用）。 */
+.tt-kpi-row-secondary { grid-template-columns: repeat(5,minmax(0,1fr)); align-items: stretch; }
+/* 下行：两个长条均分。 */
+.tt-kpi-row-tertiary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+/* 块状卡：标签贴顶、数字居中，两行。口径不进正文，全部退到 title。 */
 .tt-kpi { container-type: inline-size; overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
 .tt-kpi > span { display: block; min-width: 0; color: var(--tt-t2); font-size: clamp(10px,6cqi,11px); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tt-kpi > strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 700 clamp(13px,21cqi,28px)/1.25 var(--font-sans); color: var(--tt-t1); letter-spacing: -.025em; white-space: nowrap; }
-.tt-kpi-primary > strong { font-size: clamp(20px,13cqi,42px); letter-spacing: -.035em; }
-.tt-kpi-secondary > strong { font-size: clamp(16px,17cqi,30px); }
+/* 主数：整块只放这一数，字号上限抬到 64px —— 这才是“把左侧搞大”。 */
+.tt-kpi-primary { justify-content: center; gap: 10px; padding: 18px 20px; }
+.tt-kpi-primary > strong { font-size: clamp(28px,15cqi,64px); line-height: 1.05; letter-spacing: -.04em; }
+.tt-kpi-primary > span { font-size: clamp(11px,4cqi,13px); }
 .tt-kpi-cost > strong { font-size: clamp(14px,15cqi,26px); }
+/* 长条：标签与数字横排一行，不换行。形状比块矮一截，层级自己就出来了。
+   不加边框、底色再退一档（半透明白）：二级是实心块，三级是酒在底上的一条，
+   这样三级不会比二级“更重”。 */
+.tt-kpi-strip { flex-direction: row; align-items: baseline; justify-content: space-between; gap: 10px; padding: 9px 14px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--tt-card) 55%, transparent); }
+.tt-kpi-strip > span { flex: 0 0 auto; font-size: 11px; }
+.tt-kpi-strip > strong { flex: 1 1 auto; text-align: right; font-size: clamp(13px,3.2cqi,17px); letter-spacing: -.02em; }
 /* 没有单价：不写 $0（那是假精确），用虚线框把“这格还没亮起来”这件事本身说出来。 */
 .tt-kpi-cost[data-unpriced] { border-style: dashed; }
 .tt-kpi-cost[data-unpriced] > strong { color: var(--tt-t3); font-weight: 600; }
@@ -1237,8 +1251,7 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
      少一行就会把细分图组压进 12px 的轨道，页脚说明落到紧贴它的隐式行上盖住面板标题。 */
   .tt-board { grid-template-rows: max-content max-content max-content 12px; gap: 12px; }
   .tt-kpi { padding: 10px; }
-  .tt-kpi-primary > strong { font-size: clamp(18px,12cqi,34px); }
-  .tt-kpi-secondary > strong { font-size: clamp(15px,16cqi,26px); }
+  .tt-kpi-primary > strong { font-size: clamp(26px,13cqi,50px); }
   .tt-kpi-cost > strong { font-size: clamp(13px,14cqi,22px); }
   .tt-board-grid,.tt-board-right { gap: 12px; }
   .tt-board-panel > header { padding: 9px 11px 6px; }
@@ -1260,14 +1273,16 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
   .tt-dashboard-app .tt-chrome { flex-wrap: wrap; gap: 8px; }
   .tt-board-heading h1 { font-size: 21px; }
   .tt-board-controls { justify-content: flex-start; }
-  /* 窄屏：主数独占一行，两个诊断并排，费用与注脚各占一整行。 */
-  .tt-board-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; }
+  /* 窄屏：左大右分放不下，改成竖排堆叠：主数一格、二级一行（两列）、三级一条。 */
+  .tt-board-kpis { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto auto; gap: 5px; }
+  .tt-kpi-primary { grid-row: auto; }
   .tt-board { grid-template-rows: max-content max-content max-content 12px; }
   .tt-kpi { padding: 8px; border-radius: 9px; }
-  .tt-kpi-primary, .tt-kpi-cost { grid-column: 1 / -1; }
-  .tt-kpi-primary > strong { font-size: clamp(22px,11cqi,32px); }
-  .tt-kpi-secondary > strong { font-size: clamp(17px,15cqi,24px); }
+  .tt-kpi-row-secondary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 5px; }
+  .tt-kpi-row-tertiary { grid-template-columns: minmax(0,1fr); gap: 5px; }
+  .tt-kpi-primary > strong { font-size: clamp(28px,11cqi,40px); }
   .tt-kpi-cost > strong { font-size: clamp(15px,13cqi,22px); }
+  .tt-kpi-strip { padding: 8px 11px; font-size: 11px; }
   .tt-filter-status { flex-wrap: wrap; gap: 4px; }
   .tt-filter-clear { margin-left: 0; }
   .tt-board-nav { flex-wrap: wrap; gap: 5px; }

@@ -35,15 +35,19 @@
 .tt-card-summary-title { display: flex; align-items: center; justify-content: space-between; padding: 6px 4px 10px; gap: 8px; }
 .tt-card-summary-title h2 { font-size: 12px; font-weight: 600; }
 .tt-card-summary-title > span { color: var(--tt-t3); font-size: 10px; }
-/* 卡片窄栏（约 520px 宽）：主数独占一行，两个诊断并排，费用与注脚各占一行。
-   这里不复用看板的 2fr/1fr/1fr/1fr —— 换成像素后每格只剩一百多，main 字的 cqi 会缩到看不清。 */
-.tt-card-content .tt-board-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; flex: 0 0 auto; }
+/* 卡片窄栏（约 520px 宽）：左大右分放不下，改成竖排：主数一格、二级两列、三级一条。 */
+.tt-card-content .tt-board-kpis { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto auto; gap: 6px; flex: 0 0 auto; }
+.tt-card-content .tt-kpi-primary { grid-row: auto; }
 .tt-card-content .tt-kpi { padding: 8px 9px; border-radius: 9px; min-height: 52px; gap: 3px; justify-content: center; }
-.tt-card-content .tt-kpi-primary, .tt-card-content .tt-kpi-cost { grid-column: 1 / -1; }
+.tt-card-content .tt-kpi-row-secondary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
+.tt-card-content .tt-kpi-row-tertiary { grid-template-columns: minmax(0,1fr); gap: 6px; }
 .tt-card-content .tt-kpi > span { font-size: 10px; }
-.tt-card-content .tt-kpi-primary > strong { font-size: clamp(26px,9cqi,36px); }
-.tt-card-content .tt-kpi-secondary > strong { font-size: clamp(19px,11cqi,26px); }
+.tt-card-content .tt-kpi-primary > strong { font-size: clamp(30px,11cqi,42px); }
 .tt-card-content .tt-kpi-cost > strong { font-size: clamp(16px,9cqi,22px); }
+.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 0; }
+.tt-card-content .tt-kpi-cost { grid-column: 1 / -1; }
+.tt-card-content .tt-kpi-strip > span { font-size: 10px; }
+.tt-card-content .tt-kpi-strip > strong { font-size: 14px; }
 .tt-card-content #overview-module:has(.tt-board-kpis) { overflow-y: auto; scrollbar-width: thin; }
 .tt-card-content #overview-module:has(.tt-board-kpis) > .tt-board-panel { flex: 0 0 160px; margin-top: 8px; }
 .tt-card-content .tt-dist-row, .tt-card-content .tt-dist-head { grid-template-columns: minmax(55px,1fr) 46px 46px minmax(65px,1.5fr); gap: 4px; }
