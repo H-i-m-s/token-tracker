@@ -45,7 +45,7 @@
 .tt-card-content .tt-kpi-primary > strong { font-size: clamp(30px,11cqi,42px); }
 .tt-card-content .tt-kpi-cost > strong { font-size: clamp(16px,9cqi,22px); }
 .tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 0; }
-.tt-card-content .tt-kpi-cost { grid-column: 1 / -1; }
+/* 费用不再整行：二级四块正好 2×2，让它跟会话数并排，否则会话数会单独守一边。 */
 .tt-card-content .tt-kpi-strip > span { font-size: 10px; }
 .tt-card-content .tt-kpi-strip > strong { font-size: 14px; }
 .tt-card-content #overview-module:has(.tt-board-kpis) { overflow-y: auto; scrollbar-width: thin; }

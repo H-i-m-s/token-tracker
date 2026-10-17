@@ -662,8 +662,9 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const primaryHint = days.length
     ? `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天，日均 ${compact(total / days.length)}`
     : '所选范围没有记录';
-  // 三级：两个派生比值。不是读数基数，所以不做块，只给长条。
+  // 三级：派生比值与轮次。轮次降到这里 —— 它是个背景量，不回答“贵不贵”。
   const footprint = [
+    turnCount ? ['轮次', compact(turnCount), '一条 user 消息到下一次 user 消息之间算一轮；不是 API 请求数'] : null,
     turnCount && total ? ['平均每轮', compact(total / turnCount), '合计 Token ÷ 轮次；含该轮全部工具调用与缓存读'] : null,
     summary.outputTokens > 0 ? ['输入输出比', `${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取，所以这个比值主要反映上下文有多长，不是模型在喷字'] : null,
   ].filter(Boolean);
@@ -687,8 +688,6 @@ export function renderAnalytics(container, dashboard, state, patch) {
         '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
       tile('', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
         '有记录用量的日志会话数量（含桌面、子代理、后台、桥接四类）'),
-      tile('', '轮次', turnCount ? compact(turnCount) : '—',
-        '一条 user 消息到下一次 user 消息之间算一轮；不是 API 请求数'),
       h('div', {
         className: 'tt-kpi tt-kpi-cost',
         title: costKnown ? '按已配置价格估算；不是供应商结算账单' : '价格表里还没有可用单价，费用无法估算',

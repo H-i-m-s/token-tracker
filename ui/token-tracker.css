@@ -1011,20 +1011,33 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
    两行之和自动等于左侧高度：这是 grid 跨行撑开的自然结果，不写死像素。
    级差靠形状建立，不靠字号：块状是二级，条状是三级。这样主数可以放大，
    而旁边每格的字号一格都不用动。 */
-.tt-board-kpis { display: grid; grid-template-columns: minmax(0,1fr) minmax(0,2.35fr); grid-template-rows: minmax(0,1fr) auto; gap: 12px; min-width: 0; }
+.tt-board-kpis { display: grid; grid-template-columns: minmax(0,1.25fr) minmax(0,2.1fr); grid-template-rows: minmax(0,1fr) auto; gap: 12px; min-width: 0; }
 .tt-kpi-primary { grid-row: 1 / -1; }
 .tt-kpi-row { min-width: 0; display: grid; gap: 12px; }
-/* 上行：五块均分（命中率 / P90 / 会话 / 轮次 / 费用）。 */
-.tt-kpi-row-secondary { grid-template-columns: repeat(5,minmax(0,1fr)); align-items: stretch; }
-/* 下行：两个长条均分。 */
-.tt-kpi-row-tertiary { grid-template-columns: repeat(2,minmax(0,1fr)); }
+/* 上行：四块均分（命中率 / P90 / 会话 / 费用）。列数必须跟着实际块数走，
+   多一列就在右侧留一大块空白（轮次降到三级时就会出现）。 */
+.tt-kpi-row-secondary { grid-template-columns: repeat(4,minmax(0,1fr)); align-items: stretch; }
+/* 上行给个最小高度：主数块的高度完全由这两行决定，行太矮时左侧那块空地就比数字大。 */
+.tt-kpi-row-secondary > .tt-kpi { min-height: 92px; }
+/* 下行：三级条均分（轮次 / 平均每轮 / 输入输出比）。 */
+.tt-kpi-row-tertiary { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
 /* 块状卡：标签贴顶、数字居中，两行。口径不进正文，全部退到 title。 */
 .tt-kpi { container-type: inline-size; overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
 .tt-kpi > span { display: block; min-width: 0; color: var(--tt-t2); font-size: clamp(10px,6cqi,11px); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tt-kpi > strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 700 clamp(13px,21cqi,28px)/1.25 var(--font-sans); color: var(--tt-t1); letter-spacing: -.025em; white-space: nowrap; }
-/* 主数：整块只放这一数，字号上限抬到 64px —— 这才是“把左侧搞大”。 */
-.tt-kpi-primary { justify-content: center; gap: 10px; padding: 18px 20px; }
-.tt-kpi-primary > strong { font-size: clamp(28px,15cqi,64px); line-height: 1.05; letter-spacing: -.04em; }
+/* 主数：标签在顶、数字抽到整块剩余高度的正中。
+   之前 justify-content: center 把数字和留白一起居中，空地全堆在上下两端（就是你说的“那么大的空地”）。
+   字号只靠 cqi 永远吃不满：主块高 175px、宽才 420px，15cqi = 63 却卡在 clamp 上限 50。
+   所以这里给主块单独开一个 size 容器，字号可以同时看高（cqh）与宽（cqi）取小，字才能真的顶满。 */
+/* 主数：数字抽到整块剩余高度的正中。
+   字号比例定在块宽的 36%：实测块宽 521 → 内宽 501，而 “26.87 B” 在 72px 时已占 499px，
+   31% 是这块的容量上限；再大就横向溢出。块再宽时字会同步长大（文本宽与字号等比）。 */
+.tt-kpi-primary { justify-content: flex-start; gap: 8px; padding: 16px 20px 18px; }
+.tt-kpi-primary > strong {
+  flex: 1 1 auto; display: flex; align-items: center;
+  font-size: clamp(40px,33cqi,110px);
+  line-height: 1; letter-spacing: -.045em;
+}
 .tt-kpi-primary > span { font-size: clamp(11px,4cqi,13px); }
 .tt-kpi-cost > strong { font-size: clamp(14px,15cqi,26px); }
 /* 长条：标签与数字横排一行，不换行。形状比块矮一截，层级自己就出来了。
@@ -1251,8 +1264,9 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
      少一行就会把细分图组压进 12px 的轨道，页脚说明落到紧贴它的隐式行上盖住面板标题。 */
   .tt-board { grid-template-rows: max-content max-content max-content 12px; gap: 12px; }
   .tt-kpi { padding: 10px; }
-  .tt-kpi-primary > strong { font-size: clamp(26px,13cqi,50px); }
+  .tt-kpi-primary > strong { font-size: clamp(40px,33cqi,84px); }
   .tt-kpi-cost > strong { font-size: clamp(13px,14cqi,22px); }
+  .tt-kpi-row-secondary > .tt-kpi { min-height: 78px; }
   .tt-board-grid,.tt-board-right { gap: 12px; }
   .tt-board-panel > header { padding: 9px 11px 6px; }
   .tt-board-body { padding: 0 11px 7px; }
