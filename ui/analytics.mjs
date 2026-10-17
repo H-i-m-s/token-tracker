@@ -642,19 +642,53 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const a = dashboard.analytics, summary = dashboard.summary;
   const days = a ? calendarDays(a, state) : [];
   const total = summary.totalTokens || 0;  const input = (summary.inputTokens || 0) + (summary.cacheRead || 0);
-  const tiles = [
-    ['合计 Token', compact(total), '所选范围的累计用量'],
-    ['日均 Token', days.length ? compact(total / days.length) : '—', `按 ${days.length} 个自然日计算（含无记录日）`],
-    ['会话数', compact(a?.sessionCount), '有记录用量的日志会话数量'],
-    ['轮次', compact(summary.assistantCount), '有 usage 记录的 assistant 消息数量'],
-    ['输入/输出比', summary.outputTokens > 0 ? `${Math.round(input / summary.outputTokens)}:1` : '—', '输入含缓存读取；不含缓存写入'],
-    ['缓存命中率', fmtPct(summary.cacheHitRate, 1), '缓存读取 Token / 总 Token，沿用插件统计口径'],
-    ['预估费用 · USD', total > 0 && !summary.estimatedCost ? '未完整定价' : fmtCost(summary.estimatedCost), '按已配置价格估算；不是供应商结算账单'],
-  ];
-  // KPI 块（合计 Token、日均…）也属于“读数”：里面要能选字，所以一块一块标上，
-  // 块与块之间的缝不标 —— 那点缝是看板上剩下不多的拖拽落脚点。
-  container.append(h('div', { className: 'tt-board-kpis' }, ...tiles.map(([label, value, hint]) =>
-    h('div', { title: hint, 'data-tt-select': '' }, h('span', {}, label), h('strong', {}, value)))));
+  // ── KPI 分三级 ──
+  // 以前是七个等宽等高的格子平铺。问题不在好不好看，在于它宣称七个数同等重要 ——
+  // 而真正左右判断的只有三个：总量（其余数的分母）、命中率（输入侧的折扣）、
+  // 单轮尾部（单次花费的上限）。会话数 / 轮次 / 轮均 / 输入输出比只描述使用习惯，
+  // 扫一眼就够，占着卡片位等于让背景噪声和主指标同权。
+  // 所以：一级一个主数，二级两个诊断，三级一行不带框的注脚，费用单独一格留给以后。
+  const assistantCount = summary.assistantCount || 0;
+  const turns = a?.turnSize?.overall || null;
+  // 费用：引擎给 0 就是“价格表里没有可用单价”，不是“花了 0 元”。这两种情况不能写成一个样子。
+  const costKnown = total > 0 ? !!summary.estimatedCost : true;
+  // 同一年的区间把年份只写一次，省下的宽度给“日均”。
+  const startDay = days[0], endDay = days.at(-1);
+  const endLabel = startDay && endDay && startDay.slice(0, 4) === endDay.slice(0, 4) ? endDay.slice(5) : endDay;
+  const primaryNote = days.length
+    ? `${startDay} → ${endLabel} · ${days.length} 天 · 日均 ${compact(total / days.length)}`
+    : '所选范围没有记录';
+  // 注脚：只放读完就完事的数。每项带自己的口径（title），不在正文里堆解释。
+  const footprint = [
+    a?.sessionCount ? [`${compact(a.sessionCount)} 会话`, '有记录用量的日志会话数量'] : null,
+    assistantCount ? [`${compact(assistantCount)} 轮`, '有 usage 记录的 assistant 消息数量'] : null,
+    assistantCount && total ? [`轮均 ${compact(total / assistantCount)}`, '合计 Token ÷ 轮次'] : null,
+    summary.outputTokens > 0 ? [`输入输出 ${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取；不含缓存写入'] : null,
+  ].filter(Boolean);
+  const tile = (className, label, value, note, hint) => h('div', {
+    className: `tt-kpi ${className}`, title: hint, 'data-tt-select': '',
+  }, h('span', {}, label), h('strong', {}, value), note ? h('em', {}, note) : null);
+  container.append(h('div', { className: 'tt-board-kpis' },
+    // 一级：全范围唯一的锚
+    tile('tt-kpi-primary', '合计 Token', compact(total), primaryNote, '所选范围的累计用量'),
+    // 二级：回答“贵不贵”的两个数
+    tile('tt-kpi-secondary', '缓存命中率', fmtPct(summary.cacheHitRate, 1), '输入侧的价格折扣',
+      '缓存读取 Token / 总 Token；命中部分按折后单价计'),
+    tile('tt-kpi-secondary', '单轮 P90', turns ? compact(turns.p90) : '—',
+      turns ? '90% 的轮次在此之下' : '该范围无轮次明细',
+      '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
+    // 费用：以后会有值，先留住这一格；没有单价时明说“未配置”，不写 $0 制造假精确
+    h('div', {
+      className: 'tt-kpi tt-kpi-cost',
+      title: costKnown ? '按已配置价格估算；不是供应商结算账单' : '价格表里还没有可用单价，费用无法估算',
+      'data-tt-select': '',
+      ...(costKnown ? {} : { 'data-unpriced': '' }),
+    }, h('span', {}, '预估费用 · USD'),
+      h('strong', {}, costKnown ? fmtCost(summary.estimatedCost) : '—'),
+      h('em', {}, costKnown ? '本地价格表估算' : '价格未配置')),
+    footprint.length ? h('div', { className: 'tt-kpi-footprint' },
+      ...footprint.map(([text, hint]) => h('span', { title: hint }, text))) : null,
+  ));
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
   let flowPanel = flowPanels.get(container);

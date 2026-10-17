@@ -42,12 +42,14 @@ function quantile(values, q) {
 // 所以分布与明细看到的是同一个集合。
 export function summarizeTurns(rows = []) {
   const groups = new Map();
+  const all = [];
   for (const r of rows) {
     const n = r?.totalTokens;
     if (!Number.isFinite(n) || n <= 0) continue;
     const id = r.model || '';
     if (!groups.has(id)) groups.set(id, []);
     groups.get(id).push(n);
+    all.push(n);
   }
   let max = 1;
   for (const values of groups.values()) for (const n of values) if (n > max) max = n;
@@ -60,7 +62,16 @@ export function summarizeTurns(rows = []) {
       p50: quantile(values, .5), p90: quantile(values, .9), bins,
     };
   }).sort((a, b) => b.count - a.count);
-  return { turnCount: rows.length, models };
+  // 跨模型的整体分位：KPI 上那个「单轮 P90」要的是整个筛选集的尾部，不是某一个模型自己的。
+  const overall = all.length
+    ? {
+      count: all.length,
+      totalTokens: all.reduce((sum, n) => sum + n, 0),
+      p50: quantile(all, .5),
+      p90: quantile(all, .9),
+    }
+    : null;
+  return { turnCount: rows.length, models, overall };
 }
 
 export function buildVisualAnalytics(sessions, dateFilter, filters = {}, rows = []) {
