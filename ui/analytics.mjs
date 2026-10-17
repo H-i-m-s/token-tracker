@@ -658,12 +658,10 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const primaryNote = days.length
     ? `${startDay} → ${endLabel} · ${days.length} 天 · 日均 ${compact(total / days.length)}`
     : '所选范围没有记录';
-  // 注脚：只放读完就完事的数。每项带自己的口径（title），不在正文里堆解释。
+  // 注脚：只剩两个派生比值。它们不是读数，是从上面几个数除出来的，所以不进卡片位。
   const footprint = [
-    a?.sessionCount ? [`${compact(a.sessionCount)} 会话`, '有记录用量的日志会话数量'] : null,
-    assistantCount ? [`${compact(assistantCount)} 轮`, '有 usage 记录的 assistant 消息数量'] : null,
-    assistantCount && total ? [`轮均 ${compact(total / assistantCount)}`, '合计 Token ÷ 轮次'] : null,
-    summary.outputTokens > 0 ? [`输入输出 ${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取；不含缓存写入'] : null,
+    assistantCount && total ? [`平均每轮 ${compact(total / assistantCount)} Token`, '合计 Token ÷ 轮次；含该轮全部工具调用与缓存读'] : null,
+    summary.outputTokens > 0 ? [`输入输出比 ${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取，所以这个比值主要反映上下文有多长，不是模型在喷字'] : null,
   ].filter(Boolean);
   const tile = (className, label, value, note, hint) => h('div', {
     className: `tt-kpi ${className}`, title: hint, 'data-tt-select': '',
@@ -671,12 +669,19 @@ export function renderAnalytics(container, dashboard, state, patch) {
   container.append(h('div', { className: 'tt-board-kpis' },
     // 一级：全范围唯一的锚
     tile('tt-kpi-primary', '合计 Token', compact(total), primaryNote, '所选范围的累计用量'),
-    // 二级：回答“贵不贵”的两个数
-    tile('tt-kpi-secondary', '缓存命中率', fmtPct(summary.cacheHitRate, 1), '输入侧的价格折扣',
+    // 二级：四个能直接决定判断的数，各占一格、各有标签。
+    // 会话数与轮次原来挤在注脚里，只写成“1.7K 会话、165.8K 轮”—— 没标题、没单位归属，读完不知道是什么。
+    tile('tt-kpi-secondary', '缓存命中率', fmtPct(summary.cacheHitRate, 1), '缓存读 ÷ 总 Token',
       '缓存读取 Token / 总 Token；命中部分按折后单价计'),
     tile('tt-kpi-secondary', '单轮 P90', turns ? compact(turns.p90) : '—',
-      turns ? '90% 的轮次在此之下' : '该范围无轮次明细',
+      turns ? '90% 的轮次低于此' : '无轮次明细',
       '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
+    tile('tt-kpi-secondary', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
+      a?.sessionCount ? '有记录用量的会话' : '该范围无记录',
+      '有记录用量的日志会话数量'),
+    tile('tt-kpi-secondary', '轮次', assistantCount ? compact(assistantCount) : '—',
+      assistantCount ? '有 usage 的 assistant 消息' : '该范围无记录',
+      '有 usage 记录的 assistant 消息数量'),
     // 费用：以后会有值，先留住这一格；没有单价时明说“未配置”，不写 $0 制造假精确
     h('div', {
       className: 'tt-kpi tt-kpi-cost',
