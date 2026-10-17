@@ -38,14 +38,12 @@
 /* 卡片窄栏（约 520px 宽）：主数独占一行，两个诊断并排，费用与注脚各占一行。
    这里不复用看板的 2fr/1fr/1fr/1fr —— 换成像素后每格只剩一百多，main 字的 cqi 会缩到看不清。 */
 .tt-card-content .tt-board-kpis { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; flex: 0 0 auto; }
-.tt-card-content .tt-kpi { padding: 8px 9px; border-radius: 9px; min-height: 58px; gap: 2px; }
-.tt-card-content .tt-kpi-primary, .tt-card-content .tt-kpi-cost, .tt-card-content .tt-kpi-footprint { grid-column: 1 / -1; }
+.tt-card-content .tt-kpi { padding: 8px 9px; border-radius: 9px; min-height: 52px; gap: 3px; justify-content: center; }
+.tt-card-content .tt-kpi-primary, .tt-card-content .tt-kpi-cost { grid-column: 1 / -1; }
 .tt-card-content .tt-kpi > span { font-size: 10px; }
-.tt-card-content .tt-kpi > em { font-size: 9px; }
 .tt-card-content .tt-kpi-primary > strong { font-size: clamp(26px,9cqi,36px); }
 .tt-card-content .tt-kpi-secondary > strong { font-size: clamp(19px,11cqi,26px); }
 .tt-card-content .tt-kpi-cost > strong { font-size: clamp(16px,9cqi,22px); }
-.tt-card-content .tt-kpi-footprint { font-size: 10px; }
 .tt-card-content #overview-module:has(.tt-board-kpis) { overflow-y: auto; scrollbar-width: thin; }
 .tt-card-content #overview-module:has(.tt-board-kpis) > .tt-board-panel { flex: 0 0 160px; margin-top: 8px; }
 .tt-card-content .tt-dist-row, .tt-card-content .tt-dist-head { grid-template-columns: minmax(55px,1fr) 46px 46px minmax(65px,1.5fr); gap: 4px; }

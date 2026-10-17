@@ -652,35 +652,33 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const turns = a?.turnSize?.overall || null;
   // 费用：引擎给 0 就是“价格表里没有可用单价”，不是“花了 0 元”。这两种情况不能写成一个样子。
   const costKnown = total > 0 ? !!summary.estimatedCost : true;
-  // 同一年的区间把年份只写一次，省下的宽度给“日均”。
+  // 同一年的区间把年份只写一次（只进 title，不上屏）。
   const startDay = days[0], endDay = days.at(-1);
   const endLabel = startDay && endDay && startDay.slice(0, 4) === endDay.slice(0, 4) ? endDay.slice(5) : endDay;
-  const primaryNote = days.length
-    ? `${startDay} → ${endLabel} · ${days.length} 天 · 日均 ${compact(total / days.length)}`
+  const primaryHint = days.length
+    ? `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天，日均 ${compact(total / days.length)}`
     : '所选范围没有记录';
   // 注脚：只剩两个派生比值。它们不是读数，是从上面几个数除出来的，所以不进卡片位。
   const footprint = [
     assistantCount && total ? [`平均每轮 ${compact(total / assistantCount)} Token`, '合计 Token ÷ 轮次；含该轮全部工具调用与缓存读'] : null,
     summary.outputTokens > 0 ? [`输入输出比 ${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取，所以这个比值主要反映上下文有多长，不是模型在喷字'] : null,
   ].filter(Boolean);
-  const tile = (className, label, value, note, hint) => h('div', {
+  // 格子内只留标签和数字两行。口径全部退到 title（悬停可见），不上屏。
+  const tile = (className, label, value, hint) => h('div', {
     className: `tt-kpi ${className}`, title: hint, 'data-tt-select': '',
-  }, h('span', {}, label), h('strong', {}, value), note ? h('em', {}, note) : null);
+  }, h('span', {}, label), h('strong', {}, value));
   container.append(h('div', { className: 'tt-board-kpis' },
     // 一级：全范围唯一的锚
-    tile('tt-kpi-primary', '合计 Token', compact(total), primaryNote, '所选范围的累计用量'),
+    tile('tt-kpi-primary', '合计 Token', compact(total), primaryHint),
     // 二级：四个能直接决定判断的数，各占一格、各有标签。
     // 会话数与轮次原来挤在注脚里，只写成“1.7K 会话、165.8K 轮”—— 没标题、没单位归属，读完不知道是什么。
-    tile('tt-kpi-secondary', '缓存命中率', fmtPct(summary.cacheHitRate, 1), '缓存读 ÷ 总 Token',
+    tile('tt-kpi-secondary', '缓存命中率', fmtPct(summary.cacheHitRate, 1),
       '缓存读取 Token / 总 Token；命中部分按折后单价计'),
     tile('tt-kpi-secondary', '单轮 P90', turns ? compact(turns.p90) : '—',
-      turns ? '90% 的轮次低于此' : '无轮次明细',
       '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
     tile('tt-kpi-secondary', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
-      a?.sessionCount ? '有记录用量的会话' : '该范围无记录',
       '有记录用量的日志会话数量'),
     tile('tt-kpi-secondary', '轮次', assistantCount ? compact(assistantCount) : '—',
-      assistantCount ? '有 usage 的 assistant 消息' : '该范围无记录',
       '有 usage 记录的 assistant 消息数量'),
     // 费用：以后会有值，先留住这一格；没有单价时明说“未配置”，不写 $0 制造假精确
     h('div', {
@@ -689,10 +687,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
       'data-tt-select': '',
       ...(costKnown ? {} : { 'data-unpriced': '' }),
     }, h('span', {}, '预估费用 · USD'),
-      h('strong', {}, costKnown ? fmtCost(summary.estimatedCost) : '—'),
-      h('em', {}, costKnown ? '本地价格表估算' : '价格未配置')),
-    footprint.length ? h('div', { className: 'tt-kpi-footprint' },
-      ...footprint.map(([text, hint]) => h('span', { title: hint }, text))) : null,
+      h('strong', {}, costKnown ? fmtCost(summary.estimatedCost) : '—')),
   ));
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。

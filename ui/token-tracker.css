@@ -1011,23 +1011,17 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
    等宽七格的问题不是难看，是它在视觉上宣称七个数同等重要。级差靠两件东西建立：宽度与字号。
    container-type 让卡片内部用 cqi 计量 —— 同一套字号规则在看板、卡片窄栏里都能自适应。 */
 .tt-board-kpis { display: grid; grid-template-columns: minmax(0,1.7fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr); gap: 12px; min-width: 0; align-items: stretch; }
-.tt-kpi { container-type: inline-size; overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.tt-kpi > span { display: block; min-width: 0; color: var(--tt-t2); font-size: clamp(8px,6cqi,11px); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 格内只有两行：标签 + 数字。口径不进正文，全部退到 title（悬停可见）。
+   不用 justify-content: space-between —— 两行时它把标签和数字抳到两头，中间空一大块；居中并收紧间距更整。 */
+.tt-kpi { container-type: inline-size; overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: center; gap: 5px; }
+.tt-kpi > span { display: block; min-width: 0; color: var(--tt-t2); font-size: clamp(10px,6cqi,11px); line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .tt-kpi > strong { display: block; min-width: 0; overflow: hidden; text-overflow: ellipsis; font: 700 clamp(13px,21cqi,28px)/1.25 var(--font-sans); color: var(--tt-t1); letter-spacing: -.025em; white-space: nowrap; }
-/* em 是口径行，中文不用斜体（斜体中文会糊），只压颜色与字号。
-   下限写 10px：格子从四格变六格后，5cqi 会算到 8.97px，那就是“靠缩字腾空间”，不接受。 */
-.tt-kpi > em { display: block; min-width: 0; margin-top: auto; color: var(--tt-t3); font: normal clamp(10px,5.2cqi,11px)/1.35 var(--font-sans); }
 .tt-kpi-primary > strong { font-size: clamp(20px,13cqi,42px); letter-spacing: -.035em; }
-.tt-kpi-primary > em { white-space: normal; }
 .tt-kpi-secondary > strong { font-size: clamp(16px,17cqi,30px); }
 .tt-kpi-cost > strong { font-size: clamp(14px,15cqi,26px); }
 /* 没有单价：不写 $0（那是假精确），用虚线框把“这格还没亮起来”这件事本身说出来。 */
 .tt-kpi-cost[data-unpriced] { border-style: dashed; }
 .tt-kpi-cost[data-unpriced] > strong { color: var(--tt-t3); font-weight: 600; }
-/* 三级注脚：不带框、不占卡片位。放在框里就等于又承诺了一次“值得凝视”，而这几个数读完就完事。 */
-.tt-kpi-footprint { grid-column: 1 / -1; display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; min-width: 0; padding: 0 3px; color: var(--tt-t3); font-size: 11px; font-variant-numeric: tabular-nums; }
-.tt-kpi-footprint > span { display: inline-flex; align-items: baseline; gap: 12px; }
-.tt-kpi-footprint > span + span::before { content: '·'; margin-right: 12px; color: var(--tt-t4); }
 .tt-board-grid { display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: 340px 340px; gap: 14px; min-height: 0; }
 
 /* 用量总览（色带图）：全宽，高度由内容撑开。 */
@@ -1257,7 +1251,6 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
   .tt-board-kpis { gap: 10px; }
   .tt-kpi { padding: 11px 9px; }
   .tt-kpi > span { font-size: 10px; }
-  .tt-kpi > em { font-size: 10px; }
   .tt-board-panel > header { flex-wrap: wrap; gap: 3px 7px; }
   .tt-board-panel h2 { font-size: 13px; }
   .tt-dist-row,.tt-dist-head { grid-template-columns: minmax(65px,1fr) 45px 45px minmax(65px,1.5fr); gap: 5px; }
@@ -1275,7 +1268,6 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
   .tt-kpi-primary > strong { font-size: clamp(22px,11cqi,32px); }
   .tt-kpi-secondary > strong { font-size: clamp(17px,15cqi,24px); }
   .tt-kpi-cost > strong { font-size: clamp(15px,13cqi,22px); }
-  .tt-kpi-footprint { font-size: 10px; gap: 2px 8px; }
   .tt-filter-status { flex-wrap: wrap; gap: 4px; }
   .tt-filter-clear { margin-left: 0; }
   .tt-board-nav { flex-wrap: wrap; gap: 5px; }
