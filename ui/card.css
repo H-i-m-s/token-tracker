@@ -43,14 +43,25 @@
 /* 竖排后卡宽由容器给（504 / 249），高度则被内容压得很矮（实测 58px）。
    这时若按高度取字，主数字会被压得和二级一样大、层级就没了。
    所以卡片视图里一律改成半径向宽度看（--tt-fit-mode: width）。 */
-.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: width; --tt-fit-w: .55; }
+.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: width; --tt-fit-w: .55;
+  /* 卡片窄（504px）：两列并排会把每个数压成一半，实测主数掉到 13.7。
+     这里改成竖排，今日量退到下面一行，竖线改成横线。 */
+  flex-direction: column; align-items: stretch; gap: 6px; }
+/* 竖排后两列各自占满整宽；中线改成上边框。
+   窄卡里合计仍按宽度反解（width），今日量保持“注释”身份走 ratio：
+   之前它也跟 width 走，算出 69.8，差不多和主数 81 一样大，就不是注释了。 */
+.tt-card-content .tt-kpi-main { width: auto; align-self: stretch; --tt-fit-mode: width; }
+.tt-card-content .tt-kpi-today {
+  width: auto; align-self: stretch;
+  border-left: 0; border-top: 1px solid var(--tt-b3); padding-left: 0; padding-top: 6px;
+  --tt-fit-mode: ratio; --tt-value-ratio: 1.7; }
 /* 只给块状卡写 flex-start：长条是横排的，靠 space-between 把标签与数字顶到两头。
    上一版把 flex-start 写在 .tt-card-content .tt-kpi 上，优先级高于 .tt-kpi-strip，
    于是卡片视图里三级条全挤成“轮次1.9 K”。 */
-.tt-card-content .tt-kpi:not(.tt-kpi-strip) { padding: 8px 9px; border-radius: 9px; gap: 3px; justify-content: flex-start; }
+.tt-card-content .tt-kpi:not(.tt-kpi-strip) { padding: 8px 9px; border-radius: 9px; gap: 3px; }
 /* 卡片视图里三级条很宽（504px），按宽度取标签会算出比二级还大的字。
    这里标签改成跟条高走（--tt-label-h），数字跟标签成比例：横排条的字应该由“条多高”决定。 */
-.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 42px; justify-content: space-between; --tt-label-w: .032; --tt-value-ratio: 1.85; }
+.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 42px; justify-content: center; --tt-label-w: .032; --tt-value-ratio: 1.85; }
 .tt-card-content .tt-kpi-row-secondary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
 .tt-card-content .tt-kpi-row-tertiary { grid-template-columns: minmax(0,1fr); gap: 6px; }
 /* 卡片里每块高度本就紧凑：aspect-ratio 会把一列拉得很高，改回由内容定。 */

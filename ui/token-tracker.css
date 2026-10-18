@@ -1028,11 +1028,18 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 /* 卡片高度只由宽度决定（aspect-ratio），不由文字撑。
    这是整套自适应的地基：字号要从卡高算，若卡高又由字号撑，两边就会互相喂着长，
    一路涨到溢出为止。把高度的来源钉在宽度上，链路才有终点。
-   分母就是这个“高矮旋钮”：调小分母 → 整块变矮 → 字号跟着变小，两件事一次搞定。 */
-.tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 141; }
+   分母就是这个“高矮旋钮”：调小分母 → 整块变矮 → 字号跟着变小，两件事一次搞定。
+   主卡的高度不是自己定的：整块是 grid + align-items:stretch，
+   左列被右列（二级行 + 三级行）撑齐 —— 所以压二级三级，一级自然跟着矮。 */
+.tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 112; }
+/* 二级卡内部再调剂一下：卡高不动，但把标签往上提、把它与数字的距离收紧。
+   为什么有效：二级数字是高度受限的（实测 byH 与实际字号吻合），
+   标签占的那一段一让，数字可用的高度就直接变大，字号跟着长。
+   只改内边距与 gap，卡高仍由上面的 aspect-ratio 钉死，整块高度不受影响。 */
+.tt-kpi-row-secondary > .tt-kpi { padding-top: 8px; gap: 3px; --tt-fit-w: .97; }
 /* 下行：三级条均分（轮次 / 平均每轮 / 输入输出比）。 */
 .tt-kpi-row-tertiary { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
-.tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: 289 / 70; }
+.tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: 289 / 62; }
 /* ── 标签字号：整块 KPI 共用一套基准，不分级 ──
    以前每张卡各自乘“卡宽 × 比例”，于是二级和三级虽然看着差不多，却差 1px：
    三级卡更宽但比例更低，两者只是碰巧接近。
@@ -1045,35 +1052,72 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
    字号不在这里写死：--tt-* 都是比例，真正的像素由 kpi-fit.mjs 按实测反解。
    这里不放 container-type: inline-size。inline-size 包含会把自身内在宽度当成 0，
    而主数卡的列宽是 auto（由内容定）—— 一加尺寸隔离，它的宽度就塔成边框那么一点（实测 22px）。 */
+/* 标题贴着数字的左沿，整组在卡里居中。
+   注意这里必须是 flex 而不能是 grid 的 auto 列：
+   数字的字号是按 value 的客户宽反解出来的，若列宽改成“由内容定”
+   就成了自引用（宽由字定、字又由宽定），实测数字会塔成 23px、腰截一半。
+   所以数字保持 flex:1 撑满整宽（量到的可用宽才是真的），
+   让“标题对数字左沿”靠 JS 写 margin-left 完成（见 kpi-fit.mjs）。 */
 .tt-kpi { overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: flex-start; gap: 6px;
   --tt-fit-mode: both; --tt-value-ratio: 3.4; --tt-fit-w: .94; --tt-fit-h: .88; --tt-fit-floor: .05; }
-.tt-kpi > span { display: block; min-width: 0; flex: 0 0 auto; color: var(--tt-t2); font-size: .68em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tt-kpi > span, .tt-kpi-main > span, .tt-kpi-today > span { display: block; min-width: 0; flex: 0 0 auto; align-self: flex-start; color: var(--tt-t2); font-size: .68em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 /* min-height:0 是防溢出的闸：flex 子项的默认最小高度是内容高，数字长过头时会反过来把卡片撑高，
    卡片一高，按高算出的字号又更大 —— 一个自我放大的环。把它钉成 0 就断了。
    兜底字号写 em、不写 cqi：主数卡的宽度跟着字走（栅格首列 auto），
    而 cqi 是相对容器自身 inline-size 的，容器宽又由字决定 —— 自引用，浏览器会退化成 0。
 em 相对卡片继承的字号（来自全局，不来自宽度），不自引用；脚本首帧就会把它换成实测值。 */
-.tt-kpi > strong { display: flex; align-items: center; flex: 1 1 auto; min-height: 0; overflow: hidden; font-weight: 700; color: var(--tt-t1); font-size: 2.2em; line-height: 1; letter-spacing: -.03em; white-space: nowrap; }
+.tt-kpi > strong, .tt-kpi-main > strong, .tt-kpi-today > strong { display: flex; align-items: center; justify-content: center; flex: 1 1 auto; min-height: 0; overflow: hidden; font-weight: 700; color: var(--tt-t1); font-size: 2.2em; line-height: 1; letter-spacing: -.03em; white-space: nowrap; }
 /* 主数卡：宽度随内容（栅格首列 auto），字号只看高度。
    高度定字，字定宽度，宽度不回喂高度，链条有终点。
    以前宽度被 1.25fr 钉住、字又被 110px 钉住，两边都动不了，中间那块空白就只能留在右边。 */
-.tt-kpi-primary { justify-content: flex-start; gap: 8px; padding: 16px 20px 18px;
+.tt-kpi-primary { gap: 8px; padding: 16px 20px 18px;
+  /* 主卡现在是两列：合计（大） | 浅竖线 | 今日（小），整体在卡内居中。
+     列宽用 max-content 而不是 1fr：两个数字各自保留自己的自然宽，
+     再靠 justify-content:center 把整组居中，否则列会被均分、宽字被压小。 */
+  display: flex; flex-direction: row; align-items: stretch; justify-content: center; gap: 20px;
   /* --tt-fit-h 越小，主数字越往回收。它是比例不是字号：换卡尺寸时仍按这个占比算。
-     主卡高度被右侧两行拉得很高（实测 234px），数字不必把整块全填满，
-     只要比二级高一个明显的档位就够了。 */
-  --tt-fit-mode: both; --tt-value-ratio: 6.6; --tt-fit-w: .96; --tt-fit-h: .55; }
-.tt-kpi-primary > strong { justify-content: flex-start; letter-spacing: -.045em; }
+     主卡是高度受限的（实测：框高 × 占比就是最终字号）。
+     二级卡内部腾空间后二行变高，主卡被 align-items:stretch 拉高，
+     这里把占比收回来，让主数字仍停在 88 附近 —— 你只要求二级卡内部变大，没要求主卡变大。 */
+  --tt-fit-mode: both; --tt-value-ratio: 6.6; --tt-fit-w: .96; --tt-fit-h: .72; }
+.tt-kpi-primary > strong { justify-content: center; letter-spacing: -.045em; }
+/* 主卡的两列：合计（大）| 浅竖线 | 今日用量（注释）。
+   定位是“注释”不是“第二个读数”：它只是给左边的总数提供一个时间维度的对照，
+   所以字号退到与标签同量级、颜色退到最浅一档，不跟合计争层级。
+   列宽给比例而非 max-content：max-content 会让列宽由字决定，
+   而字号又要看宽度 —— 自引用，实测数字被切成了 26.96 E。 */
+.tt-kpi-main { flex: 1.45 1 0; }
+.tt-kpi-today { flex: 1 1 0; }
+.tt-kpi-main, .tt-kpi-today { display: flex; flex-direction: column; justify-content: center; min-width: 0; gap: 6px; }
+/* 主卡的标签必须完整显示：上一版「今日用量」被削成「今日」。
+   标签不参与压缩，宽度不够就压数字。 */
+.tt-kpi-main > span, .tt-kpi-today > span { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; }
+/* 浅竖线：用左边框而不是额外元素，高度自然等于列高。
+   --tt-b3 是最浅一档边线（--tt-b1 是常规边框），注释性的分隔线不该用常规边框色。 */
+.tt-kpi-today { border-left: 1px solid var(--tt-b3); padding-left: 16px;
+  /* 注释档：ratio 模式 —— 数字 = 标签 × 比例，与卡高无关。
+     1.85 是实测选定的：标签 22.4 → 数字 22（同一量级、略轻）。
+     1.42 时只有 13.9，比标签掉了两档，看着像个小注脚。 */
+  --tt-fit-mode: ratio; --tt-value-ratio: 1.85; }
+.tt-kpi-today > span { opacity: .9; }
+.tt-kpi-today > strong { color: var(--tt-t3); font-weight: 600; letter-spacing: -.01em;
+  /* 不能继承 flex:1 1 auto：那会让数字框吃掉整列剩余高度，文字又在框内居中，
+     注释就飘到卡中间、跟标签脱开（实测两者隔了 80px）。
+     字号走 ratio 模式不依赖框高，所以这里可以安全地写成 auto。 */
+  flex: 0 0 auto; }
 .tt-kpi-cost { --tt-value-ratio: 3.2; }
 /* 长条：标签与数字横排一行，不换行。形状比块矮一截，层级自己就出来了。
    不加边框、底色再退一档（半透明白）：二级是实心块，三级是洒在底上的一条，
    这样三级不会比二级“更重”。字号走 ratio 模式：跟条的高矮走，不去填满整条宽度。 */
-.tt-kpi-strip { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--tt-card) 55%, transparent);
+.tt-kpi-strip { display: flex; flex-direction: row; align-items: center; justify-content: center; gap: 10px; padding: 9px 14px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--tt-card) 55%, transparent);
   /* 长条的字以前太小（实测标签 13.9 / 数字 20.2）。标签已统一由 --tt-label-base 接管，
-     这里只定数字与标签的比例：数字 = 标签 × 1.66。 */
-  --tt-fit-mode: ratio; --tt-value-ratio: 1.66; --tt-fit-floor: .05; }
+     这里只定数字与标签的比例：数字 = 标签 × 1.66。
+     注意它是比例驱动的，压卡高不会让它缩小（实测压到 57px 它仍是 37.3），
+     要让三级数字跟着二级一起收，只能动这个比例。 */
+  --tt-fit-mode: ratio; --tt-value-ratio: 1.45; --tt-fit-floor: .05; }
 /* 数字一份不缩、标签让位：两个都设自动伸缩时，装不下会两边一起压，数字被切得看不出量级。 */
 .tt-kpi-strip > span { flex: 0 1 auto; min-width: 0; }
-.tt-kpi-strip > strong { flex: 0 0 auto; text-align: right; letter-spacing: -.02em; justify-content: flex-end; }
+.tt-kpi-strip > strong { flex: 0 0 auto; text-align: center; letter-spacing: -.02em; justify-content: center; }
 /* 没有单价：不写 $0（那是假精确），用虚线框把“这格还没亮起来”这件事本身说出来。 */
 .tt-kpi-cost[data-unpriced] { border-style: dashed; }
 .tt-kpi-cost[data-unpriced] > strong { color: var(--tt-t3); font-weight: 600; }
@@ -1293,8 +1337,9 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
   .tt-board { grid-template-rows: max-content max-content max-content 12px; gap: 12px; }
   .tt-kpi { padding: 10px; }
   /* 字号全部交给 kpi-fit.mjs 按实测反解：这里不再写 clamp 的 px 上下限。
-     以前这里写 clamp(40px,33cqi,84px)，矮屏上一个上限就把字锁死，卡再宽也不长。 */
-  .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 140; }
+     以前这里写 clamp(40px,33cqi,84px)，矮屏上一个上限就把字锁死，卡再宽也不长。
+     这里的分母必须跟默认档同步（二级 112）：窗口一矮就跳回原高，就白压了。 */
+  .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 112; }
   .tt-board-grid,.tt-board-right { gap: 12px; }
   .tt-board-panel > header { padding: 9px 11px 6px; }
   .tt-board-body { padding: 0 11px 7px; }

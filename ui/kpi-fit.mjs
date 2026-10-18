@@ -96,8 +96,149 @@ function setFontSize(el, size, lineHeight = '1') {
   if (changed || el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
 }
 
+// 标题与数字：共用一条左沿，整组再居中。
+// 组宽取两者墨迹宽的大者：谁更宽就以谁为准，另一个跟过去。
+// 用 translateX 而非 margin/padding 做位移：后者会挤掉元素自身的可用宽，
+// 宽一变，字号与换行都跟着变，实测因为这一点差了 16~24px。
+// scope 是尺寸基准（普通卡就是卡本身；主卡双列传列容器）——
+// 按整卡宽算会把列内元素推出去。
+function alignLabelToValue(card, label, value, scope) {
+  if (!label || !value) return;
+  const box = scope || card;
+  const cardStyle = getComputedStyle(card);
+  const ownStyle = box === card ? cardStyle : getComputedStyle(box);
+  // 内容区宽度用 clientWidth（不含边框）；
+  // 用 getBoundingClientRect 会把边框算进去，导致内容区左沿偏右 1px，
+  // 再夹紧时就把数字框误判成“出界”（探针之前就是这么误报的）。
+  const innerW = box.clientWidth - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right');
+  if (!(innerW > 0)) return;
+  const valueNode = value.firstChild;
+  const labelNode = label.firstChild;
+  if (!valueNode || valueNode.nodeType !== 3 || !labelNode || labelNode.nodeType !== 3) return;
+
+  const rv = document.createRange();
+  rv.selectNodeContents(value);
+  const rl = document.createRange();
+  rl.selectNodeContents(label);
+
+  // 先归一化：把上一次写的 translateX 清掉再量。
+  // 不清就会拿“已位移的位置”再算偏移，且旧的 transform 会留在 DOM 里
+  // 把元素推出可见区（实测“会话数”“预估费用”两格就残留了出界的位移）。
+  if (label.style.transform) label.style.transform = '';
+  if (value.style.transform) value.style.transform = '';
+
+  const vInk = rv.getBoundingClientRect();
+  const lInk = rl.getBoundingClientRect();
+  // transform 只平移不缩放，所以墨迹宽度不受它影响，反复调用也稳定（幂等）。
+  if (!(vInk.width > 0) || !(lInk.width > 0)) return;
+
+  const groupW = Math.max(vInk.width, lInk.width);
+  const groupLeft = (innerW - groupW) / 2;
+  // 数字现在是居中摆的：居中时它的墨迹左沿在 (innerW - 数字宽)/2。
+  // 要它落到组的左沿，差的这一段就是它该平移的量（下面会按能否位移重新赋值）。
+  const vInkLeftNow = (innerW - vInk.width) / 2;
+  const EDGE = 2;
+  // 关键：translateX 作用在 strong 的“元素框”上，而它几乎撑满内容区。
+  // 只要框比内容区窄不到 2*EDGE，任何位移都会把框推出边界 —— 墨迹没出界也没用，
+  // overflow:hidden 是拿框去裁的。这种情况下不动数字，只把标签对到数字上。
+  const vBoxW = value.getBoundingClientRect().width;
+  const boxFills = vBoxW >= innerW - 2 * EDGE;
+  let valueShift = 0;
+  let labelShift = groupLeft;
+  if (!boxFills) {
+    const lo = EDGE - vInkLeftNow;
+    const hi = innerW - vInk.width - vInkLeftNow - EDGE;
+    valueShift = hi >= lo ? Math.min(hi, Math.max(lo, groupLeft - vInkLeftNow)) : 0;
+    labelShift = vInkLeftNow + valueShift;   // 标签跟着数字的实际左沿走
+  } else {
+    // 框撑满时数字不能动，但标签仍要对到数字墨迹的左沿；
+    // 写 groupLeft 会让标签居中到组中心，与数字错开（实测「合计 Token」比数字右缩了 100px）。
+    labelShift = vInkLeftNow;
+  }
+
+  const lt = `translateX(${labelShift.toFixed(2)}px)`;
+  if (label.style.transform !== lt) label.style.transform = lt;
+  const vt = Math.abs(valueShift) < 0.05 ? '' : `translateX(${valueShift.toFixed(2)}px)`;
+  if (value.style.transform !== vt) value.style.transform = vt;
+}
+
+// 三级条的标签与数字横排在同一行，但“框对齐”不等于“看着对齐”：
+// 中文占满 em 框（上下都有墨），数字只到 cap 高度（基本只在基在线），
+// 行盒居中后两者墨迹中心就差了一截（实测 6~10px）。
+// 这里按实测算墨迹中心，把数字纵向归位。
+// 两个关键点：
+//   1) 用 position:relative + top，不用 transform —— transform 是公用属性，
+//      会和别处写的 translateX 互相覆盖（这是上一版失效的原因）。
+//   2) 每次测量前先把 top 归零，测到的才是真正的布局位置；
+//      否则拿“已偏移的位置”再算偏移，会越跑越偏。
+function alignStripInk(label, value) {
+  if (!label || !value) return;
+  const ln = label.firstChild, vn = value.firstChild;
+  if (!ln || ln.nodeType !== 3 || !vn || vn.nodeType !== 3) return;
+  const ctx = canvasCtx();
+  const measure = (el) => {
+    const cs = getComputedStyle(el);
+    const fs = parseFloat(cs.fontSize);
+    if (!(fs > 0)) return null;
+    const lhRaw = cs.lineHeight;
+    const lh = lhRaw === 'normal' ? fs * 1.2 : parseFloat(lhRaw);
+    if (!(lh > 0)) return null;
+    ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${fs}px ${cs.fontFamily}`;
+    const m = ctx.measureText((el.textContent || '').trim());
+    const A = m.fontBoundingBoxAscent, D = m.fontBoundingBoxDescent;
+    if (!(A > 0) || !(D > 0)) return null;
+    const box = el.getBoundingClientRect();
+    // 两个元素都是 align-items:center 下的单行，行盒就贴在各自盒顶（盒高=行盒高）。
+    const lineBoxTop = box.top + Math.max(0, (box.height - lh) / 2);
+    const baseline = lineBoxTop + (lh - (A + D)) / 2 + A;
+    return {
+      mid: (baseline - m.actualBoundingBoxAscent + baseline + m.actualBoundingBoxDescent) / 2,
+    };
+  };
+
+  // 归一化：先清掉上次的位移，再测基准位置。
+  if (value.style.position !== 'relative') value.style.position = 'relative';
+  const had = value.style.top;
+  if (had && had !== '0px') value.style.top = '0px';
+
+  const li = measure(label), vi = measure(value);
+  if (!li || !vi) { if (had) value.style.top = had; return; }
+
+  const shift = -(vi.mid - li.mid);
+  value.style.top = Math.abs(shift) < 0.05 ? '0px' : `${shift.toFixed(2)}px`;
+}
+
+let _cctx = null;
+function canvasCtx() {
+  return _cctx || (_cctx = document.createElement('canvas').getContext('2d'));
+}
+
 function fitCard(card, blockW) {
-  const kids = [...card.children];
+  // 主卡现在是双列（合计 / 今日），两列各自是一组「标签 + 数字」。
+  // 所以不能只看 card.children：那样拿到的是两个 div，里面一个 strong 都没有。
+  // 这里先找出所有“直接包含 strong 的容器”，每容器当一组独立反解；
+  // 普通卡就返回它自己，行为跟以前一致。
+  const groups = [];
+  const walk = (el) => {
+    const hasValue = [...el.children].some((c) => c.tagName === 'STRONG');
+    if (hasValue) { groups.push(el); return; }
+    for (const c of el.children) if (c.tagName === 'DIV') walk(c);
+  };
+  walk(card);
+  if (!groups.length) return;
+  for (const g of groups) fitGroup(card, g, blockW);
+  // 每组各自对齐自己的标签与数字左沿。
+  // 主卡两列各传自己的列容器当 scope：按整卡宽算会把列内元素推出去。
+  // 横排条跳过：它走 alignStripInk，transform 是同一个属性，会互相覆盖。
+  if (!card.classList.contains('tt-kpi-strip')) {
+    for (const g of groups) {
+      alignLabelToValue(card, g.querySelector('span'), g.querySelector('strong'), g);
+    }
+  }
+}
+
+function fitGroup(card, holder, blockW) {
+  const kids = [...holder.children];
   const value = kids.find((el) => el.tagName === 'STRONG');
   const label = kids.find((el) => el.tagName === 'SPAN');
   if (!value) return;
@@ -105,14 +246,22 @@ function fitCard(card, blockW) {
   const text = (value.textContent || '').trim();
   if (!text) return;
 
+  // 尺寸基准用 holder：普通卡 holder 就是 card 本身，行为不变；
+  // 双列主卡里 holder 是每一列，数字能用的宽高就是那一列的，不能再拿整张卡。
   const cardStyle = getComputedStyle(card);
-  const cardW = card.clientWidth;
-  const cardH = card.clientHeight;
+  const ownStyle = holder === card ? cardStyle : getComputedStyle(holder);
+  const cardW = holder.clientWidth;
+  const cardH = holder.clientHeight;
   // 隐藏的模块（页签没选中）量到的都是 0：这时写 0px 会把字压没。
   // 等它重新显示，ResizeObserver 会再叫一次。
   if (cardW <= 0 || cardH <= 0) return;
 
-  const mode = cardStyle.getPropertyValue('--tt-fit-mode').trim() || 'both';
+  // 列容器（主卡的两列）可以自己写 --tt-fit-*：
+  // 从 holder 读，变量不在 holder 上时再回落到整张卡。
+  const dirOf = (name) => ownStyle.getPropertyValue(name).trim()
+    || (holder === card ? '' : cardStyle.getPropertyValue(name).trim());
+
+  const mode = dirOf('--tt-fit-mode') || 'both';
 
   // ① 标签：整块 KPI 共用一个基准（--tt-label-base × 整块宽），不是每张卡自己算。
   //    为什么要上提到整块：以前每张卡乘自己的卡宽比例，于是同一个层级里
@@ -131,8 +280,11 @@ function fitCard(card, blockW) {
     const labelText = (label.textContent || '').trim();
     if (labelText) {
       const lm = metrics(labelText, getComputedStyle(label));
-      // 标签不许宽过卡内框：比例算得再大也得先装得下。
-      if (lm && lm.width > 0) labelSize = Math.min(labelSize, (cardW * 0.92 * PROBE_PX) / lm.width);
+      // 标签不许宽过容器内框：比例算得再大也得先装得下。
+      // 上限用整张卡的宽（主卡双列时也用卡宽）：标签是全级同号的，
+      // 若改用列宽，主卡的两个标签会双双掉到 16px 而其它卡还是 22.4。
+      const limitW = card.clientWidth;
+      if (lm && lm.width > 0) labelSize = Math.min(labelSize, (limitW * 0.92 * PROBE_PX) / lm.width);
     }
     // 行高 1.28：中文字形上下都伸到字框外，行高给到 1 会被裁掉顶和底（二级标题就是这么被遮的）。
     setFontSize(label, labelSize, '1.28');
@@ -140,16 +292,22 @@ function fitCard(card, blockW) {
 
   // ② 扁长条：数字跟标签成比例，不去填满整条。
   if (mode === 'ratio') {
-    const vr = ratio(cardStyle, '--tt-value-ratio', 1.45);
+    // 比例优先读容器自己的（主卡右列的“注释档”就写在列上）。
+    const vr = ratio(ownStyle, '--tt-value-ratio',
+      holder === card ? 1.45 : ratio(cardStyle, '--tt-value-ratio', 1.45));
     let size = (labelSize || cardW * 0.06) * vr;
     // 比例是期望值，不是免死金牌：标签很长（“平均每轮”）时，数字可能被挤出去。
     // 这里再用剩下那点宽度封一次顶 —— 数字先不被切，标签才去省略。
     const lm2 = metrics((label?.textContent || '').trim(), label ? getComputedStyle(label) : cardStyle);
     const labelW = lm2 && lm2.width > 0 ? (labelSize * lm2.width) / PROBE_PX : 0;
-    const room = cardW - num(cardStyle, 'padding-left') - num(cardStyle, 'padding-right') - labelW - 10;
+    const room = cardW - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right') - labelW - 10;
     const vm = metrics(text, getComputedStyle(value));
     if (room > 0 && vm && vm.width > 0) size = Math.min(size, (room * WIDTH_SAFETY * PROBE_PX) / vm.width);
     setFontSize(value, size);
+    // 墨迹中线归位只适用于“标签与数字在同一行”的横排条。
+    // 主卡右列的注释档也是 ratio 模式，但它是上下排的，
+    // 套用横排的纵向归位会把数字推到标签上（实测两者重叠）。
+    if (card.classList.contains('tt-kpi-strip')) alignStripInk(label, value);
     return;
   }
 
@@ -161,8 +319,9 @@ function fitCard(card, blockW) {
   const m = metrics(text, getComputedStyle(value));
   if (!m || !(m.width > 0) || !(m.inkHeight > 0)) return;
 
-  const fillW = ratio(cardStyle, '--tt-fit-w', 1);
-  const fillH = ratio(cardStyle, '--tt-fit-h', 0.94);
+  // fillW / fillH 也优先读列容器自己的（dirOf 已在上面定义）。
+  const fillW = ratio(ownStyle, '--tt-fit-w', holder === card ? 1 : ratio(cardStyle, '--tt-fit-w', 1));
+  const fillH = ratio(ownStyle, '--tt-fit-h', holder === card ? 0.94 : ratio(cardStyle, '--tt-fit-h', 0.94));
   // 宽与高两个方向各自反解，取小。
   // 宽度：boxW 已经是数字框的可用宽（flex 子项，已扣掉隔壁元素与 gap）。
   // 高度：boxH 是行盒高，而字的高度只占行的 ~72%（上下还留了行距），
@@ -173,12 +332,13 @@ function fitCard(card, blockW) {
   //   width  只看宽度。卡片视图里高被压得很矮，若看高度就会把主数压成和二级一样大。
   //   height 只看高度。
   //   both   取小（默认）。
-  const mode2 = cardStyle.getPropertyValue('--tt-fit-mode').trim() || 'both';
+  const mode2 = dirOf('--tt-fit-mode') || 'both';
   let size = mode2 === 'width' ? byW : mode2 === 'height' ? byH : Math.min(byW, byH);
-  if (fillW < 1) size = Math.min(size, (boxW * fillW * PROBE_PX) / m.width);
+  // fillW 只对“宽度参与决策”的模式生效；height 模式下压宽度上限会重新引入自引用。
+  if (fillW < 1 && mode2 !== 'height') size = Math.min(size, (boxW * fillW * PROBE_PX) / m.width);
 
-  // 防崩底线：字小到读不出来时按卡宽占一个比例兜住，不让它继续缩。
-  const floor = cardW * ratio(cardStyle, '--tt-fit-floor', 0.05);
+  // 防崩底线：字小到读不出来时按容器宽占一个比例兜住，不让它继续缩。
+  const floor = cardW * ratio(ownStyle, '--tt-fit-floor', 0.05);
   setFontSize(value, Math.max(size, floor));
 }
 
@@ -187,15 +347,17 @@ function fitCard(card, blockW) {
 // 只处理块状卡：长条走 ratio、主数卡独占一行，都没有这个问题。
 function unifyRow(row) {
   if (!row) return;
-  const values = [...row.children]
-    .filter((card) => card.classList.contains('tt-kpi') && !card.classList.contains('tt-kpi-strip'))
-    .map((card) => card.querySelector('strong'))
-    .filter(Boolean);
+  const cards = [...row.children].filter((card) => card.classList.contains('tt-kpi') && !card.classList.contains('tt-kpi-strip'));
+  const values = cards.map((card) => card.querySelector('strong')).filter(Boolean);
   if (values.length < 2) return;
   const sizes = values.map((el) => parseFloat(el.style.fontSize)).filter((n) => Number.isFinite(n) && n > 0);
   if (sizes.length < 2) return;
   const min = Math.min(...sizes);
   for (const el of values) setFontSize(el, min);
+  // 字号被统一改过，标签的位移得重算：位移量取决于数字墨迹宽，而宽随字号变。
+  for (const card of cards) {
+    alignLabelToValue(card, card.querySelector('span'), card.querySelector('strong'));
+  }
 }
 
 export function fitKpiCards(root) {

@@ -662,6 +662,19 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const primaryHint = days.length
     ? `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天，日均 ${compact(total / days.length)}`
     : '所选范围没有记录';
+  // 今日用量：从按日聚合里取今天那一格。
+  // 注意「取不到」和「为 0」是两件事：所选范围不含今天时（比如切到上个月），
+  // 硬写 0 就是在说“今天一点没用”，那是假精确 —— 这种情况给 —。
+  // 只有用户显式限定了范围时，今日是否在范围内才需要判断；
+  // 默认视图总是“当前”，即使最新数据停在昨天，今天也该是 0 而不是 —。
+  const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
+  const todayRow = a?.daily?.find(d => d.date === todayKey);
+  const hasExplicitRange = Boolean(state.from || state.to || (state.range && state.range !== 'today'));
+  const inRange = !hasExplicitRange || days.includes(todayKey);
+  const todayText = todayRow ? compact(todayRow.totalTokens || 0) : (inRange ? '0' : '—');
+  const todayHint = todayRow
+    ? `今天（${todayKey}）的用量；统计口径只限今天，与左侧合计的范围无关`
+    : (inRange ? `今天（${todayKey}）还没有记录` : `所选范围不含今天（${todayKey}），无法给出今日用量`);
   // 三级：派生比值与轮次。轮次降到这里 —— 它是个背景量，不回答“贵不贵”。
   const footprint = [
     turnCount ? ['轮次', compact(turnCount), '一条 user 消息到下一次 user 消息之间算一轮；不是 API 请求数'] : null,
@@ -678,8 +691,14 @@ export function renderAnalytics(container, dashboard, state, patch) {
   }, h('span', {}, label), h('strong', {}, value));
   container.append(h('div', { className: 'tt-board-kpis' },
     // 一级：左侧竖直整块，高度自动等于右侧两行之和（grid 跨行撑开，不写死像素）。
+    // 内部再分两列：左“合计”右“今日用量”，中间一条浅竖线。
+    // 今日只是一个带时间维度的对照，定位是注释、不是第二个读数，
+    // 所以字号与颜色都退一档（具体比例在 CSS 里）。
     h('div', { className: 'tt-kpi tt-kpi-primary', title: primaryHint, 'data-tt-select': '' },
-      h('span', {}, '合计 Token'), h('strong', {}, compact(total))),
+      h('div', { className: 'tt-kpi-main' },
+        h('span', {}, '合计 Token'), h('strong', {}, compact(total))),
+      h('div', { className: 'tt-kpi-today', title: todayHint, 'data-tt-select': '' },
+        h('span', {}, '今日用量'), h('strong', {}, todayText))),
     // 二级：右侧上行，块状卡片。
     h('div', { className: 'tt-kpi-row tt-kpi-row-secondary' },
       tile('', '缓存命中率', fmtPct(summary.cacheHitRate, 1),
