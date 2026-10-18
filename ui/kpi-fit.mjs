@@ -22,11 +22,13 @@
 // 一排里几张卡还要对齐：同一行内取它们各自算出的最小值统一写回，否则同一层级里
 // 数字大一个小一个（短文本“1.2 K”会比“32.0%”大一圈），看着就不是一套字。
 //
-// 标签字号不跟数字走，否则「标签高 → 数字框高 → 数字字号 → 标签字号」会自己转起来：
-//   块状卡按卡宽取（卡宽由栅格定，稳定）—— --tt-label-w
-//   主数卡与长条按卡高取（卡高由右侧两行 / 条自身定）—— --tt-label-h
+// 标签字号不跟数字走，否则「标签高 → 数字框高 → 数字字号 → 标签字号」会自己转起来。
+// 而标签只按卡宽取比例（--tt-label-w）：卡的宽度永远由栅格/容器决定，
+// 不会被字反推回去 —— 这条路是单行道，不存在振荡。
+// （早期版本让主数卡与长条按卡高取，但卡片视图里高度是内容撑的，
+//   于是“高定字、字定高”又成环，所以统一改成宽度制。）
 //
-// 所有「占多少」都是比例（--tt-fit-w / --tt-fit-h / --tt-fit-floor），不是字号。
+// 所有「占多少」都是比例（--tt-label-w / --tt-fit-w / --tt-fit-h / --tt-fit-floor），不是字号。
 
 const PROBE_PX = 100;
 // 改动小于这个值就不写回：回调里反复改样式会把自己再叫起来。
@@ -78,19 +80,20 @@ function metrics(text, style) {
   const rect = el.getBoundingClientRect();
   // 字宽为 0（未挂载、字体未就绪）时返回 null，让调用方跳过这一轮而不是写个 0 进去。
   if (!(rect.width > 0)) return null;
-  return { width: rect.width, inkHeight: rect.height || PROBE_PX * 0.72 };
+  return { width: rect.width, inkHeight: rect.height || PROBE_PX * 0.72, lineHeight: rect.height || PROBE_PX };
 }
 
 // 反解出来的字宽与实测字宽有 1~2px 的系统偏差（子像素舍入、字距累积）。
 // 留这一点余量，避免贴着框边的情况被判成溢出。
 const WIDTH_SAFETY = 0.985;
 
-function setFontSize(el, size) {
+function setFontSize(el, size, lineHeight = '1') {
   if (!Number.isFinite(size) || size <= 0) return;
-  if (Math.abs((parseFloat(el.style.fontSize) || 0) - size) > EPSILON) {
-    el.style.fontSize = `${size.toFixed(2)}px`;
-    el.style.lineHeight = '1';
-  }
+  const changed = Math.abs((parseFloat(el.style.fontSize) || 0) - size) > EPSILON;
+  if (changed) el.style.fontSize = `${size.toFixed(2)}px`;
+  // 行高必须单独给：标签是中文，字形上下都顶到字框外，
+  // line-height:1 会把字的顶部和底部裁掉一截（二级卡标题就是这么被遮的）。
+  if (changed || el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
 }
 
 function fitCard(card) {
@@ -111,25 +114,27 @@ function fitCard(card) {
 
   const mode = cardStyle.getPropertyValue('--tt-fit-mode').trim() || 'both';
 
-  // ① 标签：按「不会被数字牵动」的那一维取比例，见文件头。
+  // ① 标签：只按卡宽取比例（卡宽由外部定，不自引用）。
+  //    如果卡片显式给了 --tt-label-h，则改按卡高取（横排的长条用这个：
+  //    它宽得很、高很矮，按宽度取会把标签放得比二级卡还大）。
   let labelSize = 0;
   if (label) {
-    const fromWidth = cardW * ratio(cardStyle, '--tt-label-w', 0.1);
-    const fromHeight = cardH * ratio(cardStyle, '--tt-label-h', 0.1);
-    labelSize = mode === 'both' ? fromWidth : fromHeight;
+    const byH = num(cardStyle, '--tt-label-h');
+    labelSize = byH > 0 ? cardH * byH : cardW * ratio(cardStyle, '--tt-label-w', 0.09);
     const labelText = (label.textContent || '').trim();
     if (labelText) {
       const lm = metrics(labelText, getComputedStyle(label));
       // 标签不许宽过卡内框：比例算得再大也得先装得下。
       if (lm && lm.width > 0) labelSize = Math.min(labelSize, (cardW * 0.92 * PROBE_PX) / lm.width);
     }
-    setFontSize(label, labelSize);
+    // 行高 1.28：中文字形上下都伸到字框外，行高给到 1 会被裁掉顶和底（二级标题就是这么被遮的）。
+    setFontSize(label, labelSize, '1.28');
   }
 
   // ② 扁长条：数字跟标签成比例，不去填满整条。
   if (mode === 'ratio') {
     const vr = ratio(cardStyle, '--tt-value-ratio', 1.45);
-    let size = (labelSize || cardH * 0.28) * vr;
+    let size = (labelSize || cardW * 0.06) * vr;
     // 比例是期望值，不是免死金牌：标签很长（“平均每轮”）时，数字可能被挤出去。
     // 这里再用剩下那点宽度封一次顶 —— 数字先不被切，标签才去省略。
     const lm2 = metrics((label?.textContent || '').trim(), label ? getComputedStyle(label) : cardStyle);
@@ -151,12 +156,18 @@ function fitCard(card) {
 
   const fillW = ratio(cardStyle, '--tt-fit-w', 1);
   const fillH = ratio(cardStyle, '--tt-fit-h', 0.94);
-  // 宽度那一项默认不乘系数：boxW 已经是数字框的可用宽度（flex 子项，已扣掉标签与 gap），
-  // 再乘一个 <1 的系数只会把字算小、留出不该有的空白。
-  // 只有卡片显式要求留边（--tt-fit-w < 1）时才收紧。
+  // 宽与高两个方向各自反解，取小。
+  // 宽度：boxW 已经是数字框的可用宽（flex 子项，已扣掉隔壁元素与 gap）。
+  // 高度：boxH 是行盒高，而字的高度只占行的 ~72%（上下还留了行距），
+  //   所以拿 inkHeight 直接算会把字算得比框小而白白浪费高度 —— 这里用行高而非墨迹高。
   const byW = (boxW * WIDTH_SAFETY * PROBE_PX) / m.width;
-  const byH = (boxH * fillH * PROBE_PX) / m.inkHeight;
-  let size = Math.min(byW, byH);
+  const byH = (boxH * fillH * PROBE_PX) / m.lineHeight;
+  // 三种取法（--tt-fit-mode）：
+  //   width  只看宽度。卡片视图里高被压得很矮，若看高度就会把主数压成和二级一样大。
+  //   height 只看高度。
+  //   both   取小（默认）。
+  const mode2 = cardStyle.getPropertyValue('--tt-fit-mode').trim() || 'both';
+  let size = mode2 === 'width' ? byW : mode2 === 'height' ? byH : Math.min(byW, byH);
   if (fillW < 1) size = Math.min(size, (boxW * fillW * PROBE_PX) / m.width);
 
   // 防崩底线：字小到读不出来时按卡宽占一个比例兜住，不让它继续缩。

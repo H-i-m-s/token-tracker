@@ -37,16 +37,22 @@
 .tt-card-summary-title > span { color: var(--tt-t3); font-size: 10px; }
 /* 卡片窄栏（约 520px 宽）：左大右分放不下，改成竖排：主数一格、二级两列、三级一条。 */
 .tt-card-content .tt-board-kpis { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto auto; gap: 6px; flex: 0 0 auto; }
-/* 竖排后卡宽由容器给，不再随字走，所以主数卡也改成 both 取小。 */
-.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: both; }
-.tt-card-content .tt-kpi { padding: 8px 9px; border-radius: 9px; gap: 4px; justify-content: flex-start; }
+/* 竖排后卡宽由容器给（504 / 249），高度则被内容压得很矮（实测 58px）。
+   这时若按高度取字，主数字会被压得和二级一样大、层级就没了。
+   所以卡片视图里一律改成半径向宽度看（--tt-fit-mode: width）。 */
+.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: width; --tt-label-w: .038; --tt-fit-w: .68; }
+/* 只给块状卡写 flex-start：长条是横排的，靠 space-between 把标签与数字顶到两头。
+   上一版把 flex-start 写在 .tt-card-content .tt-kpi 上，优先级高于 .tt-kpi-strip，
+   于是卡片视图里三级条全挤成“轮次1.9 K”。 */
+.tt-card-content .tt-kpi:not(.tt-kpi-strip) { padding: 8px 9px; border-radius: 9px; gap: 3px; justify-content: flex-start; }
+/* 卡片视图里三级条很宽（504px），按宽度取标签会算出比二级还大的字。
+   这里标签改成跟条高走（--tt-label-h），数字跟标签成比例：横排条的字应该由“条多高”决定。 */
+.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 42px; justify-content: space-between; --tt-label-w: .032; --tt-value-ratio: 1.85; }
 .tt-card-content .tt-kpi-row-secondary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
 .tt-card-content .tt-kpi-row-tertiary { grid-template-columns: minmax(0,1fr); gap: 6px; }
-/* 卡片里每块的高度本来就得紧凑：aspect-ratio 会把一列拉得很高，改回由内容定。 */
-.tt-card-content .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: auto; min-height: 56px; }
-.tt-card-content .tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: auto; }
-/* 字号全交给 kpi-fit.mjs：卡片窄，但字该占多少仍按这块自己的内框算，不另写一套 px。 */
-.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 0; --tt-value-ratio: 1.5; }
+/* 卡片里每块高度本就紧凑：aspect-ratio 会把一列拉得很高，改回由内容定。 */
+.tt-card-content .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: auto; min-height: 62px; --tt-fit-mode: width; --tt-label-w: .07; --tt-fit-w: .92; }
+.tt-card-content .tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: auto; min-height: 40px; }
 .tt-card-content #overview-module:has(.tt-board-kpis) { overflow-y: auto; scrollbar-width: thin; }
 .tt-card-content #overview-module:has(.tt-board-kpis) > .tt-board-panel { flex: 0 0 160px; margin-top: 8px; }
 .tt-card-content .tt-dist-row, .tt-card-content .tt-dist-head { grid-template-columns: minmax(55px,1fr) 46px 46px minmax(65px,1.5fr); gap: 4px; }
