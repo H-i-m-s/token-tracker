@@ -37,17 +37,16 @@
 .tt-card-summary-title > span { color: var(--tt-t3); font-size: 10px; }
 /* 卡片窄栏（约 520px 宽）：左大右分放不下，改成竖排：主数一格、二级两列、三级一条。 */
 .tt-card-content .tt-board-kpis { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto auto; gap: 6px; flex: 0 0 auto; }
-.tt-card-content .tt-kpi-primary { grid-row: auto; }
-.tt-card-content .tt-kpi { padding: 8px 9px; border-radius: 9px; min-height: 52px; gap: 3px; justify-content: center; }
+/* 竖排后卡宽由容器给，不再随字走，所以主数卡也改成 both 取小。 */
+.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: both; }
+.tt-card-content .tt-kpi { padding: 8px 9px; border-radius: 9px; gap: 4px; justify-content: flex-start; }
 .tt-card-content .tt-kpi-row-secondary { grid-template-columns: repeat(2,minmax(0,1fr)); gap: 6px; }
 .tt-card-content .tt-kpi-row-tertiary { grid-template-columns: minmax(0,1fr); gap: 6px; }
-.tt-card-content .tt-kpi > span { font-size: 10px; }
-.tt-card-content .tt-kpi-primary > strong { font-size: clamp(30px,11cqi,42px); }
-.tt-card-content .tt-kpi-cost > strong { font-size: clamp(16px,9cqi,22px); }
-.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 0; }
-/* 费用不再整行：二级四块正好 2×2，让它跟会话数并排，否则会话数会单独守一边。 */
-.tt-card-content .tt-kpi-strip > span { font-size: 10px; }
-.tt-card-content .tt-kpi-strip > strong { font-size: 14px; }
+/* 卡片里每块的高度本来就得紧凑：aspect-ratio 会把一列拉得很高，改回由内容定。 */
+.tt-card-content .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: auto; min-height: 56px; }
+.tt-card-content .tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: auto; }
+/* 字号全交给 kpi-fit.mjs：卡片窄，但字该占多少仍按这块自己的内框算，不另写一套 px。 */
+.tt-card-content .tt-kpi-strip { padding: 7px 11px; min-height: 0; --tt-value-ratio: 1.5; }
 .tt-card-content #overview-module:has(.tt-board-kpis) { overflow-y: auto; scrollbar-width: thin; }
 .tt-card-content #overview-module:has(.tt-board-kpis) > .tt-board-panel { flex: 0 0 160px; margin-top: 8px; }
 .tt-card-content .tt-dist-row, .tt-card-content .tt-dist-head { grid-template-columns: minmax(55px,1fr) 46px 46px minmax(65px,1.5fr); gap: 4px; }

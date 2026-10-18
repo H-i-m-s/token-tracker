@@ -2,6 +2,7 @@ import { WorkspaceApp } from './workspace.mjs';
 import { bootstrap } from './bootstrap.mjs';
 import { applyAppearance } from './appearance.mjs';
 import { renderAnalytics } from './analytics.mjs';
+import { installKpiFit } from './kpi-fit.mjs';
 import { h, RANGES, THEME_OPTIONS, createUnitRow, selectOptions, installDetailsDismiss } from './components.mjs';
 import { asList, selectionKey } from './selection.mjs';
 import { enhanceSelects } from './custom-select.mjs';
@@ -159,6 +160,9 @@ export class CardApp extends WorkspaceApp {
     renderAnalytics(board, this.dashboard, state, patch => this.state.patch(patch));
     if (active === 'overview') {
       el.append(h('header', { className: 'tt-card-summary-title' }, h('h2', {}, '用量总览'), h('span', {}, `${this.dashboard.agents.length} 个活跃 Agent`)), board.querySelector('.tt-board-kpis'));
+      // 页签切换、筛选、窗口缩放都会重建这块 DOM，所以每次都重新装：
+      // 内部按容器存观察器，重复装只是换一个新的，不会越叠越多。
+      installKpiFit(el);
       const daily = board.querySelector(CHART_SELECTORS.daily);
       if (daily) el.append(daily);
     } else {

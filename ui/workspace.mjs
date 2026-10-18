@@ -1,6 +1,7 @@
 import { applyAppearance } from "./appearance.mjs";
 import { applyBoardLayout } from "./board-layout.mjs";
 import { renderAnalytics } from "./analytics.mjs";
+import { installKpiFit } from "./kpi-fit.mjs";
 import { createFilterStatus } from "./filter-chips.mjs";
 import { asList, selectionKey } from "./selection.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
@@ -865,6 +866,8 @@ export class WorkspaceApp {
     if (!el) return;
     const keepScroll = preserveScroll ? el.scrollTop : 0;
     renderAnalytics(el, this.dashboard, this.state.get(), patch => this.state.patch(patch));
+    // KPI 卡的字号不写死：每次重画后按各卡实测内框重算一遍（看板与卡片共用一份）。
+    installKpiFit(el);
     if (preserveScroll) el.scrollTop = keepScroll;
   }
 
