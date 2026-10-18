@@ -156,6 +156,16 @@ function alignLabelToValue(card, label, value, scope) {
     labelShift = vInkLeftNow;
   }
 
+  // 标签也必须夹紧：它同样在 overflow:hidden 的卡里，推出去就按框裁掉。
+  // 以前只给数字算 lo/hi，标签是赤裸裸写的，于是窄卡上「预估费用 · USD」被削成
+  // 「预估费用 · U」——实测 1430px 还好（不越界），到 960px 就超出 5px，720px 超出 16.8px。
+  // 夹紧的目的是“标签完整可读”，它的优先度高过“标签与数字共左沿”：
+  // 宁可标题偏一点，也不能把字截掉。
+  // 注意这里比的是「相对内容区左沿的位移量」，而 lInk/ vInk 是视口坐标，
+  // 所以上限直接用 innerW。EDGE 是留给抗锯齿的余量。
+  const labelMax = innerW - lInk.width - EDGE;   // 标签不再位移时左沿为 0
+  if (labelShift > labelMax) labelShift = Math.max(0, labelMax);
+
   const lt = `translateX(${labelShift.toFixed(2)}px)`;
   if (label.style.transform !== lt) label.style.transform = lt;
   const vt = Math.abs(valueShift) < 0.05 ? '' : `translateX(${valueShift.toFixed(2)}px)`;
@@ -294,10 +304,19 @@ function fitGroup(card, holder, blockW) {
     if (labelText) {
       const lm = metrics(labelText, getComputedStyle(label));
       // 标签不许宽过容器内框：比例算得再大也得先装得下。
-      // 上限用整张卡的宽（主卡双列时也用卡宽）：标签是全级同号的，
-      // 若改用列宽，主卡的两个标签会双双掉到 16px 而其它卡还是 22.4。
-      const limitW = card.clientWidth;
-      if (lm && lm.width > 0) labelSize = Math.min(labelSize, (limitW * 0.92 * PROBE_PX) / lm.width);
+      //
+      // 上限必须扣掉卡片自己的左右内边距。以前用的是 card.clientWidth —— 它是含 padding 的，
+      // 于是窄卡上算出 86.8 而真实内容区只有 66.4，标签照样溢出、被 overflow:hidden 裁掉。
+      // 这就是「预估费用 · USD」被削成「预估费用 · U」的第二层原因：
+      // 第一层是位移没夹紧（已修），第二层是天生的字号就超了。
+      //
+      // 仍然用整卡宽（而不是列宽）作为基准：标签是全级同号的，
+      // 改用列宽会让主卡的两个标签双双掉到 16px，而其它卡还是 22.4。
+      const innerCardW = card.clientWidth
+        - num(cardStyle, 'padding-left') - num(cardStyle, 'padding-right');
+      if (lm && lm.width > 0 && innerCardW > 0) {
+        labelSize = Math.min(labelSize, (innerCardW * 0.98 * PROBE_PX) / lm.width);
+      }
     }
     // 行高 1.28：中文字形上下都伸到字框外，行高给到 1 会被裁掉顶和底（二级标题就是这么被遮的）。
     setFontSize(label, labelSize, '1.28');
@@ -395,7 +414,63 @@ export function fitKpiCards(root) {
   for (const card of scope.querySelectorAll('.tt-kpi')) fitCard(card, blockW);
   // 单张算完再拉平：拉平只改字号，字号不参与卡尺寸，不会再反过来。
   for (const row of scope.querySelectorAll('.tt-kpi-row-secondary')) unifyRow(row);
+  unifyLabels(scope);
+  // 标签字号被 unifyLabels 改过之后，之前算的位移全部陈旧了（位移量取决于墨迹宽，而宽随字号变）。
+  // 不重算就会出现“标题与数字左沿错开 20~30px” —— 这在 1430px 下非常明显。
+  realignAll(scope);
   settleTodayTransition(scope);
+}
+
+// 重算所有“组”的标签左沿对齐。
+// “组”的判定与 fitCard 里的 walk 保持一致：直接含 strong 的容器。
+// 主卡的两列（data-tt-fit-box）也是组，但它们的对齐基准是列自己。
+function realignAll(scope) {
+  for (const card of scope.querySelectorAll('.tt-kpi')) {
+    if (card.classList.contains('tt-kpi-strip')) continue;   // 横排条走 alignStripInk
+    const groups = [];
+    const walk = (el) => {
+      if (el.hasAttribute?.('data-tt-fit-box')) { groups.push(el); return; }
+      if ([...el.children].some((c) => c.tagName === 'STRONG')) { groups.push(el); return; }
+      for (const c of el.children) if (c.tagName === 'DIV') walk(c);
+    };
+    walk(card);
+    for (const g of groups) {
+      alignLabelToValue(card, g.querySelector('span'), g.querySelector('strong'), g);
+    }
+  }
+}
+
+// 标签是「说明」，全块同号。
+//
+// 为什么要这一步：窄卡上「预估费用 · USD」比别的标题长很多，单独给它压字号
+// 会出现同一个层级 9.7 / 10.1 两种字 —— 挨着看就是乱了。
+// 改成取全块最小的那个当准，全体跟着降：宁可整块小 0.3px，也不要同层两套字号。
+//
+// 只降不升：每个标签自己的上限是“装得下”，统一取最小就是所有人都装得下。
+function unifyLabels(scope) {
+  // 只取“块状卡”的标签：三级横排条的标签跟条高走（--tt-label-h），
+  // 它不在同一套字号体系里，混进来会把整块拖到条子的大小。
+  const labels = [];
+  for (const card of scope.querySelectorAll('.tt-kpi')) {
+    if (card.classList.contains('tt-kpi-strip')) continue;
+    // 主卡里是两个“列”，每列各有一个标签；直接 querySelector 只能拿到第一个。
+    const cols = [...card.children].filter(c => c.classList.contains('tt-kpi-main') || c.classList.contains('tt-kpi-today'));
+    const hosts = cols.length ? cols : [card];
+    for (const h of hosts) {
+      const sp = h.querySelector('span');
+      if (sp && sp.textContent.trim()) labels.push(sp);
+    }
+  }
+  if (labels.length < 2) return;
+  const sizes = labels.map(el => parseFloat(el.style.fontSize)).filter(n => Number.isFinite(n) && n > 0);
+  if (sizes.length < 2) return;
+  const min = Math.min(...sizes);
+  for (const el of labels) {
+    const cur = parseFloat(el.style.fontSize);
+    if (!Number.isFinite(cur) || cur <= 0) continue;
+    if (Math.abs(cur - min) < 0.05) continue;
+    el.style.fontSize = min.toFixed(2) + 'px';
+  }
 }
 
 // 「今日用量」列的进/退场。
