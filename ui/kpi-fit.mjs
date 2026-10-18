@@ -96,7 +96,7 @@ function setFontSize(el, size, lineHeight = '1') {
   if (changed || el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
 }
 
-function fitCard(card) {
+function fitCard(card, blockW) {
   const kids = [...card.children];
   const value = kids.find((el) => el.tagName === 'STRONG');
   const label = kids.find((el) => el.tagName === 'SPAN');
@@ -114,13 +114,20 @@ function fitCard(card) {
 
   const mode = cardStyle.getPropertyValue('--tt-fit-mode').trim() || 'both';
 
-  // ① 标签：只按卡宽取比例（卡宽由外部定，不自引用）。
-  //    如果卡片显式给了 --tt-label-h，则改按卡高取（横排的长条用这个：
-  //    它宽得很、高很矮，按宽度取会把标签放得比二级卡还大）。
+  // ① 标签：整块 KPI 共用一个基准（--tt-label-base × 整块宽），不是每张卡自己算。
+  //    为什么要上提到整块：以前每张卡乘自己的卡宽比例，于是同一个层级里
+  //    二级与三级差 1px（三级卡更宽但比例低），同一排的字看着就不是一套。
+  //    标签是“说明”，不参与自适应；只有数值随卡片尺寸走。
   let labelSize = 0;
   if (label) {
-    const byH = num(cardStyle, '--tt-label-h');
-    labelSize = byH > 0 ? cardH * byH : cardW * ratio(cardStyle, '--tt-label-w', 0.09);
+    const base = num(cardStyle, '--tt-label-base');
+    if (base > 0 && blockW > 0) {
+      labelSize = blockW * base;
+    } else {
+      // 兜底：没拿到整块宽时退回按本卡宽算（--tt-label-h 优先，横排长条用它）。
+      const byH = num(cardStyle, '--tt-label-h');
+      labelSize = byH > 0 ? cardH * byH : cardW * ratio(cardStyle, '--tt-label-w', 0.09);
+    }
     const labelText = (label.textContent || '').trim();
     if (labelText) {
       const lm = metrics(labelText, getComputedStyle(label));
@@ -193,9 +200,16 @@ function unifyRow(row) {
 
 export function fitKpiCards(root) {
   if (!root?.querySelectorAll) return;
-  for (const card of root.querySelectorAll('.tt-kpi')) fitCard(card);
+  // 整块宽度：所有标签共用一个基准，所以要先把块宽量好再分工算。
+  // root 自己可能就是 .tt-board-kpis（调用方直接传块进来），而 querySelector
+  // 只搜后代、不搜自身 —— 上一版漏了这一条，基准恒为 0，标签退回逐卡算，
+  // 于是同一排里 43 / 20 / 27 各不相同。这里用 matches 兼容“传的就是块”。
+  const block = root.matches?.('.tt-board-kpis') ? root : root.querySelector('.tt-board-kpis');
+  const blockW = block ? block.clientWidth : 0;
+  const scope = block || root;
+  for (const card of scope.querySelectorAll('.tt-kpi')) fitCard(card, blockW);
   // 单张算完再拉平：拉平只改字号，字号不参与卡尺寸，不会再反过来。
-  for (const row of root.querySelectorAll('.tt-kpi-row-secondary')) unifyRow(row);
+  for (const row of scope.querySelectorAll('.tt-kpi-row-secondary')) unifyRow(row);
 }
 
 // 一块看板里的 KPI 卡共用一个观察器：卡尺寸变了就重算。

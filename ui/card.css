@@ -36,11 +36,14 @@
 .tt-card-summary-title h2 { font-size: 12px; font-weight: 600; }
 .tt-card-summary-title > span { color: var(--tt-t3); font-size: 10px; }
 /* 卡片窄栏（约 520px 宽）：左大右分放不下，改成竖排：主数一格、二级两列、三级一条。 */
-.tt-card-content .tt-board-kpis { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto auto; gap: 6px; flex: 0 0 auto; }
+.tt-card-content .tt-board-kpis { grid-template-columns: minmax(0,1fr); grid-template-rows: auto auto auto; gap: 6px; flex: 0 0 auto;
+  /* 卡片视图的块宽只有 504px（约为看板的 1/3），若沿用看板那个比例，
+     标签只剩 8px。这里按同一个目标墨迹高度（~18px）重定比例。 */
+  --tt-label-base: .0357; }
 /* 竖排后卡宽由容器给（504 / 249），高度则被内容压得很矮（实测 58px）。
    这时若按高度取字，主数字会被压得和二级一样大、层级就没了。
    所以卡片视图里一律改成半径向宽度看（--tt-fit-mode: width）。 */
-.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: width; --tt-label-w: .038; --tt-fit-w: .68; }
+.tt-card-content .tt-kpi-primary { grid-row: auto; --tt-fit-mode: width; --tt-fit-w: .55; }
 /* 只给块状卡写 flex-start：长条是横排的，靠 space-between 把标签与数字顶到两头。
    上一版把 flex-start 写在 .tt-card-content .tt-kpi 上，优先级高于 .tt-kpi-strip，
    于是卡片视图里三级条全挤成“轮次1.9 K”。 */

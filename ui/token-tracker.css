@@ -1027,18 +1027,26 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-kpi-row-secondary { grid-template-columns: repeat(4,minmax(0,1fr)); align-items: stretch; }
 /* 卡片高度只由宽度决定（aspect-ratio），不由文字撑。
    这是整套自适应的地基：字号要从卡高算，若卡高又由字号撑，两边就会互相喂着长，
-   一路涨到溢出为止。把高度的来源钉在宽度上，链路才有终点。 */
-.tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 152; }
+   一路涨到溢出为止。把高度的来源钉在宽度上，链路才有终点。
+   分母就是这个“高矮旋钮”：调小分母 → 整块变矮 → 字号跟着变小，两件事一次搞定。 */
+.tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 141; }
 /* 下行：三级条均分（轮次 / 平均每轮 / 输入输出比）。 */
 .tt-kpi-row-tertiary { grid-template-columns: repeat(3,minmax(0,1fr)); gap: 10px; }
-.tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: 289 / 78; }
+.tt-kpi-row-tertiary > .tt-kpi { aspect-ratio: 289 / 70; }
+/* ── 标签字号：整块 KPI 共用一套基准，不分级 ──
+   以前每张卡各自乘“卡宽 × 比例”，于是二级和三级虽然看着差不多，却差 1px：
+   三级卡更宽但比例更低，两者只是碰巧接近。
+   标签是让人读懂含义的，它就不该随卡片宽度漂；只有数值才该自适应。
+   所以这里把基准上提到整块上，所有标签都读同一个数 —— 同一排里永远一样大。
+   --tt-label-base 是相对「整块宽度」的比例，不是字号。 */
+.tt-board-kpis { --tt-label-base: .0157; }
 /* 块状卡：标签贴顶（以前 justify-content:center 把标签摊到中间，数字上下各空一截）。
    标签一上移，数字能用的高度就跟着变大 —— 这是“二级标题向上挑、里面的数字也跟着长”的机制。
    字号不在这里写死：--tt-* 都是比例，真正的像素由 kpi-fit.mjs 按实测反解。
    这里不放 container-type: inline-size。inline-size 包含会把自身内在宽度当成 0，
    而主数卡的列宽是 auto（由内容定）—— 一加尺寸隔离，它的宽度就塔成边框那么一点（实测 22px）。 */
 .tt-kpi { overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: flex-start; gap: 6px;
-  --tt-fit-mode: both; --tt-label-w: .112; --tt-value-ratio: 3.4; --tt-fit-w: .94; --tt-fit-h: .94; --tt-fit-floor: .05; }
+  --tt-fit-mode: both; --tt-value-ratio: 3.4; --tt-fit-w: .94; --tt-fit-h: .88; --tt-fit-floor: .05; }
 .tt-kpi > span { display: block; min-width: 0; flex: 0 0 auto; color: var(--tt-t2); font-size: .68em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 /* min-height:0 是防溢出的闸：flex 子项的默认最小高度是内容高，数字长过头时会反过来把卡片撑高，
    卡片一高，按高算出的字号又更大 —— 一个自我放大的环。把它钉成 0 就断了。
@@ -1051,18 +1059,18 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
    以前宽度被 1.25fr 钉住、字又被 110px 钉住，两边都动不了，中间那块空白就只能留在右边。 */
 .tt-kpi-primary { justify-content: flex-start; gap: 8px; padding: 16px 20px 18px;
   /* --tt-fit-h 越小，主数字越往回收。它是比例不是字号：换卡尺寸时仍按这个占比算。
-     主卡高度被右侧两行拉得很高（实测 254px），数字不必把整块全填满，
+     主卡高度被右侧两行拉得很高（实测 234px），数字不必把整块全填满，
      只要比二级高一个明显的档位就够了。 */
-  --tt-fit-mode: both; --tt-label-w: .058; --tt-value-ratio: 6.6; --tt-fit-w: .96; --tt-fit-h: .60; }
+  --tt-fit-mode: both; --tt-value-ratio: 6.6; --tt-fit-w: .96; --tt-fit-h: .55; }
 .tt-kpi-primary > strong { justify-content: flex-start; letter-spacing: -.045em; }
 .tt-kpi-cost { --tt-value-ratio: 3.2; }
 /* 长条：标签与数字横排一行，不换行。形状比块矮一截，层级自己就出来了。
    不加边框、底色再退一档（半透明白）：二级是实心块，三级是洒在底上的一条，
    这样三级不会比二级“更重”。字号走 ratio 模式：跟条的高矮走，不去填满整条宽度。 */
 .tt-kpi-strip { flex-direction: row; align-items: center; justify-content: space-between; gap: 10px; padding: 9px 14px; border: 0; border-radius: 10px; background: color-mix(in srgb, var(--tt-card) 55%, transparent);
-  /* 长条的字以前太小（实测标签 13.9 / 数字 20.2）：它卡宽不小但比例给得低。
-     条子是横排的，横向有余，所以可以给大：标签 6.6% 卡宽，数字 = 标签 × 1.7。 */
-  --tt-fit-mode: ratio; --tt-label-w: .078; --tt-value-ratio: 1.75; --tt-fit-floor: .05; }
+  /* 长条的字以前太小（实测标签 13.9 / 数字 20.2）。标签已统一由 --tt-label-base 接管，
+     这里只定数字与标签的比例：数字 = 标签 × 1.66。 */
+  --tt-fit-mode: ratio; --tt-value-ratio: 1.66; --tt-fit-floor: .05; }
 /* 数字一份不缩、标签让位：两个都设自动伸缩时，装不下会两边一起压，数字被切得看不出量级。 */
 .tt-kpi-strip > span { flex: 0 1 auto; min-width: 0; }
 .tt-kpi-strip > strong { flex: 0 0 auto; text-align: right; letter-spacing: -.02em; justify-content: flex-end; }
@@ -1286,7 +1294,7 @@ html[data-tt-appearance] .tt-nav-section { border-radius: 12px; border-color: va
   .tt-kpi { padding: 10px; }
   /* 字号全部交给 kpi-fit.mjs 按实测反解：这里不再写 clamp 的 px 上下限。
      以前这里写 clamp(40px,33cqi,84px)，矮屏上一个上限就把字锁死，卡再宽也不长。 */
-  .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 150; }
+  .tt-kpi-row-secondary > .tt-kpi { aspect-ratio: 213 / 140; }
   .tt-board-grid,.tt-board-right { gap: 12px; }
   .tt-board-panel > header { padding: 9px 11px 6px; }
   .tt-board-body { padding: 0 11px 7px; }

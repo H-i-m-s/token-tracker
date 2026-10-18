@@ -46,7 +46,7 @@
         "description": "Agent Token、余额和实时消耗工作台",
         "route": "/workspace.html",
         "realization": "page",
-        "siteNavEntry": false,
+        "siteNavEntry": true,
         "functionPanel": {
           "id": "navigation",
           "label": "Token 用量",
