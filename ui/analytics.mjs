@@ -635,6 +635,10 @@ function createFlowPanel() {
 }
 
 const flowPanels = new WeakMap();   // container -> 常驻面板实例。换范围不能重建它，否则没有“从哪儿来”
+// container -> 上次渲染时「今日用量」的展示状态。看板每帧都 replaceChildren 全量重建，
+// 新节点天生没有“上一个状态”；想知道这次是“本来有、该收起”还是“本来没有、该放出”，
+// 只能把上次的结果记在外面。顺带存下文字，退出时才能拿着旧值淡出而不是凭空消失。
+const kpiTodayState = new WeakMap();
 
 export function renderAnalytics(container, dashboard, state, patch) {
   container.replaceChildren(); container.className = 'tt-board';
@@ -662,19 +666,18 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const primaryHint = days.length
     ? `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天，日均 ${compact(total / days.length)}`
     : '所选范围没有记录';
-  // 今日用量：从按日聚合里取今天那一格。
-  // 注意「取不到」和「为 0」是两件事：所选范围不含今天时（比如切到上个月），
-  // 硬写 0 就是在说“今天一点没用”，那是假精确 —— 这种情况给 —。
-  // 只有用户显式限定了范围时，今日是否在范围内才需要判断；
-  // 默认视图总是“当前”，即使最新数据停在昨天，今天也该是 0 而不是 —。
+  // 今日用量：只在「全部历史」里才有意义。
+  // 其他区间（今日 / 近7天 / 本月 …）里，合计与今天的关系已经包含在那个窗口里，
+  // 再摆一个今日是在说一件已知的事。自定义日期同理。
+  //
+  // 取不到的那格是 0 不是 —：这条分支只在全部历史下走，那时今天一定在范围内。
   const todayKey = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date());
   const todayRow = a?.daily?.find(d => d.date === todayKey);
-  const hasExplicitRange = Boolean(state.from || state.to || (state.range && state.range !== 'today'));
-  const inRange = !hasExplicitRange || days.includes(todayKey);
-  const todayText = todayRow ? compact(todayRow.totalTokens || 0) : (inRange ? '0' : '—');
+  const showToday = state.range === 'all' && !state.from && !state.to;
+  const todayText = todayRow ? compact(todayRow.totalTokens || 0) : '0';
   const todayHint = todayRow
-    ? `今天（${todayKey}）的用量；统计口径只限今天，与左侧合计的范围无关`
-    : (inRange ? `今天（${todayKey}）还没有记录` : `所选范围不含今天（${todayKey}），无法给出今日用量`);
+    ? `今天（${todayKey}）的用量；与左侧合计的范围无关，合计是全部历史`
+    : `今天（${todayKey}）还没有记录`;
   // 三级：派生比值与轮次。轮次降到这里 —— 它是个背景量，不回答“贵不贵”。
   const footprint = [
     turnCount ? ['轮次', compact(turnCount), '一条 user 消息到下一次 user 消息之间算一轮；不是 API 请求数'] : null,
@@ -689,16 +692,40 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const strip = (label, value, hint) => h('div', {
     className: 'tt-kpi tt-kpi-strip', title: hint, 'data-tt-select': '',
   }, h('span', {}, label), h('strong', {}, value));
+  // 主卡：合计 + （只在全部历史下出现的）今日用量。
+  const primaryCard = () => {
+    const prev = kpiTodayState.get(container);
+    const main = h('div', { className: 'tt-kpi-main', 'data-tt-fit-box': '' },
+      h('span', {}, '合计 Token'), h('strong', {}, compact(total)));
+    const card = h('div', { className: 'tt-kpi tt-kpi-primary', title: primaryHint, 'data-tt-select': '' }, main);
+
+    // 该收起时仍然把这一列渲染出来（用上次的文字），否则新节点上没东西可淡出，
+    // 就还是硬生生消失。
+    const show = showToday || prev?.show === true;
+    if (show) {
+      const txt = showToday ? todayText : (prev?.text ?? todayText);
+      const hint = showToday ? todayHint : (prev?.hint ?? todayHint);
+      card.append(h('div', { className: 'tt-kpi-today', title: hint, 'data-tt-select': '', 'data-tt-fit-box': '' },
+        h('span', {}, '今日用量'), h('strong', {}, txt)));
+      // 只在“状态真的变了”时才放过渡；否则每次换筛选都会重放一遍进出。
+      if (prev && prev.show !== showToday) card.dataset[showToday ? 'ttEnter' : 'ttLeave'] = '';
+    }
+    kpiTodayState.set(container, {
+      show: showToday,
+      text: showToday ? todayText : null,
+      hint: showToday ? todayHint : null,
+    });
+    return card;
+  };
   container.append(h('div', { className: 'tt-board-kpis' },
     // 一级：左侧竖直整块，高度自动等于右侧两行之和（grid 跨行撑开，不写死像素）。
-    // 内部再分两列：左“合计”右“今日用量”，中间一条浅竖线。
-    // 今日只是一个带时间维度的对照，定位是注释、不是第二个读数，
-    // 所以字号与颜色都退一档（具体比例在 CSS 里）。
-    h('div', { className: 'tt-kpi tt-kpi-primary', title: primaryHint, 'data-tt-select': '' },
-      h('div', { className: 'tt-kpi-main' },
-        h('span', {}, '合计 Token'), h('strong', {}, compact(total))),
-      h('div', { className: 'tt-kpi-today', title: todayHint, 'data-tt-select': '' },
-        h('span', {}, '今日用量'), h('strong', {}, todayText))),
+    // 内部再分两列：左“合计”右“今日用量”，中间一条竖线。
+    //
+    // 「今日用量」只在全部历史下出现，且进出要有过程。难点在：
+    // 看板每帧都 replaceChildren 全量重建，新节点天生没有“上一个状态”——
+    // 直接挂上去就是硬生生闪现。所以把“上一帧有没有”记在容器上，
+    // 新节点出生时就知道这次该进场还是该退场，过渡由 kpi-fit.mjs 分两帧驱动。
+    primaryCard(),
     // 二级：右侧上行，块状卡片。
     h('div', { className: 'tt-kpi-row tt-kpi-row-secondary' },
       tile('', '缓存命中率', fmtPct(summary.cacheHitRate, 1),

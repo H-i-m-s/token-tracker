@@ -220,6 +220,10 @@ function fitCard(card, blockW) {
   // 普通卡就返回它自己，行为跟以前一致。
   const groups = [];
   const walk = (el) => {
+    // data-tt-fit-box 是显式声明的“尺寸基准”：主卡的两列就是。
+    // 为什么不能让它继续往下走到 group：group 是 max-content，
+    // 宽度由字决定，而字号又要看宽度 —— 自引用，数字会被塔小。
+    if (el.hasAttribute?.('data-tt-fit-box')) { groups.push(el); return; }
     const hasValue = [...el.children].some((c) => c.tagName === 'STRONG');
     if (hasValue) { groups.push(el); return; }
     for (const c of el.children) if (c.tagName === 'DIV') walk(c);
@@ -238,9 +242,10 @@ function fitCard(card, blockW) {
 }
 
 function fitGroup(card, holder, blockW) {
-  const kids = [...holder.children];
-  const value = kids.find((el) => el.tagName === 'STRONG');
-  const label = kids.find((el) => el.tagName === 'SPAN');
+  // 统一用 querySelector 而不是只看直接子元素：
+  // 显式声明的尺寸基准（主卡的列）下面夹了一层分组，数字是孙子节点。
+  const value = holder.querySelector('strong');
+  const label = holder.querySelector('span');
   if (!value) return;
 
   const text = (value.textContent || '').trim();
@@ -260,6 +265,14 @@ function fitGroup(card, holder, blockW) {
   // 从 holder 读，变量不在 holder 上时再回落到整张卡。
   const dirOf = (name) => ownStyle.getPropertyValue(name).trim()
     || (holder === card ? '' : cardStyle.getPropertyValue(name).trim());
+
+  // 宽度基准的两种情形：
+  //   普通卡 / 主卡合计列 —— 由外部给定（栅格或 flex），不回喂，直接用数字框自己的宽。
+  //   主卡今日列 —— 没有固定宽（按内容），同样用框自己的宽会被自引用拖动，
+  //   所以下面 ratio 分支里用整卡内宽封顶。
+  const fixedW = holder !== card
+    ? card.clientWidth - num(cardStyle, 'padding-left') - num(cardStyle, 'padding-right')
+    : 0;
 
   const mode = dirOf('--tt-fit-mode') || 'both';
 
@@ -296,34 +309,44 @@ function fitGroup(card, holder, blockW) {
     const vr = ratio(ownStyle, '--tt-value-ratio',
       holder === card ? 1.45 : ratio(cardStyle, '--tt-value-ratio', 1.45));
     let size = (labelSize || cardW * 0.06) * vr;
-    // 比例是期望值，不是免死金牌：标签很长（“平均每轮”）时，数字可能被挤出去。
-    // 这里再用剩下那点宽度封一次顶 —— 数字先不被切，标签才去省略。
+    // 比例是期望值，不是免死金牌：装不下就得收回。
+    // 但“扣掉标签宽”只适用于横排的长条 —— 标签和数字抢同一行的宽度。
+    // 主卡右列是上下排的，用横排那套公式会把标签宽白白扣掉一次，
+    // 实测今日数字被压到 22（与标签同号）。这里按方向分开算。
+    const rowLayout = card.classList.contains('tt-kpi-strip');
     const lm2 = metrics((label?.textContent || '').trim(), label ? getComputedStyle(label) : cardStyle);
-    const labelW = lm2 && lm2.width > 0 ? (labelSize * lm2.width) / PROBE_PX : 0;
-    const room = cardW - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right') - labelW - 10;
+    const labelW = rowLayout && lm2 && lm2.width > 0 ? (labelSize * lm2.width) / PROBE_PX : 0;
+    // 可用宽度：主卡的两列用整卡内宽，绝不拿列自己的宽（列宽由字撑，自引用）；
+    // 其他卡（横排长条）照旧用自己那条的宽。
+    const baseW = fixedW > 0 ? fixedW : holder.clientWidth;
+    const room = baseW - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right') - labelW - 10;
     const vm = metrics(text, getComputedStyle(value));
     if (room > 0 && vm && vm.width > 0) size = Math.min(size, (room * WIDTH_SAFETY * PROBE_PX) / vm.width);
     setFontSize(value, size);
     // 墨迹中线归位只适用于“标签与数字在同一行”的横排条。
     // 主卡右列的注释档也是 ratio 模式，但它是上下排的，
     // 套用横排的纵向归位会把数字推到标签上（实测两者重叠）。
-    if (card.classList.contains('tt-kpi-strip')) alignStripInk(label, value);
+    if (rowLayout) alignStripInk(label, value);
     return;
   }
 
   // ③ 竖向块：写完标签再量数字框，否则拿到的是旧行高下的高度。
-  const boxW = value.clientWidth;
+  // 宽度基准分两种：
+  //   普通卡 —— 数字框自己（列宽由栅格给定，不随字变）。
+  //   主卡的两列 —— 整卡内宽。那两列是 flex:0 0 auto（宽由内容定），
+  //   拿自己的宽反解就是自引用（实测每帧缩一次，70 → 25 停不下来）。
   const boxH = value.clientHeight;
+  // 主卡的列：宽度一律用整卡内宽（列自己的宽由内容定，不能拿来反解）。
+  // 普通卡：用数字框自己的宽（由栅格给定，不回喂）。
+  const boxW = fixedW > 0 ? fixedW : value.clientWidth;
   if (boxW <= 0 || boxH <= 0) return;
 
   const m = metrics(text, getComputedStyle(value));
   if (!m || !(m.width > 0) || !(m.inkHeight > 0)) return;
-
   // fillW / fillH 也优先读列容器自己的（dirOf 已在上面定义）。
   const fillW = ratio(ownStyle, '--tt-fit-w', holder === card ? 1 : ratio(cardStyle, '--tt-fit-w', 1));
   const fillH = ratio(ownStyle, '--tt-fit-h', holder === card ? 0.94 : ratio(cardStyle, '--tt-fit-h', 0.94));
   // 宽与高两个方向各自反解，取小。
-  // 宽度：boxW 已经是数字框的可用宽（flex 子项，已扣掉隔壁元素与 gap）。
   // 高度：boxH 是行盒高，而字的高度只占行的 ~72%（上下还留了行距），
   //   所以拿 inkHeight 直接算会把字算得比框小而白白浪费高度 —— 这里用行高而非墨迹高。
   const byW = (boxW * WIDTH_SAFETY * PROBE_PX) / m.width;
@@ -372,6 +395,97 @@ export function fitKpiCards(root) {
   for (const card of scope.querySelectorAll('.tt-kpi')) fitCard(card, blockW);
   // 单张算完再拉平：拉平只改字号，字号不参与卡尺寸，不会再反过来。
   for (const row of scope.querySelectorAll('.tt-kpi-row-secondary')) unifyRow(row);
+  settleTodayTransition(scope);
+}
+
+// 「今日用量」列的进/退场。
+//
+// 不用 CSS @keyframes：动画结束后要把“无约束”恢复回去，而 fill-mode:both 会把最后一帧按住，
+// 靠移除属性去恢复的时机很难合对 —— 实测会出现入场停在宽度 0、或停在 109 而不是静止态的 167。
+//
+// 改成写普通内联样式驱动 transition，时机完全在我们手上：
+//   退场：展开态 → 收起态 → transition 完 → 摘掉整列
+//   进场：收起态 → （下一帧）展开态 → transition 完 → 清内联，回到 CSS 默认
+//
+// 两端都必须是具体像素值：max-width 从 none 到 0px 不可插值，
+// 那样过渡等于直接跳 —— 实测退场第一帧宽度就是 15 而不是 167，“丝滑”是假的。
+const TODAY_MS = 340;
+
+function settleTodayTransition(scope) {
+  const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  for (const card of scope.querySelectorAll('.tt-kpi-primary')) {
+    const enter = card.hasAttribute('data-tt-enter');
+    const leave = card.hasAttribute('data-tt-leave');
+    if (!enter && !leave) continue;
+    const col = card.querySelector('.tt-kpi-today');
+    const cleanup = () => { card.removeAttribute('data-tt-enter'); card.removeAttribute('data-tt-leave'); };
+    if (!col) { cleanup(); continue; }
+    // 这列正在跑过渡：本次什么都不能做。
+    // 为什么要这个闸：过渡期间列宽在变 → 卡尺寸变 → ResizeObserver 又叫一次 fit
+    // → 又进到这里 → 重写起点→终点 → 过渡被反复重置。
+    // 实测的表现就是“卡在起点不动，最后一刻直接跳到终点”。
+    if (col.dataset.ttAnim === '1') { cleanup(); continue; }
+
+    // 先清掉可能残留的内联样式，量出“展开态”的真实几何。
+    col.style.width = ''; col.style.maxWidth = ''; col.style.paddingLeft = '';
+    col.style.borderLeftWidth = ''; col.style.opacity = '';
+    const cs = getComputedStyle(col);
+    const fullW = col.getBoundingClientRect().width;
+    const padL = parseFloat(cs.paddingLeft) || 0;
+    const bL = parseFloat(cs.borderLeftWidth) || 0;
+
+    const apply = (w, pad, border, op) => {
+      // 用固定 width 而不是 max-width：
+      // max-width 在这里描不准 —— 列的宽度是内容撑出来的，从 167 收到 0 时
+      // 浏览器算出的“间值”会被内容最小宽顶回去，实测宽度一直卡在 167 不动、到末了直接跳 0。
+      // width 是显式尺寸，两端数值明确，过渡真的能插值。
+      col.style.width = w === null ? '' : w + 'px';
+      col.style.paddingLeft = pad === null ? '' : pad + 'px';
+      col.style.borderLeftWidth = border === null ? '' : border + 'px';
+      col.style.opacity = op === null ? '' : String(op);
+    };
+
+    if (reduced) {
+      cleanup();
+      if (leave) col.setAttribute('data-tt-gone', '');
+      else apply(null, null, null, null);
+      fitKpiCards(card.closest('.tt-board-kpis') || scope);
+      continue;
+    }
+
+    // 起点写成显式像素，强制同步重排让它真的落下去，再写目标态 —— 两值之间才有可插值的差别。
+    // 只写 void offsetWidth 不够：reader 可能命中缓存，实测起点仍是收起态。
+    col.dataset.ttAnim = '1';
+    if (leave) {
+      // 退场：第一帧什么都不写（保持自然态 167），第二帧才写 0。
+      // 不能在第一帧写 fullW —— 那等于“写回原值”，浏览器视为无变化，
+      // 于是起点没建立，后面写 0 就是直接跳变（实测 167 一直停到 530ms 才归零）。
+      // 进场没这个问题，因为它第一帧写的是 0，与自然态不同，起点天然成立。
+      col.getBoundingClientRect();
+      setTimeout(() => {
+        if (!col.isConnected) return;
+        apply(0, 0, 0, 0);
+      }, 16);
+    } else {
+      apply(0, 0, 0, 0);
+      col.getBoundingClientRect();
+      setTimeout(() => {
+        if (!col.isConnected) return;
+        apply(fullW, padL, bL, 1);
+      }, 16);
+    }
+
+    setTimeout(() => {
+      // 已经不在文档里（换了一次区间、整块被重建）：别再动，免得摸到别人。
+      if (!col.isConnected) return;
+      cleanup();
+      delete col.dataset.ttAnim;
+      if (leave) col.setAttribute('data-tt-gone', '');
+      // 清掉内联，回到 CSS 默认的“无约束”态：这样卡宽度再变，这列也不会被钉住。
+      else apply(null, null, null, null);
+      fitKpiCards(card.closest('.tt-board-kpis') || scope);
+    }, TODAY_MS + 40);
+  }
 }
 
 // 一块看板里的 KPI 卡共用一个观察器：卡尺寸变了就重算。

@@ -1060,6 +1060,8 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
    让“标题对数字左沿”靠 JS 写 margin-left 完成（见 kpi-fit.mjs）。 */
 .tt-kpi { overflow: hidden; padding: 12px 13px 11px; border: 1px solid var(--tt-b1); border-radius: 13px; background: var(--tt-card); min-width: 0; display: flex; flex-direction: column; justify-content: flex-start; gap: 6px;
   --tt-fit-mode: both; --tt-value-ratio: 3.4; --tt-fit-w: .94; --tt-fit-h: .88; --tt-fit-floor: .05; }
+/* 主卡的标签与数字直接是列的子项，不另包一层 ——
+   一旦多一层盒子，它就会成为数字框尺寸的来源，而字号又要从尺寸反解，立即形成环。 */
 .tt-kpi > span, .tt-kpi-main > span, .tt-kpi-today > span { display: block; min-width: 0; flex: 0 0 auto; align-self: flex-start; color: var(--tt-t2); font-size: .68em; line-height: 1.2; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; text-align: left; }
 /* min-height:0 是防溢出的闸：flex 子项的默认最小高度是内容高，数字长过头时会反过来把卡片撑高，
    卡片一高，按高算出的字号又更大 —— 一个自我放大的环。把它钉成 0 就断了。
@@ -1079,32 +1081,43 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
      主卡是高度受限的（实测：框高 × 占比就是最终字号）。
      二级卡内部腾空间后二行变高，主卡被 align-items:stretch 拉高，
      这里把占比收回来，让主数字仍停在 88 附近 —— 你只要求二级卡内部变大，没要求主卡变大。 */
-  --tt-fit-mode: both; --tt-value-ratio: 6.6; --tt-fit-w: .96; --tt-fit-h: .72; }
+  --tt-fit-mode: both; --tt-value-ratio: 6.6; --tt-fit-w: .96; --tt-fit-h: .56; }
 .tt-kpi-primary > strong { justify-content: center; letter-spacing: -.045em; }
-/* 主卡的两列：合计（大）| 浅竖线 | 今日用量（注释）。
-   定位是“注释”不是“第二个读数”：它只是给左边的总数提供一个时间维度的对照，
-   所以字号退到与标签同量级、颜色退到最浅一档，不跟合计争层级。
-   列宽给比例而非 max-content：max-content 会让列宽由字决定，
-   而字号又要看宽度 —— 自引用，实测数字被切成了 26.96 E。 */
-.tt-kpi-main { flex: 1.45 1 0; }
-.tt-kpi-today { flex: 1 1 0; }
-.tt-kpi-main, .tt-kpi-today { display: flex; flex-direction: column; justify-content: center; min-width: 0; gap: 6px; }
+/* 主卡：合计（大）| 竖线 | 今日用量。
+
+   两列都按内容宽站住（flex:0 0 auto），整组由 justify-content:center 居中 ——
+   这样竖线两侧只隔一个 gap，且今日列收起时合计自然回中。
+
+   代价是一条硬约束：列宽由内容定，字号就不能再拿列宽反解（宽由字定、字又由宽定）。
+   所以主卡的字号基准改用整卡内宽，见 kpi-fit.mjs 的 fixedW。 */
+.tt-kpi-primary { gap: 16px; }
+.tt-kpi-main, .tt-kpi-today { flex: 0 0 auto; display: flex; flex-direction: column; justify-content: center; align-items: stretch; min-width: 0; gap: 6px; }
 /* 主卡的标签必须完整显示：上一版「今日用量」被削成「今日」。
    标签不参与压缩，宽度不够就压数字。 */
-.tt-kpi-main > span, .tt-kpi-today > span { flex: 0 0 auto; overflow: hidden; text-overflow: ellipsis; }
-/* 浅竖线：用左边框而不是额外元素，高度自然等于列高。
-   --tt-b3 是最浅一档边线（--tt-b1 是常规边框），注释性的分隔线不该用常规边框色。 */
-.tt-kpi-today { border-left: 1px solid var(--tt-b3); padding-left: 16px;
-  /* 注释档：ratio 模式 —— 数字 = 标签 × 比例，与卡高无关。
-     1.85 是实测选定的：标签 22.4 → 数字 22（同一量级、略轻）。
-     1.42 时只有 13.9，比标签掉了两档，看着像个小注脚。 */
-  --tt-fit-mode: ratio; --tt-value-ratio: 1.85; }
+.tt-kpi-main > span, .tt-kpi-today > span { flex: 0 0 auto; align-self: flex-start; overflow: hidden; text-overflow: ellipsis; }
+/* 竖线：用左边框而不是额外元素，高度自然等于列高。
+   之前用 --tt-b3，它在深色下是 #202631、卡底 #14171d，两者几乎同色 —— 实测看不见。
+   改用 --tt-b2（深色 #30394a / 浅色 #bac7db）：看得出来是一条分隔，又不抢数字。 */
+.tt-kpi-today { border-left: 1px solid var(--tt-b2); padding-left: 14px;
+  /* 注释档：数字 = 标签 × 比例，与卡高无关。
+     1.9：标签 22.4 → 数字 42.7。介于二级（57）与三级（32.5）之间：
+     读得出是个真实读数，又不与合计的 70 争主次。 */
+  --tt-fit-mode: ratio; --tt-value-ratio: 1.9; }
 .tt-kpi-today > span { opacity: .9; }
 .tt-kpi-today > strong { color: var(--tt-t3); font-weight: 600; letter-spacing: -.01em;
   /* 不能继承 flex:1 1 auto：那会让数字框吃掉整列剩余高度，文字又在框内居中，
      注释就飘到卡中间、跟标签脱开（实测两者隔了 80px）。
      字号走 ratio 模式不依赖框高，所以这里可以安全地写成 auto。 */
   flex: 0 0 auto; }
+/* 今日用量的进场/退场：可过渡属性写成普通声明，由 JS 分两帧驱动（见 kpi-fit.mjs）。
+   为什么不用 @keyframes：动画结束后要恢复成“无约束”，而 fill-mode:both 会把最后一帧按住，
+   靠移除属性去恢复的时机很难合对 —— 实测会出现入场停在宽度 0、或停在 109 而不是静止态的 167。
+   用 width 而不是 max-width：宽度由内容撑出，max-width 收到的“间值”会被内容最小宽顶回去，
+   实测宽度一直卡在 167 不动、到末了直接跳 0。 */
+.tt-kpi-today { overflow: hidden; transition: width .34s cubic-bezier(.22,.61,.36,1), padding-left .34s cubic-bezier(.22,.61,.36,1), opacity .26s ease, border-left-width .34s ease; }
+@media (prefers-reduced-motion: reduce) { .tt-kpi-today { transition: none; } }
+/* 退出动画结束后把这一列真正摘掉，别留一个宽 0 的占位在那。 */
+.tt-kpi-today[data-tt-gone] { display: none; }
 .tt-kpi-cost { --tt-value-ratio: 3.2; }
 /* 长条：标签与数字横排一行，不换行。形状比块矮一截，层级自己就出来了。
    不加边框、底色再退一档（半透明白）：二级是实心块，三级是洒在底上的一条，
