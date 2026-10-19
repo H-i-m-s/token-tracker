@@ -36,6 +36,46 @@ const EPSILON = 0.15;
 
 let probe = null;
 
+// 数值节点的「逻辑文字」。
+// 一旦接上 digit-roll.mjs，strong 里就不再是一段文本，而是若干开窗格 + 带子：
+// textContent 会变成 “9876543210…” 拼成的串，拿它反解字号会把 10 个字符当显示宽度，
+// 字直接被塔到地板。逻辑值一律从 data-tt-value 读。
+function valueTextOf(el) {
+  if (!el) return '';
+  const v = el.dataset?.ttValue;
+  return v !== undefined ? v : (el.textContent || '');
+}
+
+// 数值的字距一律按 0 量。
+// .tt-num 上的 letter-spacing 被写作 0（负字距会把字从 1ch 的小窗里挤出去、
+// 被 overflow:hidden 削掉半边），而 strong 自己还带着 -.03em / -.045em。
+// 拿 strong 的算出来的宽比真实排版窄，按它反解出的字号会偏大，字就顶出框。
+const NO_TRACKING = 0;
+
+// 数值的「墨迹包围盒」。
+// 不能用 Range.selectNodeContents：它不认 overflow:hidden，
+// 会把整条 9…0 的带子算进去（那是 10 个字高），得到的是一条竖着的长条。
+// 改成量可见的那几段（.tt-num / .tt-unit）的并集。
+function valueInkRect(value) {
+  const parts = [...value.children].filter((el) =>
+    el.classList.contains('tt-num') || el.classList.contains('tt-unit'));
+  if (!parts.length) {
+    const r = document.createRange();
+    r.selectNodeContents(value);
+    return r.getBoundingClientRect();
+  }
+  let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
+  for (const p of parts) {
+    if (p.hidden) continue;
+    const r = p.getBoundingClientRect();
+    if (!(r.width > 0) && !(r.height > 0)) continue;
+    left = Math.min(left, r.left); right = Math.max(right, r.right);
+    top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom);
+  }
+  if (!Number.isFinite(left)) return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
+  return { left, right, top, bottom, width: right - left, height: bottom - top };
+}
+
 function num(style, name) {
   const n = parseFloat(style.getPropertyValue(name));
   return Number.isFinite(n) ? n : 0;
@@ -62,11 +102,11 @@ function probeEl() {
 
 // 按 100px 排一次，返回宽度与行盒高度。
 // 字距是 em 单位，换算回 100px 再量，结果才能等比放大到任意字号。
-function metrics(text, style) {
+function metrics(text, style, trackingPx = null) {
   if (!text) return null;
   const el = probeEl();
   const size = parseFloat(style.fontSize) || 16;
-  const tracking = num(style, 'letter-spacing');
+  const tracking = trackingPx === null ? num(style, 'letter-spacing') : trackingPx;
   const trackingEm = size > 0 ? tracking / size : 0;
 
   el.style.fontFamily = style.fontFamily || 'sans-serif';
@@ -112,12 +152,10 @@ function alignLabelToValue(card, label, value, scope) {
   // 再夹紧时就把数字框误判成“出界”（探针之前就是这么误报的）。
   const innerW = box.clientWidth - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right');
   if (!(innerW > 0)) return;
-  const valueNode = value.firstChild;
   const labelNode = label.firstChild;
-  if (!valueNode || valueNode.nodeType !== 3 || !labelNode || labelNode.nodeType !== 3) return;
+  if (!labelNode || labelNode.nodeType !== 3) return;
 
-  const rv = document.createRange();
-  rv.selectNodeContents(value);
+  const vInk = valueInkRect(value);
   const rl = document.createRange();
   rl.selectNodeContents(label);
 
@@ -127,7 +165,6 @@ function alignLabelToValue(card, label, value, scope) {
   if (label.style.transform) label.style.transform = '';
   if (value.style.transform) value.style.transform = '';
 
-  const vInk = rv.getBoundingClientRect();
   const lInk = rl.getBoundingClientRect();
   // transform 只平移不缩放，所以墨迹宽度不受它影响，反复调用也稳定（幂等）。
   if (!(vInk.width > 0) || !(lInk.width > 0)) return;
@@ -184,7 +221,7 @@ function alignLabelToValue(card, label, value, scope) {
 function alignStripInk(label, value) {
   if (!label || !value) return;
   const ln = label.firstChild, vn = value.firstChild;
-  if (!ln || ln.nodeType !== 3 || !vn || vn.nodeType !== 3) return;
+  if (!ln || ln.nodeType !== 3 || !vn) return;
   const ctx = canvasCtx();
   const measure = (el) => {
     const cs = getComputedStyle(el);
@@ -194,7 +231,7 @@ function alignStripInk(label, value) {
     const lh = lhRaw === 'normal' ? fs * 1.2 : parseFloat(lhRaw);
     if (!(lh > 0)) return null;
     ctx.font = `${cs.fontStyle} ${cs.fontWeight} ${fs}px ${cs.fontFamily}`;
-    const m = ctx.measureText((el.textContent || '').trim());
+    const m = ctx.measureText(valueTextOf(el).trim());
     const A = m.fontBoundingBoxAscent, D = m.fontBoundingBoxDescent;
     if (!(A > 0) || !(D > 0)) return null;
     const box = el.getBoundingClientRect();
@@ -258,7 +295,7 @@ function fitGroup(card, holder, blockW) {
   const label = holder.querySelector('span');
   if (!value) return;
 
-  const text = (value.textContent || '').trim();
+  const text = valueTextOf(value).trim();
   if (!text) return;
 
   // 尺寸基准用 holder：普通卡 holder 就是 card 本身，行为不变；
@@ -339,7 +376,7 @@ function fitGroup(card, holder, blockW) {
     // 其他卡（横排长条）照旧用自己那条的宽。
     const baseW = fixedW > 0 ? fixedW : holder.clientWidth;
     const room = baseW - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right') - labelW - 10;
-    const vm = metrics(text, getComputedStyle(value));
+    const vm = metrics(text, getComputedStyle(value), NO_TRACKING);
     if (room > 0 && vm && vm.width > 0) size = Math.min(size, (room * WIDTH_SAFETY * PROBE_PX) / vm.width);
     setFontSize(value, size);
     // 墨迹中线归位只适用于“标签与数字在同一行”的横排条。
@@ -360,7 +397,7 @@ function fitGroup(card, holder, blockW) {
   const boxW = fixedW > 0 ? fixedW : value.clientWidth;
   if (boxW <= 0 || boxH <= 0) return;
 
-  const m = metrics(text, getComputedStyle(value));
+  const m = metrics(text, getComputedStyle(value), NO_TRACKING);
   if (!m || !(m.width > 0) || !(m.inkHeight > 0)) return;
   // fillW / fillH 也优先读列容器自己的（dirOf 已在上面定义）。
   const fillW = ratio(ownStyle, '--tt-fit-w', holder === card ? 1 : ratio(cardStyle, '--tt-fit-w', 1));
@@ -418,7 +455,52 @@ export function fitKpiCards(root) {
   // 标签字号被 unifyLabels 改过之后，之前算的位移全部陈旧了（位移量取决于墨迹宽，而宽随字号变）。
   // 不重算就会出现“标题与数字左沿错开 20~30px” —— 这在 1430px 下非常明显。
   realignAll(scope);
+  // 主卡是特例：两列都是 flex:0 0 auto（宽由内容撑），而字号基准用的是整卡内宽。
+  // 兩边各自按同一个基准反解，加起来必然超 —— 实测 280.16 + 187.73 + 16 = 484.89，
+  // 而内容区只有 463.45，溢出 21.44（恰好等于小数点那个静态格的宽）。
+  // 超出的部分会被 .tt-kpi 的 overflow:hidden 直接削掉，右侧今日用量的单位就不见了。
+  // 所以最后一律校一次。
+  for (const card of scope.querySelectorAll('.tt-kpi-primary')) shrinkPrimaryToFit(card);
   settleTodayTransition(scope);
+}
+
+// 主卡总宽校核：两列加起来超过内容区就按比例收字号。
+//
+// 为什么不用「给两列钉一个固定宽」来避免自引用：那会回到当初被废弃的做法 ——
+// 列宽被均分会把长数字压小，而短数字旁边留一大块空白。现在列宽仍由内容定，
+// 只在总量越界时等比收，收完再重算标签对齐。
+//
+// 宽度对字号是线性的，所以一轮就该收敛；给两轮是防子像素舍入导致差 0.5px 反复。
+function shrinkPrimaryToFit(card) {
+  if (!card) return;
+  const cols = [...card.children].filter((c) =>
+    c.classList.contains('tt-kpi-main') || c.classList.contains('tt-kpi-today'));
+  if (cols.length < 2) return;
+  const cs = getComputedStyle(card);
+  const innerW = card.clientWidth - num(cs, 'padding-left') - num(cs, 'padding-right');
+  if (!(innerW > 0)) return;
+  const gap = num(cs, 'column-gap') || num(cs, 'gap') || 0;
+
+  for (let iter = 0; iter < 2; iter++) {
+    const widths = cols.map((c) => c.getBoundingClientRect().width);
+    // 竖线是 today 列的 border-left，已经在它的宽里，不另加。
+    const total = widths.reduce((a, b) => a + b, 0) + gap;
+    if (total <= innerW - 0.5) break;
+    const factor = (innerW - gap - 0.5) / (total - gap);
+    if (!(factor > 0) || factor >= 1) break;
+    for (const c of cols) {
+      const strong = c.querySelector('strong');
+      const cur = parseFloat(strong?.style.fontSize) || 0;
+      if (!(cur > 1)) continue;
+      // 不低于 6px：再小就不是“排版”，是糊成一片。宁可用省略也不能出现读不出的字。
+      strong.style.fontSize = Math.max(6, cur * factor).toFixed(2) + 'px';
+    }
+    card.getBoundingClientRect();   // 逼重排，下一轮量到的是新几何
+  }
+  // 字号变了，标签与数字的左沿关系也跟着变，重算一次。
+  for (const c of cols) {
+    alignLabelToValue(card, c.querySelector('span'), c.querySelector('strong'), c);
+  }
 }
 
 // 重算所有“组”的标签左沿对齐。

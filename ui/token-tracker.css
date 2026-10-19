@@ -1069,6 +1069,87 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
    而 cqi 是相对容器自身 inline-size 的，容器宽又由字决定 —— 自引用，浏览器会退化成 0。
 em 相对卡片继承的字号（来自全局，不来自宽度），不自引用；脚本首帧就会把它换成实测值。 */
 .tt-kpi > strong, .tt-kpi-main > strong, .tt-kpi-today > strong { display: flex; align-items: center; justify-content: center; flex: 1 1 auto; min-height: 0; overflow: hidden; font-weight: 700; color: var(--tt-t1); font-size: 2.2em; line-height: 1; letter-spacing: -.03em; white-space: nowrap; }
+
+/* ── 数字滚动层（对应 digit-roll.mjs） ──────────────────────────────
+   机制抄自 git-save-load 的变更统计：每位数字是个开窗的格子，
+   里面一条竖排 9…0 的带子，靠 translateY 停在目标刻度。
+
+   三处必须讲清楚：
+
+   1) 格子高一律 1em，位移一律 em，不写 px。
+      kpi-fit.mjs 每帧都在反解字号（实测 9.7 ~ 78.5px 全跨度）。
+      写 px 的话字号一变，带子的位移刻度就对不上，得在 fit 里再串一遍同步动作；
+      写 em 则两者天然等比，格子高了带子也跟着高，位移数值不用动。
+      git-save-load 那边是写死 14px 并靠测试钉住不变量 ——
+      那是因为它只有一种字号，我们这里做不到。
+
+   2) letter-spacing 必须归零。
+      strong 上有 -.03em（主卡 -.045em）的负字距，那是为了让整串数字排得紧。
+      但格子已经是固定 1ch 宽、字符在格内居中，负字距只会把字从自己的小窗里
+      往左推出去一截，被 overflow:hidden 削掉左半边。
+      排紧的效果改由格子宽度自己承担（1ch 本来就是 tabular-nums 下最紧的字宽）。
+
+   3) 标点（小数点、比例冒号）与前置 $ 是 .tt-static，不参与滚动。
+      它们是桩，跟着排版走但不带子。
+   ─────────────────────────────────────────────────────────────────── */
+.tt-num { display: inline-flex; align-items: center; letter-spacing: 0; }
+
+/* 作者样式的 display 会压过浏览器默认的 [hidden]{display:none}。
+   .tt-num / .tt-unit 都写了 display，所以 hidden=true 在它们身上根本不生效 ——
+   实测「—」这种没有数字的值，空的 .tt-num 仍然占着位置，
+   flex 的 gap 在左侧多出一道空。这里把 hidden 明写出来。 */
+.tt-num[hidden], .tt-unit[hidden] { display: none; }
+.tt-digit {
+  display: block;
+  width: 1ch;
+  height: 1em;
+  overflow: hidden;
+  /* 带子只有 1em 高的一格是可见的，上下都被裁掉；
+     但字形常伸出 em 框（尤其数字 4、7 的斜笔），
+     加一点上下余量会被裁到 —— 这里不加，靠 line-height 1em 把字形压在框内。 */
+  line-height: 1em;
+}
+.tt-strip {
+  display: block;
+  transition: transform .34s cubic-bezier(.22,.61,.36,1);
+  will-change: transform;
+}
+.tt-digit-g {
+  display: block;
+  height: 1em;
+  line-height: 1em;
+  text-align: center;
+}
+.tt-static {
+  display: inline-block;
+  line-height: 1em;
+  text-align: center;
+  /* 标点桩也必须归零：它跟数字格排在同一串里，
+     带负字距时小数点会往左贴到前一位的窗里，视觉上像少了一个点。 */
+  letter-spacing: 0;
+}
+
+/* 位数变化（27.45 B → 1.24 M）：逐位复用会错位，整组重建后给一次轻弹，
+   让它看得见「这里刚重新排版过」，而不是凭空跳成另一个宽度。 */
+.tt-pop { animation: ttDigitPop .26s ease-out; }
+@keyframes ttDigitPop {
+  from { opacity: .3; transform: translateY(-.04em); }
+  to   { opacity: 1;  transform: translateY(0); }
+}
+
+/* 单位是一层叠一层的：换字时旧的淡出、新的淡入，容器宽度取两者最大。
+   不用「先清空再写」是因为那有一帧是空的，单位会闪，而且宽度会先塌到 0，
+   把左边的数字推一下再弹回来。 */
+.tt-unit { display: inline-grid; align-items: center; letter-spacing: 0; }
+.tt-unit-layer { grid-area: 1 / 1; transition: opacity .22s ease; white-space: pre; }
+
+/* 系统级「减弱动效」：数字不再滚、单位不再淡入，只留最终状态。
+   digit-roll.mjs 的 prefersReduced() 也会提前退场，两层各管一道。 */
+@media (prefers-reduced-motion: reduce) {
+  .tt-strip { transition: none !important; }
+  .tt-pop { animation: none !important; }
+  .tt-unit-layer { transition: none !important; }
+}
 /* 主数卡：宽度随内容（栅格首列 auto），字号只看高度。
    高度定字，字定宽度，宽度不回喂高度，链条有终点。
    以前宽度被 1.25fr 钉住、字又被 110px 钉住，两边都动不了，中间那块空白就只能留在右边。 */

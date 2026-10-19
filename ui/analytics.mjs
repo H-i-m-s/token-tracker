@@ -1,5 +1,6 @@
 import { splitRow } from './board-layout.mjs';
 import { h, fmtCost, fmtPct } from './components.mjs';
+import { setValue } from './digit-roll.mjs';
 import { scaleText } from './units.mjs';
 import { asList, pickValues, modsOf } from './selection.mjs';
 import { splineCurve, splineValueAt } from './curve.mjs';
@@ -639,6 +640,10 @@ const flowPanels = new WeakMap();   // container -> 常驻面板实例。换范�
 // 新节点天生没有“上一个状态”；想知道这次是“本来有、该收起”还是“本来没有、该放出”，
 // 只能把上次的结果记在外面。顺带存下文字，退出时才能拿着旧值淡出而不是凭空消失。
 const kpiTodayState = new WeakMap();
+// 上一帧的数值：key = 标签文字。
+// 看板每帧都 replaceChildren，KPI 是全新节点，自己不知道自己刚才显示的是几。
+// 滚动要「从旧值滚到新值」，所以旧值必须由外部带进来 —— 跟 kpiTodayState 同一个道理。
+const kpiValueState = new WeakMap();
 
 export function renderAnalytics(container, dashboard, state, patch) {
   container.replaceChildren(); container.className = 'tt-board';
@@ -684,19 +689,42 @@ export function renderAnalytics(container, dashboard, state, patch) {
     turnCount && total ? ['平均每轮', compact(total / turnCount), '合计 Token ÷ 轮次；含该轮全部工具调用与缓存读'] : null,
     summary.outputTokens > 0 ? ['输入输出比', `${Math.round(input / summary.outputTokens)}:1`, '输入含缓存读取，所以这个比值主要反映上下文有多长，不是模型在喷字'] : null,
   ].filter(Boolean);
+  // 数值节点。
+  //
+  // 为什么不能直接 h('strong', {}, value)：看板每帧都 replaceChildren，
+  // 新节点天生不知道“自己刚才显示的是几”，滚动就没有起点（只能从 9 掉下来或直接闪现）。
+  // 所以把上一帧的显示值记在容器上（kpiValueState，key=标签文字），
+  // 新节点出生时先落到旧值（不带动画），等它进了文档再滚到新值。
+  // 这跟 kpiTodayState 是同一套手法：把“上一帧的状态”从 DOM 里拿出来。
+  const nextValues = new Map();
+  const pendingRolls = [];
+  const valueNode = (labelText, text) => {
+    const strong = h('strong', {});
+    const str = String(text ?? '');
+    nextValues.set(labelText, str);
+    const prev = kpiValueState.get(container)?.get(labelText);
+    if (prev !== undefined && prev !== str) {
+      setValue(strong, prev, { animate: false });   // 先站到旧刻度
+      pendingRolls.push({ strong, text: str });     // 进文档后再滚过去
+    } else {
+      setValue(strong, str, { animate: false });    // 首帧/未变：直接落位，不滚
+    }
+    return strong;
+  };
+
   // 格子内只留标签和数字。口径全部退到 title（悬停可见），不上屏。
   const tile = (className, label, value, hint) => h('div', {
     className: `tt-kpi ${className}`, title: hint, 'data-tt-select': '',
-  }, h('span', {}, label), h('strong', {}, value));
+  }, h('span', {}, label), valueNode(label, value));
   // 三级：长条形，标签与数字横排，不换行。形状本身就说明它比块状轻一档。
   const strip = (label, value, hint) => h('div', {
     className: 'tt-kpi tt-kpi-strip', title: hint, 'data-tt-select': '',
-  }, h('span', {}, label), h('strong', {}, value));
+  }, h('span', {}, label), valueNode(label, value));
   // 主卡：合计 + （只在全部历史下出现的）今日用量。
   const primaryCard = () => {
     const prev = kpiTodayState.get(container);
     const main = h('div', { className: 'tt-kpi-main', 'data-tt-fit-box': '' },
-      h('span', {}, '合计 Token'), h('strong', {}, compact(total)));
+      h('span', {}, '合计 Token'), valueNode('合计 Token', compact(total)));
     const card = h('div', { className: 'tt-kpi tt-kpi-primary', title: primaryHint, 'data-tt-select': '' }, main);
 
     // 该收起时仍然把这一列渲染出来（用上次的文字），否则新节点上没东西可淡出，
@@ -706,7 +734,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
       const txt = showToday ? todayText : (prev?.text ?? todayText);
       const hint = showToday ? todayHint : (prev?.hint ?? todayHint);
       card.append(h('div', { className: 'tt-kpi-today', title: hint, 'data-tt-select': '', 'data-tt-fit-box': '' },
-        h('span', {}, '今日用量'), h('strong', {}, txt)));
+        h('span', {}, '今日用量'), valueNode('今日用量', txt)));
       // 只在“状态真的变了”时才放过渡；否则每次换筛选都会重放一遍进出。
       if (prev && prev.show !== showToday) card.dataset[showToday ? 'ttEnter' : 'ttLeave'] = '';
     }
@@ -717,7 +745,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
     });
     return card;
   };
-  container.append(h('div', { className: 'tt-board-kpis' },
+  const kpiBlock = h('div', { className: 'tt-board-kpis' },
     // 一级：左侧竖直整块，高度自动等于右侧两行之和（grid 跨行撑开，不写死像素）。
     // 内部再分两列：左“合计”右“今日用量”，中间一条竖线。
     //
@@ -740,11 +768,23 @@ export function renderAnalytics(container, dashboard, state, patch) {
         'data-tt-select': '',
         ...(costKnown ? {} : { 'data-unpriced': '' }),
       }, h('span', {}, '预估费用 · USD'),
-        h('strong', {}, costKnown ? fmtCost(summary.estimatedCost) : '—'))),
+        valueNode('预估费用 · USD', costKnown ? fmtCost(summary.estimatedCost) : '—'))),
     // 三级：右侧下行，长条形。
     footprint.length ? h('div', { className: 'tt-kpi-row tt-kpi-row-tertiary' },
       ...footprint.map(([label, value, hint]) => strip(label, value, hint))) : null,
-  ));
+  );
+  container.append(kpiBlock);
+
+  // 节点已进文档，现在才能起滚。
+  // 必须先在文档里逼一次布局：建节点时 setValue 写的是“旧刻度”，但那会儿元素还脱着文档，
+  // 那次逼布局量到的是 0、什么都没落地。不补这一下，浏览器会把“旧刻度→新刻度”看成
+  // 一次性赋值，过渡不会建立（实测就是直接跳到终值，看不到滚动）。
+  // 用同步逼布局而不是 rAF：headless 下 rAF 会被节流，探针里量到的就是错的。
+  if (pendingRolls.length) {
+    kpiBlock.getBoundingClientRect();
+    for (const r of pendingRolls) setValue(r.strong, r.text, { animate: true });
+  }
+  kpiValueState.set(container, nextValues);
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
   let flowPanel = flowPanels.get(container);
