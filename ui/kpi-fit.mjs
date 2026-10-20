@@ -223,38 +223,18 @@ const STRIP_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
 // ── 三级条标题的滑动 ────────────────────────────────────────────────
 //
-// 要同时满足两件方向相反的事：
-//   ① 布局自己微调时，不许打断正在跑的动画（否则标题原地抖）
-//   ② 用户中途又切时间时，必须从「此刻已经滑到的位置」接着滑向新目标
+// 只做一件事：让标题的水平位置从 A 顺滑走到 B。别的什么都不管。
 //
-// 判据只有一条：这一帧的标题是不是新造出来的。
-//   同一个标题又来一次布局 → 是布局噪声，什么都不做
-//   换了个新标题           → 用户真的切了，接着滑
+// 成败只在一条：**动画一开始，目标就定死，中途绝不改。**
 //
-// 能「接着滑」是因为状态存在渲染期间不变的 documentElement 上，不是元素上，
-// 并且记了出发时刻和起始偏移 —— 有了这些就能算出标题此刻该在哪，
-// 那个位置就是新一段动画的起点，于是两段接得上，不会弹回原位。
-const stripStore = new WeakMap();    // documentElement -> Map<标签文字, 状态>
-const stripSeen = new WeakSet();     // 见过的 label 节点
-
-// 缓动的反解：给定时间进度 p（0..1），求缓动后的位置进度。
-// 动画用的是 cubic-bezier(.22,.61,.36,1)，要算出「此刻该在哪」就必须能反解它。
-// 当线性处理会有明显偏差：这条曲线在时间过半时已经走完约 85% 的路程。
-function bezierEase(p) {
-  if (p <= 0) return 0;
-  if (p >= 1) return 1;
-  const x1 = 0.22, y1 = 0.61, x2 = 0.36, y2 = 1;
-  const cx = (t) => 3 * x1 * t * (1 - t) ** 2 + 3 * x2 * t * t * (1 - t) + t ** 3;
-  const cy = (t) => 3 * y1 * t * (1 - t) ** 2 + 3 * y2 * t * t * (1 - t) + t ** 3;
-  let lo = 0, hi = 1, t = p;
-  for (let i = 0; i < 24; i++) {
-    const x = cx(t);
-    if (Math.abs(x - p) < 1e-4) break;
-    if (x < p) lo = t; else hi = t;
-    t = (lo + hi) / 2;
-  }
-  return cy(t);
-}
+// 为什么不能中途改：数字在滚动，整组宽度在变，标题的「最终位置」在那 340ms
+// 里会先后出现好几个值。只要中途去追这些值，就会在它们之间来回改道 ——
+// 那就是抽搐。不追，就绝不会抽搐；最坏的结果只是结尾多挪一下。
+//
+// 状态挂在 documentElement 上（渲染时不变），不用元素做 key：
+// 看板每次渲染都全量重建，标题是全新节点，按元素存必然查不到上一次。
+const stripStore = new WeakMap();   // documentElement -> Map<标签文字, 上一次的静止位置>
+const stripSeen = new WeakSet();    // 见过的 label 节点
 
 // 读当前 translateX（像素）。
 // WAAPI 动画不写 inline style，只能从 computed matrix 里抠第 5 位。
@@ -269,7 +249,6 @@ function currentTx(el) {
 
 function settleStripShift(scope) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
-  const now = performance.now();
 
   for (const card of scope.querySelectorAll('.tt-kpi-strip')) {
     const label = card.querySelector('span');
@@ -282,56 +261,31 @@ function settleStripShift(scope) {
     let store = stripStore.get(anchor);
     if (!store) { store = new Map(); stripStore.set(anchor, store); }
 
-    // 布局位置（去掉正在跑的位移）。
+    // 这个标题已经在滑了：不重算、不重启、不改目标。
+    // 这一条就是止住抽搐的全部。
+    if (stripSeen.has(label)) continue;
+
+    // 布局位置 = 视觉位置 − 当前位移。
+    // 新节点刚出现时没有位移，两者相等；这里减一次是为了兼容节点被复用的情形。
     const restL = label.getBoundingClientRect().left - currentTx(label);
-
-    if (reduced) {
-      label.getAnimations().forEach((a) => { if (a.id === 'ttStripShift') a.cancel(); });
-      store.set(key, { lastRestL: restL, offFrom: 0, atMs: 0, dur: 0 });
-      continue;
-    }
-
-    // ── 同一个标题又来了一次 fit ──
-    //
-    // 分两种情形，区分方法看「有没有动画在跑」：
-    //   有 → 布局在微调，绝对不碰（这就是「原地抖」的根：以前每次都重启，
-    //         动画永远走不完 340ms）
-    //   没有 → 值真的换了（节点没重建的情况，比如只换数字），该它滑了
-    const running = label.getAnimations().some((a) => a.id === 'ttStripShift');
-    if (stripSeen.has(label) && running) continue;
-
     const prev = store.get(key);
+
     stripSeen.add(label);
+    store.set(key, restL);
 
-    if (!prev) {
-      // 首屏：没有上一段，直接定位。
-      store.set(key, { lastRestL: restL, offFrom: 0, atMs: 0, dur: 0 });
-      continue;
-    }
+    if (reduced) continue;
+    if (prev === undefined) continue;            // 首屏：没有上一位置，直接落位
+    const dx = prev - restL;
+    if (Math.abs(dx) < 0.5) continue;            // 位置没变
 
-    // 起点：
-    //   节点被重建（普通切换）→ 从「上一段此刻应滑到的位置」接着走
-    //   节点没重建（只换数字）→ 从「旧布局位置」开始，就是普通 FLIP
-    const elapsed = now - prev.atMs;
-    const p = prev.dur > 0 ? Math.min(1, Math.max(0, elapsed / prev.dur)) : 1;
-    const offsetNow = p < 1 ? prev.offFrom * (1 - bezierEase(p)) : 0;
-    const visualNow = prev.lastRestL + offsetNow;
-
-    const from = visualNow - restL;
-    if (Math.abs(from) < 0.5) {
-      store.set(key, { lastRestL: restL, offFrom: 0, atMs: 0, dur: 0 });
-      continue;
-    }
-
+    // 从旧位置滑到新位置。终点是 translateX(0)，即元素自己的布局位置，
+    // 因此中途布局再挪，终点会自动跟着挪，不需要我们知道。
     label.animate(
-      [{ transform: `translateX(${from.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
+      [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
       { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
     ).id = 'ttStripShift';
-
-    store.set(key, { lastRestL: restL, offFrom: from, atMs: now, dur: STRIP_MS });
   }
 }
-
 
 function fitGroup(card, holder, blockW) {
   // 统一用 querySelector 而不是只看直接子元素：
