@@ -52,30 +52,6 @@ function valueTextOf(el) {
 // 拿 strong 的算出来的宽比真实排版窄，按它反解出的字号会偏大，字就顶出框。
 const NO_TRACKING = 0;
 
-// 数值的「墨迹包围盒」。
-// 不能用 Range.selectNodeContents：它不认 overflow:hidden，
-// 会把整条 9…0 的带子算进去（那是 10 个字高），得到的是一条竖着的长条。
-// 改成量可见的那几段（.tt-num / .tt-unit）的并集。
-function valueInkRect(value) {
-  const parts = [...value.children].filter((el) =>
-    el.classList.contains('tt-num') || el.classList.contains('tt-unit'));
-  if (!parts.length) {
-    const r = document.createRange();
-    r.selectNodeContents(value);
-    return r.getBoundingClientRect();
-  }
-  let left = Infinity, right = -Infinity, top = Infinity, bottom = -Infinity;
-  for (const p of parts) {
-    if (p.hidden) continue;
-    const r = p.getBoundingClientRect();
-    if (!(r.width > 0) && !(r.height > 0)) continue;
-    left = Math.min(left, r.left); right = Math.max(right, r.right);
-    top = Math.min(top, r.top); bottom = Math.max(bottom, r.bottom);
-  }
-  if (!Number.isFinite(left)) return { left: 0, right: 0, top: 0, bottom: 0, width: 0, height: 0 };
-  return { left, right, top, bottom, width: right - left, height: bottom - top };
-}
-
 function num(style, name) {
   const n = parseFloat(style.getPropertyValue(name));
   return Number.isFinite(n) ? n : 0;
@@ -136,78 +112,26 @@ function setFontSize(el, size, lineHeight = '1') {
   if (changed || el.style.lineHeight !== lineHeight) el.style.lineHeight = lineHeight;
 }
 
-// 标题与数字：共用一条左沿，整组再居中。
-// 组宽取两者墨迹宽的大者：谁更宽就以谁为准，另一个跟过去。
-// 用 translateX 而非 margin/padding 做位移：后者会挤掉元素自身的可用宽，
-// 宽一变，字号与换行都跟着变，实测因为这一点差了 16~24px。
-// scope 是尺寸基准（普通卡就是卡本身；主卡双列传列容器）——
-// 按整卡宽算会把列内元素推出去。
-function alignLabelToValue(card, label, value, scope) {
-  if (!label || !value) return;
-  const box = scope || card;
-  const cardStyle = getComputedStyle(card);
-  const ownStyle = box === card ? cardStyle : getComputedStyle(box);
-  // 内容区宽度用 clientWidth（不含边框）；
-  // 用 getBoundingClientRect 会把边框算进去，导致内容区左沿偏右 1px，
-  // 再夹紧时就把数字框误判成“出界”（探针之前就是这么误报的）。
-  const innerW = box.clientWidth - num(ownStyle, 'padding-left') - num(ownStyle, 'padding-right');
-  if (!(innerW > 0)) return;
-  const labelNode = label.firstChild;
-  if (!labelNode || labelNode.nodeType !== 3) return;
-
-  const vInk = valueInkRect(value);
-  const rl = document.createRange();
-  rl.selectNodeContents(label);
-
-  // 先归一化：把上一次写的 translateX 清掉再量。
-  // 不清就会拿“已位移的位置”再算偏移，且旧的 transform 会留在 DOM 里
-  // 把元素推出可见区（实测“会话数”“预估费用”两格就残留了出界的位移）。
-  if (label.style.transform) label.style.transform = '';
-  if (value.style.transform) value.style.transform = '';
-
-  const lInk = rl.getBoundingClientRect();
-  // transform 只平移不缩放，所以墨迹宽度不受它影响，反复调用也稳定（幂等）。
-  if (!(vInk.width > 0) || !(lInk.width > 0)) return;
-
-  const groupW = Math.max(vInk.width, lInk.width);
-  const groupLeft = (innerW - groupW) / 2;
-  // 数字现在是居中摆的：居中时它的墨迹左沿在 (innerW - 数字宽)/2。
-  // 要它落到组的左沿，差的这一段就是它该平移的量（下面会按能否位移重新赋值）。
-  const vInkLeftNow = (innerW - vInk.width) / 2;
-  const EDGE = 2;
-  // 关键：translateX 作用在 strong 的“元素框”上，而它几乎撑满内容区。
-  // 只要框比内容区窄不到 2*EDGE，任何位移都会把框推出边界 —— 墨迹没出界也没用，
-  // overflow:hidden 是拿框去裁的。这种情况下不动数字，只把标签对到数字上。
-  const vBoxW = value.getBoundingClientRect().width;
-  const boxFills = vBoxW >= innerW - 2 * EDGE;
-  let valueShift = 0;
-  let labelShift = groupLeft;
-  if (!boxFills) {
-    const lo = EDGE - vInkLeftNow;
-    const hi = innerW - vInk.width - vInkLeftNow - EDGE;
-    valueShift = hi >= lo ? Math.min(hi, Math.max(lo, groupLeft - vInkLeftNow)) : 0;
-    labelShift = vInkLeftNow + valueShift;   // 标签跟着数字的实际左沿走
-  } else {
-    // 框撑满时数字不能动，但标签仍要对到数字墨迹的左沿；
-    // 写 groupLeft 会让标签居中到组中心，与数字错开（实测「合计 Token」比数字右缩了 100px）。
-    labelShift = vInkLeftNow;
-  }
-
-  // 标签也必须夹紧：它同样在 overflow:hidden 的卡里，推出去就按框裁掉。
-  // 以前只给数字算 lo/hi，标签是赤裸裸写的，于是窄卡上「预估费用 · USD」被削成
-  // 「预估费用 · U」——实测 1430px 还好（不越界），到 960px 就超出 5px，720px 超出 16.8px。
-  // 夹紧的目的是“标签完整可读”，它的优先度高过“标签与数字共左沿”：
-  // 宁可标题偏一点，也不能把字截掉。
-  // 注意这里比的是「相对内容区左沿的位移量」，而 lInk/ vInk 是视口坐标，
-  // 所以上限直接用 innerW。EDGE 是留给抗锯齿的余量。
-  const labelMax = innerW - lInk.width - EDGE;   // 标签不再位移时左沿为 0
-  if (labelShift > labelMax) labelShift = Math.max(0, labelMax);
-
-  const lt = `translateX(${labelShift.toFixed(2)}px)`;
-  if (label.style.transform !== lt) label.style.transform = lt;
-  const vt = Math.abs(valueShift) < 0.05 ? '' : `translateX(${valueShift.toFixed(2)}px)`;
-  if (value.style.transform !== vt) value.style.transform = vt;
-}
+// 标题与数字：各自居中，位置互不牵动。
+//
+// 上一版是「共用左沿、整组居中」，组宽取两者墨迹宽的最大值——
+// 问题在于数字的宽由数据决定，于是同一个标签会四处跑：
+//   值是「3」时组很窄，标签被推到中间偏右；
+//   值是「1.7 K」时组变宽，标签又往左跑。
+// 同一个标签在不同数据下位置不一致，那是布局在宣布「标题没固定位置」，
+// 而标题本来就是全场最稳定的东西。
+//
+// 现在两者各自按自身宽居中：标题位置只取决于标题文字（它不变），
+// 数字变宽时向两边对称地长。中间不再有「组」这个概念，也就没有相互牵扯。
+// 标签与数字的摆放交给 CSS：两者各自按自身宽居中（.tt-kpi > span 上是
+// align-self:center + text-align:center，数字层是 justify-content:center）。
+// 这里不再有任何 JS 位移。
+//
+// 为什么把上一版的 translateX 整套拆掉：那是「共用左沿、整组居中」，
+// 组宽取两者墨迹宽的最大值。问题在于数字的宽由数据决定，于是同一个标签会四处跑：
+// 值是「3」时组很窄，标签被推到中间偏右；值是「1.7 K」时组变宽，标签又往左跑。
+// 同一个标签在不同数据下位置不一致，就是布局在宣布「标题没固定位置」，
+// 而标题本来就是全场最稳定的东西。
 
 // 三级条的标签与数字横排在同一行，但“框对齐”不等于“看着对齐”：
 // 中文占满 em 框（上下都有墨），数字只到 cap 高度（基本只在基在线），
@@ -278,14 +202,6 @@ function fitCard(card, blockW) {
   walk(card);
   if (!groups.length) return;
   for (const g of groups) fitGroup(card, g, blockW);
-  // 每组各自对齐自己的标签与数字左沿。
-  // 主卡两列各传自己的列容器当 scope：按整卡宽算会把列内元素推出去。
-  // 横排条跳过：它走 alignStripInk，transform 是同一个属性，会互相覆盖。
-  if (!card.classList.contains('tt-kpi-strip')) {
-    for (const g of groups) {
-      alignLabelToValue(card, g.querySelector('span'), g.querySelector('strong'), g);
-    }
-  }
 }
 
 function fitGroup(card, holder, blockW) {
@@ -433,10 +349,6 @@ function unifyRow(row) {
   if (sizes.length < 2) return;
   const min = Math.min(...sizes);
   for (const el of values) setFontSize(el, min);
-  // 字号被统一改过，标签的位移得重算：位移量取决于数字墨迹宽，而宽随字号变。
-  for (const card of cards) {
-    alignLabelToValue(card, card.querySelector('span'), card.querySelector('strong'));
-  }
 }
 
 export function fitKpiCards(root) {
@@ -452,9 +364,6 @@ export function fitKpiCards(root) {
   // 单张算完再拉平：拉平只改字号，字号不参与卡尺寸，不会再反过来。
   for (const row of scope.querySelectorAll('.tt-kpi-row-secondary')) unifyRow(row);
   unifyLabels(scope);
-  // 标签字号被 unifyLabels 改过之后，之前算的位移全部陈旧了（位移量取决于墨迹宽，而宽随字号变）。
-  // 不重算就会出现“标题与数字左沿错开 20~30px” —— 这在 1430px 下非常明显。
-  realignAll(scope);
   // 主卡是特例：两列都是 flex:0 0 auto（宽由内容撑），而字号基准用的是整卡内宽。
   // 兩边各自按同一个基准反解，加起来必然超 —— 实测 280.16 + 187.73 + 16 = 484.89，
   // 而内容区只有 463.45，溢出 21.44（恰好等于小数点那个静态格的宽）。
@@ -496,29 +405,6 @@ function shrinkPrimaryToFit(card) {
       strong.style.fontSize = Math.max(6, cur * factor).toFixed(2) + 'px';
     }
     card.getBoundingClientRect();   // 逼重排，下一轮量到的是新几何
-  }
-  // 字号变了，标签与数字的左沿关系也跟着变，重算一次。
-  for (const c of cols) {
-    alignLabelToValue(card, c.querySelector('span'), c.querySelector('strong'), c);
-  }
-}
-
-// 重算所有“组”的标签左沿对齐。
-// “组”的判定与 fitCard 里的 walk 保持一致：直接含 strong 的容器。
-// 主卡的两列（data-tt-fit-box）也是组，但它们的对齐基准是列自己。
-function realignAll(scope) {
-  for (const card of scope.querySelectorAll('.tt-kpi')) {
-    if (card.classList.contains('tt-kpi-strip')) continue;   // 横排条走 alignStripInk
-    const groups = [];
-    const walk = (el) => {
-      if (el.hasAttribute?.('data-tt-fit-box')) { groups.push(el); return; }
-      if ([...el.children].some((c) => c.tagName === 'STRONG')) { groups.push(el); return; }
-      for (const c of el.children) if (c.tagName === 'DIV') walk(c);
-    };
-    walk(card);
-    for (const g of groups) {
-      alignLabelToValue(card, g.querySelector('span'), g.querySelector('strong'), g);
-    }
   }
 }
 
