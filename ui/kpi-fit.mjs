@@ -479,47 +479,6 @@ function unifyRow(row) {
   for (const el of values) setFontSize(el, min);
 }
 
-// 数字是不是正在滚。
-//
-// 数字的滚动是 CSS transition 驱动的（.tt-strip 上的 transform 过渡，340ms），
-// 所以直接问浏览器“这些带子上有没有没跑完的动画”最准，不用自己记时间。
-// 拿不到 getAnimations（旧环境）时退回“不锁”，宁可不顺也不要卡死。
-function isRolling(scope) {
-  if (typeof scope.getAnimations !== 'function') return false;
-  try {
-    return scope.getAnimations({ subtree: true }).some((a) => {
-      if (a.playState !== 'running') return false;
-      // 只看数字带子的过渡，标题自己的滑动动画不算在内。
-      const el = a.effect?.target;
-      return !!el && (el.classList?.contains('tt-strip') || el.classList?.contains('tt-unit-layer'));
-    });
-  } catch {
-    return false;
-  }
-}
-
-// 数字滚动与单位淡入的时长，与 digit-roll.mjs 里的 ROLL_MS / UNIT_MS 一致。
-// 这里单独写一份而不是 import：kpi-fit 不依赖数字层，
-// 两处都是同一个 340ms 的约定（.tt-strip 的 transition 也是这个值）。
-const ROLL_MS = 340;
-
-// 滚动结束后补一次完整计算。
-//
-// 滚动期间我们把重排全锁了，于是字号、标题位置都停在前一帧的值上。
-// 滚完必须把账结一次，否则卡里留的就是“滚动期间那个中间尺寸”。
-// 用定时器而不是监听 transitionend：数字位有好几个，漏掉一个就永远结不了账。
-const afterRollTimers = new WeakMap();
-function scheduleAfterRoll(scope) {
-  const old = afterRollTimers.get(scope);
-  if (old) clearTimeout(old);
-  const id = setTimeout(() => {
-    afterRollTimers.delete(scope);
-    if (!scope.isConnected) return;
-    fitKpiCards(scope);
-  }, ROLL_MS + 80);
-  afterRollTimers.set(scope, id);
-}
-
 export function fitKpiCards(root) {
   if (!root?.querySelectorAll) return;
   // 整块宽度：所有标签共用一个基准，所以要先把块宽量好再分工算。
@@ -529,21 +488,6 @@ export function fitKpiCards(root) {
   const block = root.matches?.('.tt-board-kpis') ? root : root.querySelector('.tt-board-kpis');
   const blockW = block ? block.clientWidth : 0;
   const scope = block || root;
-
-  // ── 数字正在滚动：整块不动，锁住 ──
-  //
-  // 滑动那 340ms 里，数字每变宽一次就会触发一次重排回调，回调里重算字号，
-  // 字号变了数字又变宽……这个回路会让标题在两个相近位置之间来回推，
-  // 看着就是“过程中抽搐”。
-  //
-  // 治根的办法不是把算得再准一点，而是干脆不算：
-  // 这 340ms 内一律不重排，标题拿着第一帧的目标自己走完，滚完再补一次完整计算。
-  if (isRolling(scope)) {
-    settleStripShift(scope);   // 标题继续跑自己的，不重算任何尺寸
-    scheduleAfterRoll(scope);
-    return;
-  }
-
   for (const card of scope.querySelectorAll('.tt-kpi')) fitCard(card, blockW);
   // 单张算完再拉平：拉平只改字号，字号不参与卡尺寸，不会再反过来。
   for (const row of scope.querySelectorAll('.tt-kpi-row-secondary')) unifyRow(row);
