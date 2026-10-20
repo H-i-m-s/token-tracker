@@ -1183,7 +1183,12 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
   /* 注释档：数字 = 标签 × 比例，与卡高无关。
      1.9：标签 22.4 → 数字 42.7。介于二级（57）与三级（32.5）之间：
      读得出是个真实读数，又不与合计的 70 争主次。 */
-  --tt-fit-mode: ratio; --tt-value-ratio: 1.9; }
+  --tt-fit-mode: ratio; --tt-value-ratio: 1.9;
+  /* 必须允许收到 0。
+     flex 子项的默认 min-width 是 auto，含义是“不小于内容宽”——
+     于是 JS 写 width:0 时，浏览器把整列仍撑到内容宽（实测 15px），
+     过渡永远到不了 0，最后靠 display:none 摘出布局时整组跳一下（实测 15.5px）。 */
+  min-width: 0; }
 .tt-kpi-today > span { opacity: .9; }
 .tt-kpi-today > strong { color: var(--tt-t3); font-weight: 600; letter-spacing: -.01em;
   /* 不能继承 flex:1 1 auto：那会让数字框吃掉整列剩余高度，文字又在框内居中，
@@ -1195,8 +1200,10 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
    靠移除属性去恢复的时机很难合对 —— 实测会出现入场停在宽度 0、或停在 109 而不是静止态的 167。
    用 width 而不是 max-width：宽度由内容撑出，max-width 收到的“间值”会被内容最小宽顶回去，
    实测宽度一直卡在 167 不动、到末了直接跳 0。 */
-.tt-kpi-today { overflow: hidden; transition: width .34s cubic-bezier(.22,.61,.36,1), padding-left .34s cubic-bezier(.22,.61,.36,1), opacity .26s ease, border-left-width .34s ease; }
-@media (prefers-reduced-motion: reduce) { .tt-kpi-today { transition: none; } }
+/* 今日用量的进出场不再走 CSS transition，而是 kpi-fit.mjs 里的 Web Animations。
+   两边同时生效会打架：WAAPI 的 fill:both 按住属性，声明式过渡又在追同一个目标，
+   实测会互相重置。这里只留 overflow，保证收窄时内容不溢出。 */
+.tt-kpi-today { overflow: hidden; }
 /* 退出动画结束后把这一列真正摘掉，别留一个宽 0 的占位在那。 */
 .tt-kpi-today[data-tt-gone] { display: none; }
 .tt-kpi-cost { --tt-value-ratio: 3.2; }

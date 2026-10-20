@@ -312,7 +312,6 @@ function fitGroup(card, holder, blockW) {
   // 普通卡：用数字框自己的宽（由栅格给定，不回喂）。
   const boxW = fixedW > 0 ? fixedW : value.clientWidth;
   if (boxW <= 0 || boxH <= 0) return;
-
   const m = metrics(text, getComputedStyle(value), NO_TRACKING);
   if (!m || !(m.width > 0) || !(m.inkHeight > 0)) return;
   // fillW / fillH 也优先读列容器自己的（dirOf 已在上面定义）。
@@ -446,13 +445,16 @@ function unifyLabels(scope) {
 // 不用 CSS @keyframes：动画结束后要把“无约束”恢复回去，而 fill-mode:both 会把最后一帧按住，
 // 靠移除属性去恢复的时机很难合对 —— 实测会出现入场停在宽度 0、或停在 109 而不是静止态的 167。
 //
-// 改成写普通内联样式驱动 transition，时机完全在我们手上：
-//   退场：展开态 → 收起态 → transition 完 → 摘掉整列
-//   进场：收起态 → （下一帧）展开态 → transition 完 → 清内联，回到 CSS 默认
+// 也不用 CSS transition + 分两帧写起终点。那条路实测有两个坑：
+//   1) 起点写 auto、终点写 0px 时，auto 不是数值，过渡不被创建，直接跳到终点；
+//   2) 把起点钉成像素后，在 headless / 低帧率下两帧可能被合并成一帧，
+//      浏览器认为“没变化过程”，于是先卡在起点、最后一帧直接跳过去（实测 390ms 处瞬跳）。
 //
-// 两端都必须是具体像素值：max-width 从 none 到 0px 不可插值，
-// 那样过渡等于直接跳 —— 实测退场第一帧宽度就是 15 而不是 167，“丝滑”是假的。
+// 改用 Web Animations API：把起终点当成一组关键帧显式交给浏览器，不依赖它从“前后两帧的变化”
+// 自行推断过渡。两端数值明确，中间值由合成器插值，不会被布局时机影响。
+// 动画结束后 cancel()，元素回到 CSS 的自然态，不会把宽度钉住。
 const TODAY_MS = 340;
+const TODAY_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
 function settleTodayTransition(scope) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -463,71 +465,55 @@ function settleTodayTransition(scope) {
     const col = card.querySelector('.tt-kpi-today');
     const cleanup = () => { card.removeAttribute('data-tt-enter'); card.removeAttribute('data-tt-leave'); };
     if (!col) { cleanup(); continue; }
-    // 这列正在跑过渡：本次什么都不能做。
-    // 为什么要这个闸：过渡期间列宽在变 → 卡尺寸变 → ResizeObserver 又叫一次 fit
-    // → 又进到这里 → 重写起点→终点 → 过渡被反复重置。
-    // 实测的表现就是“卡在起点不动，最后一刻直接跳到终点”。
+    // 这列正在跑动画：本次什么都不能做。
+    // 为什么要这个闸：动画期间列宽在变 → 卡尺寸变 → ResizeObserver 又叫一次 fit
+    // → 又进到这里 → 重写起终点 → 动画被反复重置。
     if (col.dataset.ttAnim === '1') { cleanup(); continue; }
 
     // 先清掉可能残留的内联样式，量出“展开态”的真实几何。
     col.style.width = ''; col.style.maxWidth = ''; col.style.paddingLeft = '';
-    col.style.borderLeftWidth = ''; col.style.opacity = '';
+    col.style.borderLeftWidth = ''; col.style.opacity = ''; col.style.marginLeft = '';
+    col.getAnimations().forEach(a => a.cancel());
     const cs = getComputedStyle(col);
     const fullW = col.getBoundingClientRect().width;
     const padL = parseFloat(cs.paddingLeft) || 0;
     const bL = parseFloat(cs.borderLeftWidth) || 0;
-
-    const apply = (w, pad, border, op) => {
-      // 用固定 width 而不是 max-width：
-      // max-width 在这里描不准 —— 列的宽度是内容撑出来的，从 167 收到 0 时
-      // 浏览器算出的“间值”会被内容最小宽顶回去，实测宽度一直卡在 167 不动、到末了直接跳 0。
-      // width 是显式尺寸，两端数值明确，过渡真的能插值。
-      col.style.width = w === null ? '' : w + 'px';
-      col.style.paddingLeft = pad === null ? '' : pad + 'px';
-      col.style.borderLeftWidth = border === null ? '' : border + 'px';
-      col.style.opacity = op === null ? '' : String(op);
-    };
+    // gap 要量卡自己（列不参与），它是要被抵消的那一段。
+    const cardCS = getComputedStyle(card);
+    const gap = num(cardCS, 'column-gap') || num(cardCS, 'gap') || 0;
 
     if (reduced) {
       cleanup();
       if (leave) col.setAttribute('data-tt-gone', '');
-      else apply(null, null, null, null);
       fitKpiCards(card.closest('.tt-board-kpis') || scope);
       continue;
     }
 
-    // 起点写成显式像素，强制同步重排让它真的落下去，再写目标态 —— 两值之间才有可插值的差别。
-    // 只写 void offsetWidth 不够：reader 可能命中缓存，实测起点仍是收起态。
-    col.dataset.ttAnim = '1';
-    if (leave) {
-      // 退场：第一帧什么都不写（保持自然态 167），第二帧才写 0。
-      // 不能在第一帧写 fullW —— 那等于“写回原值”，浏览器视为无变化，
-      // 于是起点没建立，后面写 0 就是直接跳变（实测 167 一直停到 530ms 才归零）。
-      // 进场没这个问题，因为它第一帧写的是 0，与自然态不同，起点天然成立。
-      col.getBoundingClientRect();
-      setTimeout(() => {
-        if (!col.isConnected) return;
-        apply(0, 0, 0, 0);
-      }, 16);
-    } else {
-      apply(0, 0, 0, 0);
-      col.getBoundingClientRect();
-      setTimeout(() => {
-        if (!col.isConnected) return;
-        apply(fullW, padL, bL, 1);
-      }, 16);
-    }
+    // 关键帧。两端都是具体像素，没有 auto，也没有“读当前值”的环节。
+    // marginLeft 把 flex 的 gap 一起抵消：gap 是布局常量，列收到 0 宽时它仍占着 16px，
+    // 那一段不受任何过渡控制，只能等 display:none 摘出布局才消失 ——
+    // 那就是“已经稳了又跳一下”的来源（实测 15.5px）。
+    const open = { width: fullW + 'px', paddingLeft: padL + 'px', borderLeftWidth: bL + 'px', marginLeft: '0px', opacity: '1' };
+    const shut = { width: '0px', paddingLeft: '0px', borderLeftWidth: '0px', marginLeft: (-gap) + 'px', opacity: '0' };
+    const frames = leave ? [open, shut] : [shut, open];
 
-    setTimeout(() => {
-      // 已经不在文档里（换了一次区间、整块被重建）：别再动，免得摸到别人。
-      if (!col.isConnected) return;
+    col.dataset.ttAnim = '1';
+    const anim = col.animate(frames, { duration: TODAY_MS, easing: TODAY_EASING, fill: 'both' });
+
+    const done = () => {
+      if (!col.isConnected) { anim.cancel(); return; }
+      anim.cancel();            // 回到 CSS 自然态（无内联钉住）
       cleanup();
       delete col.dataset.ttAnim;
       if (leave) col.setAttribute('data-tt-gone', '');
-      // 清掉内联，回到 CSS 默认的“无约束”态：这样卡宽度再变，这列也不会被钉住。
-      else apply(null, null, null, null);
       fitKpiCards(card.closest('.tt-board-kpis') || scope);
-    }, TODAY_MS + 40);
+    };
+    // finish 在 headless 下不一定发（合成器可能不推），用定时器兼底；
+    // 两个入口都走 once，保证 done 只执行一次。
+    let settled = false;
+    const once = () => { if (settled) return; settled = true; done(); };
+    anim.addEventListener('finish', once);
+    setTimeout(once, TODAY_MS + 90);
   }
 }
 
