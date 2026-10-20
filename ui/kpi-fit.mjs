@@ -289,27 +289,37 @@ function settleStripShift(scope) {
       const dx = oldL - restL;
       if (Math.abs(dx) < 0.5) continue;            // 位置本来就没变
 
-      // 立刻起跑，不等布局定型。此时数字刚在同一帧开始滚。
       st.anim = label.animate(
         [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
         { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
       );
       st.anim.id = 'ttStripShift';
+      const me = st.anim;
+      me.finished.then(() => { if (st.anim === me) st.anim = null; }).catch(() => {});
       continue;
     }
 
-    // ── 同一节点被再次 fit：目标没变就不碰，变了才从当前位置续 ──
+    // ── 动画已经在跑：绝对不碰。──
+    //
+    // 这就是“一直在抖”的根源：以前是只要位置变了就 cancel 正在跑的动画、
+    // 从当前位置重起一段。而切换后布局会微调好几次（字号收敛、重排回调），
+    // 每次都把动画打回起点重跑，它永远走不完那 340ms，看起来就是原地抖。
+    //
+    // 不碰是对的：动画终点是 translateX(0)，是相对元素自身位置的偏移，
+    // 布局中途栖了（居中重排），终点自动跟着栖，不需要重算。
+    // 空间够的时候位置本来就不变，更不应该因为微调去重启。
+    if (st.anim) continue;
+
+    // ── 动画已经跑完（或从没跑过），位置又真的变了：滑一次 ──
     if (Math.abs(st.target - restL) < 0.5) continue;
-    const prevRest = st.target;                     // 上一轮的布局位置
+    const prevRest = st.target;
     st.target = restL;
     store.set(key, restL);
 
-    // 起点要算「当前视觉位置」到「新布局位置」的距离。
-    // 当前视觉位置 = prevRest + tx（tx 是上一段动画已经走过的量）。
-    // 只拿 tx 会漏掉「布局本身挪了 20px」那一截，
-    // 实测漏掉后起点变成 11.48 而本应是 31.65，开头那一下就是硬跳。
-    const from = prevRest + tx - restL;
-    if (st.anim) { try { st.anim.cancel(); } catch {} st.anim = null; }
+    // 起点 = 旧布局位置相对新布局位置的差。
+    // 不能用 tx：第一次 fit 时位置还没变（布局未算完），dx<0.5 被跳过，
+    // 动画从未启动，于是 tx 恒为 0，永远滑不起来（实测 animsAfterStart 全是 0）。
+    const from = prevRest - restL;
     if (Math.abs(from) < 0.5) continue;
 
     st.anim = label.animate(
@@ -317,6 +327,8 @@ function settleStripShift(scope) {
       { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
     );
     st.anim.id = 'ttStripShift';
+    const me = st.anim;
+    me.finished.then(() => { if (st.anim === me) st.anim = null; }).catch(() => {});
   }
 }
 
