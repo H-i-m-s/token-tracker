@@ -1137,11 +1137,19 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
   to   { opacity: 1;  transform: translateY(0); }
 }
 
-/* 单位是一层叠一层的：换字时旧的淡出、新的淡入，容器宽度取两者最大。
+/* 单位是一层叠一层的：换字时旧的淡出、新的淡入。
    不用「先清空再写」是因为那有一帧是空的，单位会闪，而且宽度会先塌到 0，
-   把左边的数字推一下再弹回来。 */
-.tt-unit { display: inline-grid; align-items: center; letter-spacing: 0; }
+   把左边的数字推一下再弹回来。
+
+   宽度只按「新单位」算：退场层标了 tt-out 之后脱离布局（position:absolute，
+   仍用 grid-area:1/1 钉在原位淡出）。
+   以前退场层留在文档里撑宽（容器宽度取两者最大），260ms 后它被摘掉的那一帧
+   整串数字会缩一截 —— 三级条是「标签 + 数字」整组居中，这一缩会把标签横着推
+   十七八像素，而那时标题的滑动动画早就跑起来了，看着就是「滑到一半跳一下」。
+   让宽度在换值那一帧就落定，滑动动画量到的两端才是真终点。 */
+.tt-unit { display: inline-grid; align-items: center; letter-spacing: 0; position: relative; }
 .tt-unit-layer { grid-area: 1 / 1; transition: opacity .22s ease; white-space: pre; }
+.tt-unit-layer[data-tt-out="1"] { position: absolute; }
 
 /* 系统级「减弱动效」：数字不再滚、单位不再淡入，只留最终状态。
    digit-roll.mjs 的 prefersReduced() 也会提前退场，两层各管一道。 */

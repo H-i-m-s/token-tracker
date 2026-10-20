@@ -169,10 +169,15 @@ function setCore(box, core, animate) {
 /**
  * 单位段：变了就叠一层做 crossfade。
  *
- * 为什么不用「先清空再写新字」：那样中间有一帧是空的，单位会闪一下；
- * 而宽度也会先塌到 0 再撑开，把旁边的数字推来推去。
- * 两层叠在同一个 grid 格里（.tt-unit 是 inline-grid，两层都是 grid-area:1/1），
- * 容器宽度取两者最大，所以换字过程里数字一个像素都不会动。
+ * 为什么不用「先清空再写新字」：那样中间有一帧是空的，单位会闪一下。
+ * 两层叠在同一个 grid 格里（.tt-unit 是 inline-grid，两层都是 grid-area:1/1）。
+ *
+ * 但宽度**只按新单位算**：退场层标了 tt-out 之后被 CSS 摘出布局
+ *（.tt-unit-layer[data-tt-out] 是 position:absolute），淡出照旧，不再撑宽。
+ * 旧做法让容器宽取两层最大，260ms 后旧层被摘掉的那一帧整串数字缩一截；
+ * 三级条是「标签 + 数字」整组居中，那一缩会把标签横着推十几像素，
+ * 而标题的滑动动画那时早跑起来了 —— 看着就是「滑到一半跳一下」。
+ * 宽度在换值这一帧就落定，量两端位置的人才不会被它骗。
  */
 function setUnit(box, text, animate) {
   const str = String(text ?? '');
