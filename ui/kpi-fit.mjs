@@ -204,6 +204,60 @@ function fitCard(card, blockW) {
   for (const g of groups) fitGroup(card, g, blockW);
 }
 
+// 三级条的标签位移。
+//
+// 三级是横排：标签在左、数字在右，整组 justify-content:center。
+// 数字一变宽，整组以卡中心为轴重新分布，标签就被推着往左瞄 ——
+// 这个位移本身是对的（标题跟着数据走），错的是它瞬间完成：
+// 数字在 340ms 里滚，标签在 0ms 里瞬移，两头不同步，看着就是“一下子跳过去”。
+//
+// 试过给 strong / span 的 width 加过渡，不通：
+// 标签的宽度由“剩余空间”算出来（flex 收缩），数字一变宽它就被压，
+// 实测从 45px 直掉到 6px，文字同步被 overflow:hidden 削掉 ——
+// 宽度这个量本身没有稳定的两端，过渡无从插值。
+//
+// 改成 FLIP 的思路：布局先自由算（不要任何过渡），量出标签“该去哪”，
+// 再用动画把它从“还在原来那”补间过去。布局变的是位置，那就对位置做动画。
+const STRIP_MS = 340;
+const STRIP_EASING = 'cubic-bezier(.22,.61,.36,1)';
+
+// 记录每张三级卡的标签位置（跨帧保存，供下一帧做 FLIP 用）。
+const stripPos = new WeakMap();
+
+// 布局后：把标签从「上一帧的静止位置」补到「当前的静止位置」。
+//
+// 两个时序坑，都是实测踩出来的：
+//   1) 不能在本帧开头去“重新记旧位置” —— 那时 DOM 内容已经换了，量到的就是新位置，
+//      FLIP 等于自己补自己。必须跨帧存。
+//   2) 存的必须是「静止位置」而不是「视觉位置」。getBoundingClientRect 会把正在跑的
+//      transform 算进去，拿它当基准，下一帧的起点就带着上一帧的中间态，越跑越偏。
+//      所以量之前先把本元素的补间取消掉，拿干净的布局位置。
+function settleStripShift(scope) {
+  const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  for (const card of scope.querySelectorAll('.tt-kpi-strip')) {
+    const label = card.querySelector('span');
+    if (!label) continue;
+
+    // 先停掉本元素上一轮的补间，再量 —— 否则量到的是 transform 后的中间位置。
+    label.getAnimations().forEach((a) => { if (a.id === 'ttStripShift') a.cancel(); });
+    const after = label.getBoundingClientRect().left;
+
+    const before = stripPos.get(card);
+    stripPos.set(card, after);
+    if (before === undefined) continue;        // 第一次见到它，没有旧位置
+    const dx = before - after;
+    if (Math.abs(dx) < 0.6) continue;          // 没动就不折腾
+    if (reduced) continue;
+
+    // 它现在已经在终点（after）了，先按 dx 拉回旧位置，再补到 0。
+    const anim = label.animate(
+      [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
+      { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
+    );
+    anim.id = 'ttStripShift';
+  }
+}
+
 function fitGroup(card, holder, blockW) {
   // 统一用 querySelector 而不是只看直接子元素：
   // 显式声明的尺寸基准（主卡的列）下面夹了一层分组，数字是孙子节点。
@@ -369,6 +423,7 @@ export function fitKpiCards(root) {
   // 超出的部分会被 .tt-kpi 的 overflow:hidden 直接削掉，右侧今日用量的单位就不见了。
   // 所以最后一律校一次。
   for (const card of scope.querySelectorAll('.tt-kpi-primary')) shrinkPrimaryToFit(card);
+  settleStripShift(scope);
   settleTodayTransition(scope);
 }
 
