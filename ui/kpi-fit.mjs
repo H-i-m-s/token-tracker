@@ -221,35 +221,53 @@ function fitCard(card, blockW) {
 const STRIP_MS = 340;
 const STRIP_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
-// 记录每张三级卡的标签位置（跨帧保存，供下一帧做 FLIP 用）。
+// 记录每张三级卡的标签静止位置（不受 transform 影响的布局位置）。
 const stripPos = new WeakMap();
 
-// 布局后：把标签从「上一帧的静止位置」补到「当前的静止位置」。
+// 布局后：把标签从「上一轮的静止位置」补到「这一轮的静止位置」。
 //
-// 两个时序坑，都是实测踩出来的：
-//   1) 不能在本帧开头去“重新记旧位置” —— 那时 DOM 内容已经换了，量到的就是新位置，
-//      FLIP 等于自己补自己。必须跨帧存。
-//   2) 存的必须是「静止位置」而不是「视觉位置」。getBoundingClientRect 会把正在跑的
-//      transform 算进去，拿它当基准，下一帧的起点就带着上一帧的中间态，越跑越偏。
-//      所以量之前先把本元素的补间取消掉，拿干净的布局位置。
+// 这个函数的成败就在一条：**目标没变就不要动正在跑的动画。**
+//
+// 一次数据切换会触发多次 fit（setCore 换位数、字号重算、ResizeObserver 回调）。
+// 早先的写法是每次都 cancel 旧动画重起一段，于是：
+//   第一次 fit：目标从 A 变到 B，起动画
+//   第二次 fit：目标还是 B，但旧动画已被误杀，重算 dx = 0，不再起
+//   → 标签直接死在终点，前一段动画白做；更多次 fit 时就是断成几截。
+//
+// 现在分两路：
+//   目标未变 → 什么都不做，让上一条动画跑完
+//   目标变了 → 从「当前视觉位置」重新定向，连线不断
+//
+// 量位置用 offsetLeft 而不是 getBoundingClientRect：后者把正在跑的
+// transform 算进去，拿不到真实的布局位置；offsetLeft 不受 transform 影响。
 function settleStripShift(scope) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
   for (const card of scope.querySelectorAll('.tt-kpi-strip')) {
     const label = card.querySelector('span');
     if (!label) continue;
 
-    // 先停掉本元素上一轮的补间，再量 —— 否则量到的是 transform 后的中间位置。
-    label.getAnimations().forEach((a) => { if (a.id === 'ttStripShift') a.cancel(); });
-    const after = label.getBoundingClientRect().left;
+    if (reduced) {
+      label.getAnimations().forEach((a) => { if (a.id === 'ttStripShift') a.cancel(); });
+      stripPos.delete(card);
+      continue;
+    }
 
-    const before = stripPos.get(card);
-    stripPos.set(card, after);
-    if (before === undefined) continue;        // 第一次见到它，没有旧位置
-    const dx = before - after;
-    if (Math.abs(dx) < 0.6) continue;          // 没动就不折腾
-    if (reduced) continue;
+    const restL = label.offsetLeft;            // 布局位置，不含 transform
+    const prevRest = stripPos.get(card);
+    stripPos.set(card, restL);
+    if (prevRest === undefined) continue;      // 首屏：没有旧位置
 
-    // 它现在已经在终点（after）了，先按 dx 拉回旧位置，再补到 0。
+    const dx = prevRest - restL;
+    if (Math.abs(dx) < 0.5) continue;          // 目标没变 —— 别碰正在跑的动画
+
+    // 目标真的变了。起点用 prevRest（上一轮的布局位置），
+    // 这样整段位移是完整的 prevRest → restL，不会因为多次 fit 被割成小段。
+    // 如果上一条动画还在跑，它的效果已经被 cancel 掉了，
+    // 所以此刻标签已经回到 restL，translateX(dx) 就是把它摆回旧位置。
+    label.getAnimations().forEach((a) => {
+      if (a.id === 'ttStripShift') { try { a.cancel(); } catch {} }
+    });
+
     const anim = label.animate(
       [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
       { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
