@@ -221,58 +221,102 @@ function fitCard(card, blockW) {
 const STRIP_MS = 340;
 const STRIP_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
-// 记录每张三级卡的标签静止位置（不受 transform 影响的布局位置）。
-const stripPos = new WeakMap();
+// 记录三级条标签的状态。
+//
+// 关键事实：看板每次渲染都 container.replaceChildren() 全量重建，
+// 卡片是全新 DOM 节点。所以**不能按元素存**（WeakMap<card, x> 永远查不到上一次），
+// 必须挂在渲染期间不变的容器上，并用标签文字做 key。
+// 这与 analytics.mjs 里 kpiValueState / kpiTodayState 是同一套手法。
+const stripBlocks = new WeakMap();   // 容器 -> Map<标签文字, 上次的静止位置>
+const stripNodes = new WeakMap();    // 本次渲染的 label 节点 -> 状态
 
-// 布局后：把标签从「上一轮的静止位置」补到「这一轮的静止位置」。
+// 读当前 translateX（像素）。
+// WAAPI 动画不写 inline style，只能从 computed matrix 里抠第 5 位。
+// 有了它才能算出「布局静止位置 = 视觉位置 - 当前位移」。
+function currentTx(el) {
+  const t = getComputedStyle(el).transform;
+  if (!t || t === 'none') return 0;
+  const m = t.match(/matrix\(([^)]+)\)/);
+  if (!m) return 0;
+  const p = m[1].split(',').map(Number);
+  return p.length >= 6 && Number.isFinite(p[4]) ? p[4] : 0;
+}
+
+// 标题与数字同时开跑。
 //
-// 这个函数的成败就在一条：**目标没变就不要动正在跑的动画。**
+// 时序：analytics.mjs 先 setValue(新值, animate) 启动数字滚动，
+// 紧接着 fitKpiCards 进来。两边都在同一帧，各走 STRIP_MS，
+// 于是标题滑动和数字滚动完全同步 —— 不多等一帧。
 //
-// 一次数据切换会触发多次 fit（setCore 换位数、字号重算、ResizeObserver 回调）。
-// 早先的写法是每次都 cancel 旧动画重起一段，于是：
-//   第一次 fit：目标从 A 变到 B，起动画
-//   第二次 fit：目标还是 B，但旧动画已被误杀，重算 dx = 0，不再起
-//   → 标签直接死在终点，前一段动画白做；更多次 fit 时就是断成几截。
-//
-// 现在分两路：
-//   目标未变 → 什么都不做，让上一条动画跑完
-//   目标变了 → 从「当前视觉位置」重新定向，连线不断
-//
-// 量位置用 offsetLeft 而不是 getBoundingClientRect：后者把正在跑的
-// transform 算进去，拿不到真实的布局位置；offsetLeft 不受 transform 影响。
+// 多次 fit（字号收敛 / ResizeObserver）不重启：
+// 目标没变就不碰；目标变了就从「当前视觉位置」接着滑到新位置，不回起点。
+// 这样无论布局中间算几次，标题始终只追一个目标，轨迹是一条线。
 function settleStripShift(scope) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+
   for (const card of scope.querySelectorAll('.tt-kpi-strip')) {
     const label = card.querySelector('span');
     if (!label) continue;
+    const key = (label.textContent || '').trim();
+    if (!key) continue;
+
+    // .tt-board 是渲染期间不变的容器，卡片换节点也不影响它。
+    const anchor = card.closest('.tt-board') || card.ownerDocument?.documentElement;
+    if (!anchor) continue;
+    let store = stripBlocks.get(anchor);
+    if (!store) { store = new Map(); stripBlocks.set(anchor, store); }
+
+    const tx = currentTx(label);
+    const restL = label.getBoundingClientRect().left - tx;   // 布局位置
 
     if (reduced) {
       label.getAnimations().forEach((a) => { if (a.id === 'ttStripShift') a.cancel(); });
-      stripPos.delete(card);
+      stripNodes.delete(label);
+      store.set(key, restL);
       continue;
     }
 
-    const restL = label.offsetLeft;            // 布局位置，不含 transform
-    const prevRest = stripPos.get(card);
-    stripPos.set(card, restL);
-    if (prevRest === undefined) continue;      // 首屏：没有旧位置
+    let st = stripNodes.get(label);
 
-    const dx = prevRest - restL;
-    if (Math.abs(dx) < 0.5) continue;          // 目标没变 —— 别碰正在跑的动画
+    if (!st) {
+      // ── 新节点（看板每帧重建，所以每次切换都走到这里）──
+      const oldL = store.get(key);
+      store.set(key, restL);
+      st = { target: restL, anim: null };
+      stripNodes.set(label, st);
 
-    // 目标真的变了。起点用 prevRest（上一轮的布局位置），
-    // 这样整段位移是完整的 prevRest → restL，不会因为多次 fit 被割成小段。
-    // 如果上一条动画还在跑，它的效果已经被 cancel 掉了，
-    // 所以此刻标签已经回到 restL，translateX(dx) 就是把它摆回旧位置。
-    label.getAnimations().forEach((a) => {
-      if (a.id === 'ttStripShift') { try { a.cancel(); } catch {} }
-    });
+      if (oldL === undefined) continue;            // 首屏：没有旧位置
+      const dx = oldL - restL;
+      if (Math.abs(dx) < 0.5) continue;            // 位置本来就没变
 
-    const anim = label.animate(
-      [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
+      // 立刻起跑，不等布局定型。此时数字刚在同一帧开始滚。
+      st.anim = label.animate(
+        [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
+        { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
+      );
+      st.anim.id = 'ttStripShift';
+      continue;
+    }
+
+    // ── 同一节点被再次 fit：目标没变就不碰，变了才从当前位置续 ──
+    if (Math.abs(st.target - restL) < 0.5) continue;
+    const prevRest = st.target;                     // 上一轮的布局位置
+    st.target = restL;
+    store.set(key, restL);
+
+    // 起点要算「当前视觉位置」到「新布局位置」的距离。
+    // 当前视觉位置 = prevRest + tx（tx 是上一段动画已经走过的量）。
+    // 只拿 tx 会漏掉「布局本身挪了 20px」那一截，
+    // 实测漏掉后起点变成 11.48 而本应是 31.65，开头那一下就是硬跳。
+    const from = prevRest + tx - restL;
+    if (st.anim) { try { st.anim.cancel(); } catch {} st.anim = null; }
+    if (Math.abs(from) < 0.5) continue;
+
+    st.anim = label.animate(
+      [{ transform: `translateX(${from.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
       { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
     );
-    anim.id = 'ttStripShift';
+    st.anim.id = 'ttStripShift';
   }
 }
 
