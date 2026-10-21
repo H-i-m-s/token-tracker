@@ -28,10 +28,29 @@ function atomicWrite(file, data) {
   fs.writeFileSync(tmp, JSON.stringify(data, null, 2), { mode: 0o600 });
   fs.renameSync(tmp, file);
 }
-export function createSettingsService({ dataDir, config }) {
+export function createSettingsService({ dataDir, config, log }) {
   const file = path.join(dataDir, 'app-settings.json');
   const apiFile = path.join(dataDir, 'balance-apis.json');
-  const load = () => fs.existsSync(file) ? JSON.parse(readTextFile(file)) : {};
+  // 读盘失败不能把整个 App 拖死。
+  // 以前这里是裸 JSON.parse：app-settings.json 被手改坏一个字符，启动时第一行就抛，
+  // 引擎记成 initializationError，之后每个请求（包括 snapshot）都回这个 SyntaxError，界面全白。
+  // 而 lib/display-units.mjs 读同一份文件是 try/catch 回默认值 —— 两个读者对同一个文件的
+  // 失效策略相反，现在统一：坏文件改名留底，然后当它不存在。
+  const readJsonObject = (target, what) => {
+    if (!fs.existsSync(target)) return {};
+    try {
+      const parsed = JSON.parse(readTextFile(target));
+      if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('内容不是 JSON 对象');
+      return parsed;
+    } catch (e) {
+      const backup = `${target}.broken-${Date.now()}`;
+      try { fs.renameSync(target, backup); } catch {}
+      log?.warn?.(`${what} 读不了（${e?.message || e}），已改名留底：${path.basename(backup)}，本次按默认值继续`);
+      return {};
+    }
+  };
+  const load = () => readJsonObject(file, 'app-settings.json');
+  const loadApis = () => readJsonObject(apiFile, 'balance-apis.json');
   function read() {
     const saved = load();
     const apis = loadBalanceApis(dataDir);
@@ -69,7 +88,7 @@ export function createSettingsService({ dataDir, config }) {
       if (!['zh', 'en'].includes(units)) throw invalid('无效的数字单位');
       next.display = normalizeDisplay({ density, units });
     }
-    const apis = fs.existsSync(apiFile) ? JSON.parse(readTextFile(apiFile)) : {};
+    const apis = loadApis();
     if (patch.balanceApis !== undefined) {
       if (!patch.balanceApis || typeof patch.balanceApis !== 'object' || Array.isArray(patch.balanceApis)) throw invalid('无效的余额配置');
       for (const [id, item] of Object.entries(patch.balanceApis)) {

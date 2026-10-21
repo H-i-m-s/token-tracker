@@ -14,6 +14,7 @@ import { loadLedger } from "./services/ledger-source.js";
 import { openArchiveStore } from "./services/archive-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 import { hitRatePercentText } from "./services/hit-rate.js";
+import { presentFiles, sweepVanished } from "./services/scan-sweep.js";
 
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
@@ -35,7 +36,7 @@ export default class TokenTrackerPlugin {
     const cachePath = path.join(dataDir, CACHE);
     const archivePath = path.join(dataDir, ARCHIVE);
     const archive = loadArchive(archivePath, log) || { version: ARCHIVE_VERSION, updatedAt: null, entries: {} };
-    const settings = createSettingsService({ dataDir, config });
+    const settings = createSettingsService({ dataDir, config, log });
     // ── DeepSeek 官网用量（platform.deepseek.com 官方账单）──
     // token 由 ds-token-source 去内置浏览器的磁盘存储里找，只留在内存、不落盘；
     // 拉回来的按天用量与消费按行落进 SQLite，避免整文件反复擦写（这个 App 的老毛病）。
@@ -237,13 +238,18 @@ export default class TokenTrackerPlugin {
       try {
 
         if (ev?.type === "context_usage") {
-          const sp = ssp || ev.sessionPath;
-          if (!realtime.sessionPath || !sp || sp === realtime.sessionPath) {
-            realtime.contextTokens = Number(ev.tokens) || 0;
-            realtime.contextWindow = Number(ev.contextWindow) || 0;
-            realtime.updatedAt = Date.now();
-            pushToSSE();
-          }
+          // 上下文占用只看最近一次事件。
+          //
+          // 以前这里拿 sp 与 realtime.sessionPath 比：但两者永远不同源 ——
+          // token_usage 的路径是 service.mjs 用 attribution 拼的合成路径
+          //（agents/<agentId>/sessions/<sessionId>），context_usage 给的是宿主真实的
+          // 会话文件路径（2026-10-21T16-20-50.jsonl）。除了本进程第一条，其余事件全部
+          // 撞在比较上被丢掉，contextPercent 于是恒为 0/0；换一次会话还会被 reset 清零再没人补。
+          // 现在不再比较：单会话生成时「最近一次」就是对的；多会话并发时它会跟着正在生成的那个走。
+          realtime.contextTokens = Number(ev.tokens) || 0;
+          realtime.contextWindow = Number(ev.contextWindow) || 0;
+          realtime.updatedAt = Date.now();
+          pushToSSE();
           return;
         }
         if (ev?.type !== "token_usage") return;
@@ -599,18 +605,19 @@ async function scanAll(shared, log, force) {
   // 界面打开时的第一批请求只能排队。每个 agent 之间让出一拍，请求就能插进来。
   // 这次扫描真的重建过 / 移除掉的会话键（turns 表按它增量同步，与内存保持一致）。
   const touched = new Set();
+  _scanDirs = [];
   const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
   for (const agent of dirs) {
     await yieldToLoop();
-    changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old, touched) || changed;
+    changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old, touched, log) || changed;
     const arch = path.join(AGENTS, agent, "sessions", "archived");
-    if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old, touched) || changed;
+    if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old, touched, log) || changed;
     const phone = path.join(AGENTS, agent, "phone", "sessions");
     if (fs.existsSync(phone)) {
       for (const sub of fs.readdirSync(phone)) {
         const sp = path.join(phone, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "channel", sub.replace(/-[^-]+$/, ""), cache, full ? null : old, touched) || changed;
+        changed = scanDir(sp, agent, "channel", sub.replace(/-[^-]+$/, ""), cache, full ? null : old, touched, log) || changed;
       }
     }
     // bridge 私聊会话
@@ -620,31 +627,34 @@ async function scanAll(shared, log, force) {
         if (sub === "bridge-sessions.json") continue;
         const sp = path.join(bridge, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "bridge", sub, cache, full ? null : old, touched) || changed;
+        changed = scanDir(sp, agent, "bridge", sub, cache, full ? null : old, touched, log) || changed;
       }
     }
     // 后台活动
     const activity = path.join(AGENTS, agent, "activity");
     if (fs.existsSync(activity)) {
-      changed = scanDir(activity, agent, "background", null, cache, full ? null : old, touched) || changed;
+      changed = scanDir(activity, agent, "background", null, cache, full ? null : old, touched, log) || changed;
     }
     // 子代理会话
     const subagent = path.join(AGENTS, agent, "subagent-sessions");
     if (fs.existsSync(subagent)) {
-      changed = scanDir(subagent, agent, "sub", null, cache, full ? null : old, touched) || changed;
+      changed = scanDir(subagent, agent, "sub", null, cache, full ? null : old, touched, log) || changed;
       for (const sub of fs.readdirSync(subagent)) {
         if (sub === "session-meta.json") continue;
         const sp = path.join(subagent, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "sub", sub, cache, full ? null : old, touched) || changed;
+        changed = scanDir(sp, agent, "sub", sub, cache, full ? null : old, touched, log) || changed;
       }
     }
     // workflow 任务会话（此前漏扫，导致 workflow 调用不计入统计）
     const wf = path.join(AGENTS, agent, "workflow-sessions");
     if (fs.existsSync(wf)) {
-      changed = scanDir(wf, agent, "background", null, cache, full ? null : old, touched) || changed;
+      changed = scanDir(wf, agent, "background", null, cache, full ? null : old, touched, log) || changed;
     }
   }
+  // 文件已经不在了的会话：把缓存行一起摘掉（每个目录自己扫完时只记下“看到了什么”，
+  // 汇总在这里做一次，不然 8 个目录 × 几万条会话 = 每轮多扫 8 遍）。
+  changed = sweepVanishedSessions(cache, touched) || changed;
   // usage-ledger 中无 sessionPath 的条目（memory + utility 子系统）
   const _ledgerChanged = scanLedger(cache, log, full, shared, touched);
   changed = _ledgerChanged || changed;
@@ -697,7 +707,10 @@ async function scanAll(shared, log, force) {
   }
 }
 
-function scanDir(dir, agent, type, channel, cache, old, touched = null) {
+// 本轮扫描看到了哪些目录、哪些文件。只在 scanAll 期间有效，由 scanAll 重置与消费。
+let _scanDirs = [];
+
+function scanDir(dir, agent, type, channel, cache, old, touched = null, log = null) {
   let changed = false;
   let conv = null;
   let files = [];
@@ -908,7 +921,10 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null) {
             if (msgProvider) {
               const pk = msgProvider + "/" + model;
               if (!data.hourlyBreakdown[day][hour].providerTotals) data.hourlyBreakdown[day][hour].providerTotals = {};
-              if (!data.hourlyBreakdown[day][hour].providerTotals[pk]) data.hourlyBreakdown[day][hour].providerTotals[pk] = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, desktop: 0, channel: 0, assistantCount: 0 };
+              // 初值必须把下面会累加的每一个字段都写上：漏一个就是 undefined += 数 = NaN，
+              // 而 NaN 过了 JSON 就是 null，看起来只是“没数据”，实际是坏值。
+              // bridge/background/sub/ledger 四个字段以前就是漏的。
+              if (!data.hourlyBreakdown[day][hour].providerTotals[pk]) data.hourlyBreakdown[day][hour].providerTotals[pk] = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, desktop: 0, channel: 0, bridge: 0, background: 0, sub: 0, ledger: 0, assistantCount: 0 };
               data.hourlyBreakdown[day][hour].providerTotals[pk].totalTokens += tot;
               data.hourlyBreakdown[day][hour].providerTotals[pk].input += inp;
               data.hourlyBreakdown[day][hour].providerTotals[pk].output += out;
@@ -938,7 +954,14 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null) {
         }
         _prevEvTs = _evTs;
       }
-    } catch {}
+    } catch (e) {
+      // 读失败（Windows 上宿主正在写这个文件时 readTextFile 会报 EPERM/EBUSY）：
+      // 不能把半截结果连同当前 mtime 写进缓存。下一轮 mtime 没变就会被当成“没变化”跳过，
+      // 这个会话从此永久少算，而且全程没有任何信号。这里直接丢掉这个 key，下轮重试。
+      log?.warn?.(`scan: 读取失败，本轮跳过（下轮重试）：${fn} — ${e?.message || e}`);
+      if (cache.sessions[key]) { delete cache.sessions[key]; touched?.add(key); changed = true; }
+      continue;
+    }
     if (conv) { data.conversations.push(conv); conv = null; }
     data.title = (fn.match(/^(\d{4}-\d{2}-\d{2})/)||[])[1] || "unknown";
     if (_skipped > 0) data.skippedLines = _skipped;
@@ -946,6 +969,21 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null) {
     touched?.add(key);
     changed = true;
   }
+
+  // ── 消失的文件：这里只记账，汇总在 sweepVanishedSessions 里做一次 ──
+  _scanDirs.push({ dir, present: presentFiles(dir, files) });
+  return changed;
+}
+
+// 本轮扫描看到了哪些目录、哪些文件。只在 scanAll 期间有效，由 scanAll 重置与消费。
+
+/**
+ * 把「文件已经不在了」的缓存行摘掉。判定逻辑在 services/scan-sweep.js（那边能单独测），
+ * 这里只负责把本轮看到的东西交给它，用完清空。
+ */
+function sweepVanishedSessions(cache, touched) {
+  const changed = sweepVanished(cache, touched, _scanDirs);
+  _scanDirs = [];
   return changed;
 }
 
