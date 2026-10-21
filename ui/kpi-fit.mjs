@@ -221,20 +221,31 @@ function fitCard(card, blockW) {
 const STRIP_MS = 340;
 const STRIP_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
-// ── 三级条标题的滑动 ────────────────────────────────────────────────
+// ── 标题与数值块的滑动 ─────────────────────────────────────────────
 //
-// 只做一件事：让标题的水平位置从 A 顺滑走到 B。别的什么都不管。
+// 只做一件事：让位置从 A 顺滑走到 B。别的什么都不管。
 //
 // 成败只在一条：**动画一开始，目标就定死，中途绝不改。**
 //
-// 为什么不能中途改：数字在滚动，整组宽度在变，标题的「最终位置」在那 340ms
+// 为什么不能中途改：数字在滚动，整组宽度在变，目标的「最终位置」在那 340ms
 // 里会先后出现好几个值。只要中途去追这些值，就会在它们之间来回改道 ——
 // 那就是抽搐。不追，就绝不会抽搐；最坏的结果只是结尾多挪一下。
 //
+// 谁要跟：
+//   · 三级条的标签 —— 标签与数字横排、整组居中，数字一宽一窄，标签就被推着走。
+//   · 数字与单位这两个块 —— 换单位（K↔M↔无数单位）会让整组宽一点窄一点，
+//     它们和标题是同一个刚体，各自滑各自的才齐。块状卡的标签自己居中（位置只由
+//     自己的字决定），不需要跟。
+//
+// ── 现在的分工 ──
+//   宽度变了（位数变了、单位变了）→ 补宽度，位置交给布局连续推动（见 glideWidth）；
+//   宽度没变、只是位置挪了（字号微调、别处撑了一下）→ 补位置（FLIP）。
+// 两者都守同一条硬规矩：动画一开始目标就定死，中途绝不改。
+//
 // 状态挂在 documentElement 上（渲染时不变），不用元素做 key：
-// 看板每次渲染都全量重建，标题是全新节点，按元素存必然查不到上一次。
-const stripStore = new WeakMap();   // documentElement -> Map<标签文字, 上一次的静止位置>
-const stripSeen = new WeakSet();    // 见过的 label 节点
+// 看板每次渲染都全量重建，节点是全新的，按元素存必然查不到上一次。
+const stripStore = new WeakMap();   // documentElement -> Map<标签文字, {label,num,unit} 上一次的静止位置>
+const stripSeen = new WeakSet();    // 已经量过、正在滑的节点
 
 // 读当前 translateX（像素）。
 // WAAPI 动画不写 inline style，只能从 computed matrix 里抠第 5 位。
@@ -247,43 +258,102 @@ function currentTx(el) {
   return p.length >= 6 && Number.isFinite(p[4]) ? p[4] : 0;
 }
 
+// 宽度补间：换值时真正变的是「宽的那一截」（位数变了 / 单位变了）。
+//
+// 一开始想的是给位置做 FLIP（标题从 A 滑到 B），但换位数那一下，
+// 数字自己也在改宽：框的中心与两条边同时变，只给位置补间的话，
+// 旧字会在起手那一帧被“挤”到新框的中心上（实测左移 19px），随后再滑回来。
+//
+// 换成给宽度做补间：这一帧先把宽度按“上一次的宽度”钉住（整组于是回到上一个排版），
+// 再让它 340ms 内自然回落到新宽度。布局自己连续推动，标题、数字、单位全跟着走，
+// 不需要任何人知道“终点在哪”。
+//
+// 为什么这一帧量到的是终态而不是旧态：看板每次重画都是全新节点，旧几何早不在了，
+// 旧宽度只能从外面那张表里取 —— 所以这个函数必须跑在「字号已经算完」之后。
+const WIDTH_MS = 340;
+
+function glideWidth(el, fromW, toW) {
+  const anim = el.animate(
+    [{ width: `${fromW}px` }, { width: `${toW}px` }],
+    { duration: WIDTH_MS, easing: STRIP_EASING, fill: 'both' },
+  );
+  // 结束时 cancel 回到自然宽（与 toW 相等，不会跳一下）。
+  const done = () => anim.cancel();
+  anim.addEventListener('finish', done);
+  setTimeout(done, WIDTH_MS + 90);   // 后台页签下 finish 不一定发
+}
+
 function settleStripShift(scope) {
   const reduced = typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const anchor = scope.ownerDocument?.documentElement;
+  if (!anchor) return;
+  let store = stripStore.get(anchor);
+  if (!store) { store = new Map(); stripStore.set(anchor, store); }
 
-  for (const card of scope.querySelectorAll('.tt-kpi-strip')) {
-    const label = card.querySelector('span');
-    if (!label) continue;
-    const key = (label.textContent || '').trim();
-    if (!key) continue;
+  // 主卡里是两列（合计 / 今日），每列自己一组标签+数字；其余卡本身就是一组。
+  for (const card of scope.querySelectorAll('.tt-kpi')) {
+    const cols = [...card.children].filter((c) =>
+      c.classList.contains('tt-kpi-main') || c.classList.contains('tt-kpi-today'));
+    for (const host of cols.length ? cols : [card]) {
+      const label = host.querySelector('span');
+      const strong = host.querySelector('strong');
+      const key = (label?.textContent || '').trim();
+      if (!key || !strong) continue;
 
-    const anchor = card.ownerDocument?.documentElement;
-    if (!anchor) continue;
-    let store = stripStore.get(anchor);
-    if (!store) { store = new Map(); stripStore.set(anchor, store); }
+      // 标签跟着走（三级条是整组居中，数字一变宽它就被推着动）；
+      // 数字与单位自己也要跟 —— 块状卡里它们居中，换单位会让整组宽一点窄一点。
+      const picks = [];
+      if (card.classList.contains('tt-kpi-strip') && label) picks.push(['label', label]);
+      const num = strong.querySelector(':scope > .tt-num');
+      const unit = strong.querySelector(':scope > .tt-unit');
+      // 隐藏的不跳，但照样记宽度（0）：下次它从无到有时才有起点可补。
+      if (num) picks.push(['num', num]);
+      if (unit) picks.push(['unit', unit]);
+      if (!picks.length) continue;
 
-    // 这个标题已经在滑了：不重算、不重启、不改目标。
-    // 这一条就是止住抽搐的全部。
-    if (stripSeen.has(label)) continue;
+      // 这一组已经动过了：不重算、不重启、不改目标。
+      // 这一条就是止住抽搐的全部。
+      if (picks.some(([, el]) => stripSeen.has(el))) continue;
 
-    // 布局位置 = 视觉位置 − 当前位移。
-    // 新节点刚出现时没有位移，两者相等；这里减一次是为了兼容节点被复用的情形。
-    const restL = label.getBoundingClientRect().left - currentTx(label);
-    const prev = store.get(key);
+      const before = store.get(key);
+      const now = {};
+      for (const [name, el] of picks) {
+        const r = el.getBoundingClientRect();
+        // 布局位置 = 视觉位置 − 当前位移；新节点刚出现时两者相等。
+        now[name] = { left: r.left - currentTx(el), width: r.width };
+        stripSeen.add(el);
+      }
 
-    stripSeen.add(label);
-    store.set(key, restL);
+      if (reduced || !before) { store.set(key, now); continue; }
 
-    if (reduced) continue;
-    if (prev === undefined) continue;            // 首屏：没有上一位置，直接落位
-    const dx = prev - restL;
-    if (Math.abs(dx) < 0.5) continue;            // 位置没变
+      // ① 先看宽度：有宽度变化的，交给宽度补间，整组位置由布局连续推动。
+      let glided = false;
+      for (const [name, el] of picks) {
+        const prevW = before[name]?.width;
+        if (prevW === undefined) continue;
+        const w = now[name].width;
+        if (Math.abs(prevW - w) < 0.5) continue;
+        if (el.hidden && !w) continue;                 // 从隐藏到隐藏：没东西可补
+        glideWidth(el, prevW, w);
+        glided = true;
+      }
+      if (glided) { store.set(key, now); continue; }
 
-    // 从旧位置滑到新位置。终点是 translateX(0)，即元素自己的布局位置，
-    // 因此中途布局再挪，终点会自动跟着挪，不需要我们知道。
-    label.animate(
-      [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
-      { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
-    ).id = 'ttStripShift';
+      // ② 宽度没变、位置变了（字号微调、或别处撑了一下）：那就补位置。
+      // 终点写 translateX(0)，即元素自己的布局位置，中途布局再挪也不怕。
+      for (const [name, el] of picks) {
+        const prevL = before[name]?.left;
+        if (prevL === undefined) continue;
+        if (el.hidden) continue;
+        const dx = prevL - now[name].left;
+        if (Math.abs(dx) < 0.5) continue;
+        el.animate(
+          [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
+          { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
+        ).id = 'ttStripShift';
+      }
+      store.set(key, now);
+    }
   }
 }
 

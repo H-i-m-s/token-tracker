@@ -1092,7 +1092,17 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
    3) 标点（小数点、比例冒号）与前置 $ 是 .tt-static，不参与滚动。
       它们是桩，跟着排版走但不带子。
    ─────────────────────────────────────────────────────────────────── */
-.tt-num { display: inline-flex; align-items: center; letter-spacing: 0; }
+/* 数字段是「一层一层的」：一层 = 一整串格子。
+   位数不变时在层内逐位滚；位数（或位型）变了就换一层 ——
+   新层进流（宽度当帧定下来，外面量两端位置的人拿到真终点），
+   旧层退出布局、留在原地向上滚着淡出。
+
+   旧层为何要 absolute + inset:0 + 居中：整组是居中排的，而“换人”时
+   只有最后一位改宽度，它的中心本来就不动、变的只是两条边。
+   把它钉在同一个中心上淡出，就不会有“字忽然往旁边跳一下”的观感。 */
+.tt-num { display: inline-grid; align-items: center; letter-spacing: 0; }
+.tt-num-row { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; letter-spacing: 0; }
+.tt-num-row[data-tt-out="1"] { position: absolute; inset: 0; }
 
 /* 作者样式的 display 会压过浏览器默认的 [hidden]{display:none}。
    .tt-num / .tt-unit 都写了 display，所以 hidden=true 在它们身上根本不生效 ——
@@ -1129,34 +1139,25 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
   letter-spacing: 0;
 }
 
-/* 位数变化（27.45 B → 1.24 M）：逐位复用会错位，整组重建后给一次轻弹，
-   让它看得见「这里刚重新排版过」，而不是凭空跳成另一个宽度。 */
-.tt-pop { animation: ttDigitPop .26s ease-out; }
-@keyframes ttDigitPop {
-  from { opacity: .3; transform: translateY(-.04em); }
-  to   { opacity: 1;  transform: translateY(0); }
-}
+/* 单位滚轮：窗口只开一格，里面竖排整条档位表（空 / K / M / B / T）。
+   sizer 在流里、不可见，只负责把窗口宽度定成「目标档」的宽；
+   带子绝对定位在窗口里上下滚。换档时窗口宽度是补间过去的
+   （kpi-fit 的 glideWidth），纵向滚在这里。
+   高度 1em 与数字格一致（行高也是 1em），两者的基线才会对齐。
 
-/* 单位是一层叠一层的：换字时旧的淡出、新的淡入。
-   不用「先清空再写」是因为那有一帧是空的，单位会闪，而且宽度会先塌到 0，
-   把左边的数字推一下再弹回来。
-
-   宽度只按「新单位」算：退场层标了 tt-out 之后脱离布局（position:absolute，
-   仍用 grid-area:1/1 钉在原位淡出）。
-   以前退场层留在文档里撑宽（容器宽度取两者最大），260ms 后它被摘掉的那一帧
-   整串数字会缩一截 —— 三级条是「标签 + 数字」整组居中，这一缩会把标签横着推
-   十七八像素，而那时标题的滑动动画早就跑起来了，看着就是「滑到一半跳一下」。
-   让宽度在换值那一帧就落定，滑动动画量到的两端才是真终点。 */
-.tt-unit { display: inline-grid; align-items: center; letter-spacing: 0; position: relative; }
-.tt-unit-layer { grid-area: 1 / 1; transition: opacity .22s ease; white-space: pre; }
-.tt-unit-layer[data-tt-out="1"] { position: absolute; }
+   横向不裁：窗口宽度在换档时是补间过去的（见 kpi-fit 的 glideWidth），
+   期间比窗口宽的那一格不该被削掉右边 —— 竖着裁、横着放。
+   （visible 配 clip 是合法的组合，浏览器不会把它降成 auto。） */
+.tt-unit { position: relative; display: inline-block; height: 1em; line-height: 1em; overflow-x: visible; overflow-y: clip; letter-spacing: 0; }
+.tt-unit-sizer { display: block; height: 1em; line-height: 1em; visibility: hidden; white-space: pre; }
+.tt-unit-belt { position: absolute; left: 0; top: 0; transition: transform .34s cubic-bezier(.22,.61,.36,1); will-change: transform; }
+.tt-unit-cell { display: block; height: 1em; line-height: 1em; white-space: pre; }
 
 /* 系统级「减弱动效」：数字不再滚、单位不再淡入，只留最终状态。
    digit-roll.mjs 的 prefersReduced() 也会提前退场，两层各管一道。 */
 @media (prefers-reduced-motion: reduce) {
   .tt-strip { transition: none !important; }
-  .tt-pop { animation: none !important; }
-  .tt-unit-layer { transition: none !important; }
+  .tt-unit-belt { transition: none !important; }
 }
 /* 主数卡：宽度随内容（栅格首列 auto），字号只看高度。
    高度定字，字定宽度，宽度不回喂高度，链条有终点。

@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  splitValue, tokenize, digitOffset, ROLL_MS, UNIT_MS,
+  splitValue, tokenize, digitOffset, unitRollStops, ROLL_MS, ROLL_EASING,
 } from "../ui/digit-roll.mjs";
 
 // KPI 数字滚动的纯逻辑层。DOM 层要靠浏览器实测（见仓库里的探针做法），
@@ -65,9 +65,18 @@ test("digitOffset：9 在顶上（位移 0），0 在最下（位移 -9）", () 
   }
 });
 
-test("时长常量与 CSS 里的过渡保持一致", () => {
-  // .tt-strip 的 transition 与 .tt-unit-layer 的 transition 分别写 340ms / 220ms。
+test("时长与曲线常量与 CSS 里的过渡保持一致", () => {
+  // .tt-strip（数字带子）与 .tt-unit-belt（单位带子）写的是同一个 340ms / 同一条贝塞尔。
   // 两边对不上时数字会「还没滚到位就被下一帧改写」，看着是卡在半路。
   assert.equal(ROLL_MS, 340);
-  assert.equal(UNIT_MS, 220);
+  assert.equal(ROLL_EASING, "cubic-bezier(.22,.61,.36,1)");
+});
+
+test("unitRollStops：单位带子的档位由键，小档在上、大档在下", () => {
+  // 带子顺序就是滚动的方向：往大档走＝往下滚一格。
+  // 中文与英文档数不同（4 / 5），所以这张表只能由 units.mjs 生成，不能写死。
+  assert.deepEqual(unitRollStops("en"), ["", " K", " M", " B", " T"]);
+  assert.deepEqual(unitRollStops("zh"), ["", " 万", " 亿", " 万亿"]);
+  // 第一档必须是没有单位：不足最小量级的数（“7”）就停在这一档。
+  for (const system of ["en", "zh"]) assert.equal(unitRollStops(system)[0], "", system);
 });

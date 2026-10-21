@@ -8,15 +8,17 @@
 // 滚过去的每一帧都是合法数字，所以中间态没有假值。
 //
 // ── 原样保留的三条决策（都是那边踩过坑才写下来的） ──────────────────────
-//   1) 位数变化不做逐位复用，整组重建 + 一次轻弹。
-//      复用会错位：「个位忽然变成十位」看起来像数据错了，而不像动画。
+//   1) 位数变化不做逐位复用（「个位忽然变成十位」看起来像数据错了，而不像动画）。
+//      但也不整块重建：现在是「换一层」—— 新层进流，旧层退出布局后留在原地
+//      向上滚着淡出（见 setCore）。早年那版「重建 + 轻弹」被观感否掉了。
 //   2) 首屏不做入场。一进页面所有数字一起滚，会把「这里有变化」这个信号稀释掉。
 //   3) 不用 FLIP 去补位移，行内布局由浏览器自己连续推动。
 //
 // ── 与原件不同之处，都是因为这里显示的不是「+12」这种纯整数 ────────────
 //   · 有前置 $、后置 %、空格加单位（27.45 B）、比例（192:1）
 //     → 拆成 prefix / core / suffix，只有 core 参与滚动，其余是静态字符
-//   · 单位会跨量级变（B↔M）→ 单位单独一层，变了淡入淡出，不跟着数字滚
+//   · 单位会跨量级变（B↔M）→ 单位也是同一根滚轮：窗口只开一格，
+//     里面竖排整张档位表，换档就滚过去（见 setUnit）
 //   · 字号从 9px 到 78px 不等，格高不能像原版那样写死 14px
 //     → 全程用 em，格高恒等于一个字号，字号被 fit 改动时格子与位移同步缩放
 //
@@ -24,11 +26,20 @@
 // 每帧都可能微调。写成 px 就得在字号变化后把所有带子的位移重算一遍（还要防过渡抖动），
 // 写成 em 则两者天然等比，不需要任何同步动作。
 
-/** 滚动时长（ms）。与 token-tracker.css 里 .tt-strip 的 transition 保持一致。 */
+import { getUnitSystem, stepsOf } from './units.mjs';
+
+/** 滚动时长（ms）。与 token-tracker.css 里 .tt-strip / .tt-unit-belt 的 transition 保持一致。 */
 export const ROLL_MS = 340;
 
-/** 单位淡入淡出时长（ms）。 */
-export const UNIT_MS = 220;
+/** 滚轮的曲线，与 CSS 里那两条 transition 同一条。 */
+export const ROLL_EASING = 'cubic-bezier(.22,.61,.36,1)';
+
+// 位数变化时「换人」的参数：旧串原地向上滚着淡出，新串稍晚一点从下面落进来。
+// 错开 40ms 是为了避开两串同时满透明度（那样会看成重影，而不像一次交接）。
+const SWAP_LIFT = 0.18;      // em
+const SWAP_OUT_MS = 200;
+const SWAP_IN_MS = 240;
+const SWAP_IN_DELAY = 40;
 
 function prefersReduced() {
   try {
@@ -79,6 +90,17 @@ export function digitOffset(d) {
   return (Number(d) - 9);
 }
 
+/**
+ * 单位滚轮的档位：从「没有单位」一路排到最大档。
+ * 英文 ['', ' K', ' M', ' B', ' T']，中文 ['', ' 万', ' 亿', ' 万亿']。
+ *
+ * 顺序就是带子的上下顺序（越靠后越大、也越靠下），换档时往哪边滚由它决定，
+ * 所以这张表必须与 units.mjs 的档位一致 —— 不另写一份，直接用那边生成。
+ */
+export function unitRollStops(system = getUnitSystem()) {
+  return ['', ...stepsOf(system).slice().reverse().map((step) => ` ${step.suffix}`)];
+}
+
 // ── DOM 层 ──────────────────────────────────────────────────────────────
 
 function span(className) {
@@ -125,105 +147,222 @@ function setDigit(slot, ch, animate) {
   strip.style.transform = y;
 }
 
-/** 数字段：位数不变逐位滚；位数变了（或位型变了）整组重建 + 轻弹。 */
-function setCore(box, core, animate) {
-  const str = String(core ?? '');
-  if (box.dataset.ttCore === str) return;
-  const hadPrev = box.dataset.ttCore !== undefined;
-  box.dataset.ttCore = str;
+// ── 数字段：一层一层的 ────────────────────────────────────────────────
+//
+// 一层 = 一整串格子。位数不变时在层内逐位滚；位数（或位型）变了就换一层：
+// 新层进流（宽度当帧定下来，外面量两端位置的动画才拿到真终点），
+// 旧层退出布局、留在原地向上滚着淡出。
+//
+// 为什么旧层要绝对定位 + 居中（CSS 里 [data-tt-out] 那两条）：整排数字是整组居中的，
+// 只有最后一位改宽度时，它的中心本来就不动，变的只是两条边。所以旧层不必平移，
+// 只要把它钉在同一个中心上淡出，就不会有“字忽然往旁边跳一下”的观感。
 
-  const tokens = tokenize(str);
-  const sameLength = box.children.length === tokens.length;
-  // 长度一样还不够：某一位可能从数字变成标点（或反过来），
-  // 那时节点类型不对，逐位复用会把带子塞进标点格里。
-  const sameShape = sameLength && tokens.every((t, i) =>
-    t.digit === box.children[i].classList.contains('tt-digit'));
-
-  if (!sameLength || !sameShape) {
-    box.textContent = '';
-    for (const t of tokens) {
-      if (!t.digit) {
-        const s = span('tt-static');
-        s.textContent = t.ch;
-        box.append(s);
-        continue;
-      }
-      box.append(makeDigit(t.ch));
-    }
-    if (animate && hadPrev) {
-      box.classList.remove('tt-pop');
-      void box.offsetWidth;
-      box.classList.add('tt-pop');
-    }
-    return;
+/** 取在流里的那一层（退场中的不算）。 */
+function liveRow(box) {
+  let live = null;
+  for (const el of box.children) {
+    if (el.classList.contains('tt-num-row') && el.dataset.ttOut !== '1') live = el;
   }
+  return live;
+}
 
-  for (let i = 0; i < tokens.length; i++) {
-    const t = tokens[i];
-    const el = box.children[i];
-    if (t.digit) { setDigit(el, t.ch, animate); continue; }
-    if (el.textContent !== t.ch) el.textContent = t.ch;
+/** 退场层还挂着就来了下一次换人：先收掉，免得多层叠在同一个中心上。 */
+function clearRetired(box) {
+  for (const el of [...box.children]) {
+    if (el.dataset.ttOut === '1') el.remove();
   }
 }
 
-/**
- * 单位段：变了就叠一层做 crossfade。
- *
- * 为什么不用「先清空再写新字」：那样中间有一帧是空的，单位会闪一下。
- * 两层叠在同一个 grid 格里（.tt-unit 是 inline-grid，两层都是 grid-area:1/1）。
- *
- * 但宽度**只按新单位算**：退场层标了 tt-out 之后被 CSS 摘出布局
- *（.tt-unit-layer[data-tt-out] 是 position:absolute），淡出照旧，不再撑宽。
- * 旧做法让容器宽取两层最大，260ms 后旧层被摘掉的那一帧整串数字缩一截；
- * 三级条是「标签 + 数字」整组居中，那一缩会把标签横着推十几像素，
- * 而标题的滑动动画那时早跑起来了 —— 看着就是「滑到一半跳一下」。
- * 宽度在换值这一帧就落定，量两端位置的人才不会被它骗。
- */
-function setUnit(box, text, animate) {
-  const str = String(text ?? '');
-  if (box.dataset.ttUnit === str) return;
-  const hadPrev = box.dataset.ttUnit !== undefined;
-  box.dataset.ttUnit = str;
+/** 把一串 core 铺成格子。新层出生时用：每格直接落位，不逐位滚。 */
+function fillRow(row, tokens) {
+  row.textContent = '';
+  for (const t of tokens) {
+    if (!t.digit) {
+      const s = span('tt-static');
+      s.textContent = t.ch;
+      row.append(s);
+      continue;
+    }
+    row.append(makeDigit(t.ch));
+  }
+}
 
-  // 上一轮淡出还没走完就来了新值：先把已经标了 ttOut 的旧层收掉。
-  // 不收的话每来一次就多叠一层 —— 实测连着切两次拿到 3 层 [" B"," M"," B"]，
-  // 同一格里堆着好几个单位。
-  if (box._ttUnitTimer) { clearTimeout(box._ttUnitTimer); box._ttUnitTimer = 0; }
-  for (const o of [...box.children]) {
-    if (o.dataset.ttOut === '1') o.remove();
+/** 旧层退场：向上滚着淡出，然后从 DOM 里摘掉。 */
+function retireRow(row) {
+  row.dataset.ttOut = '1';
+  const anim = row.animate([
+    { opacity: 1, transform: 'translateY(0)' },
+    { opacity: 0, transform: `translateY(${-SWAP_LIFT}em)` },
+  ], { duration: SWAP_OUT_MS, easing: ROLL_EASING, fill: 'forwards' });
+  const drop = () => { if (row.isConnected) row.remove(); };
+  anim.addEventListener('finish', drop);
+  // finish 在后台页签里不一定发（合成器可能不推），用定时器兼底。
+  setTimeout(drop, SWAP_OUT_MS + 80);
+}
+
+/** 新层进场：稍晚半拍，从下面落回原位。 */
+function enterRow(row) {
+  row.animate([
+    { opacity: 0, transform: `translateY(${SWAP_LIFT}em)` },
+    { opacity: 1, transform: 'translateY(0)' },
+  ], { duration: SWAP_IN_MS, delay: SWAP_IN_DELAY, easing: ROLL_EASING, fill: 'backwards' });
+}
+
+/** 数字段：位数不变逐位滚；位数变了就换一层（旧层上滚淡出，新层落进来）。 */
+function setCore(box, core, animate) {
+  const str = String(core ?? '');
+  let row = liveRow(box);
+  if (row && row.dataset.ttCore === str) return;
+  const tokens = tokenize(str);
+
+  if (!row) {
+    row = span('tt-num-row');
+    row.dataset.ttCore = str;
+    fillRow(row, tokens);
+    box.append(row);
+    return;
   }
 
-  if (!animate || !hadPrev) {
-    box.textContent = '';
-    if (str) {
-      const only = span('tt-unit-layer');
-      only.textContent = str;
-      box.append(only);
+  const slots = [...row.children];
+  // 长度一样还不够：某一位可能从数字变成标点（或反过来），
+  // 那时节点类型不对，逐位复用会把带子塞进标点格里。
+  const sameShape = slots.length === tokens.length
+    && tokens.every((t, i) => t.digit === slots[i].classList.contains('tt-digit'));
+
+  if (sameShape) {
+    row.dataset.ttCore = str;
+    for (let i = 0; i < tokens.length; i++) {
+      const t = tokens[i];
+      const el = slots[i];
+      if (t.digit) { setDigit(el, t.ch, animate); continue; }
+      if (el.textContent !== t.ch) el.textContent = t.ch;
     }
     return;
   }
 
-  const outgoing = [...box.children];
-  const incoming = span('tt-unit-layer');
-  incoming.textContent = str;
-  incoming.style.opacity = '0';
-  box.append(incoming);
-  // 逼一次布局，让 opacity:0 这一帧真的落地 —— 否则下一句改成 1 时
-  // 起点和终点在同一帧里，浏览器认为没有变化，淡入不会发生。
-  void box.offsetWidth;
-  incoming.style.opacity = '1';
-  for (const o of outgoing) {
-    o.dataset.ttOut = '1';
-    o.style.opacity = '0';
+  clearRetired(box);
+  const next = span('tt-num-row');
+  next.dataset.ttCore = str;
+  fillRow(next, tokens);
+  box.append(next);
+  if (!animate) { row.remove(); return; }
+  retireRow(row);
+  enterRow(next);
+}
+
+// ── 单位段：第二根滚轮 ────────────────────────────────────────────────
+//
+// 单位以前是淡入淡出：两行字叠在同一格里互相显隐。数字在纵向滚、单位在横向淡，
+// 两套语言并排放着，换量级时会觉得整块被重绘过。
+//
+// 现在单位也是一根带子：窗口只开一格，里面竖排整张档位表
+//（空 / K / M / B / T，中文是 空 / 万 / 亿 / 万亿），换档就滚过去，
+// 方向和数字一致（往大档走＝带子往上，字从下面进来）。
+// 空档也是表里的一档，所以「单位消失」是滚出去，不是淡掉。
+//
+// 窗口的宽度由 sizer 定：它在流里、不可见，内容永远是目标档。
+// 宽度本身不在这里管 —— 换值时 kpi-fit 会把窗口宽度从旧档补间到新档，
+// 整组（标题 / 数字）跟着布局连续移动；这里只管纵向滚。
+// 元素刚从不显示变成显示时那一帧要逼一次布局，否则过渡不会建立
+//（见 placeBelt、syncUnitVisibility）。
+
+function ensureUnitDom(box) {
+  if (box._ttSizer && box._ttBelt) return;
+  box.textContent = '';
+  const sizer = span('tt-unit-sizer');
+  sizer.setAttribute('aria-hidden', 'true');
+  const belt = span('tt-unit-belt');
+  belt.setAttribute('aria-hidden', 'true');
+  box.append(sizer, belt);
+  box._ttSizer = sizer;
+  box._ttBelt = belt;
+  box._ttStops = null;
+}
+
+/** 把档位表铺成格子。带子重建只在「首次」或「档位表变了」时发生。 */
+function renderBelt(box, stops) {
+  const belt = box._ttBelt;
+  belt.textContent = '';
+  for (const stop of stops) {
+    const cell = span('tt-unit-cell');
+    cell.textContent = stop;
+    belt.append(cell);
+  }
+  box._ttStops = stops.slice();
+}
+
+/** 把带子停在某一档。animate=false 时瞬移（首屏 / 重建后的对位）。 */
+function placeBelt(box, index, animate) {
+  const belt = box._ttBelt;
+  const y = `translateY(${-index}em)`;
+  if (!animate) {
+    // 与 setDigit 同一套手法：摘过渡、落位、逼一次布局，再把过渡交还。
+    belt.style.transition = 'none';
+    belt.style.transform = y;
+    void belt.offsetWidth;
+    belt.style.transition = '';
+    return;
+  }
+  // 先把「已经显示出来 + 停在旧档」这一帧逼落地，再写新值 ——
+  // 元素刚从不显示变成显示时，若直接写目标，浏览器没有“前一个渲染帧”，过渡不会建立。
+  void belt.offsetWidth;
+  belt.style.transform = y;
+}
+
+/** 这一次要用的档位表：表内单位用整张表；表外的（以后新增、怪值）就地造两格滚一格。 */
+function unitStopsFor(str, prev) {
+  const ladder = unitRollStops();
+  if (ladder.includes(str) && (prev === undefined || ladder.includes(prev))) return ladder;
+  return [prev ?? '', str];
+}
+
+// 单位从「有」变成「没有」时不要当场 display:none —— 那样就没有滚出去的过程了。
+// 让它先以 0 宽度留在文档里（窗口宽度由 kpi-fit 补间到 0），滚完再收起来。
+const UNIT_HIDE_MS = ROLL_MS + 60;
+
+function syncUnitVisibility(box, str, prev, animate) {
+  if (box._ttHideTimer) { clearTimeout(box._ttHideTimer); box._ttHideTimer = 0; }
+  if (str) { box.hidden = false; return; }
+  const rolling = animate && !!prev;
+  if (!rolling) { box.hidden = true; return; }
+  box.hidden = false;
+  box._ttHideTimer = setTimeout(() => {
+    box._ttHideTimer = 0;
+    if (!box.isConnected || box.dataset.ttUnit !== '') return;
+    box.hidden = true;
+  }, UNIT_HIDE_MS);
+}
+
+function setUnit(box, text, animate) {
+  const str = String(text ?? '');
+  const prev = box.dataset.ttUnit;
+  // 显隐先处理：元素挂着 display:none 的话，那一帧不会被渲染，滚动过渡会被吞掉。
+  syncUnitVisibility(box, str, prev, animate);
+  if (prev === str) return;
+  box.dataset.ttUnit = str;
+
+  ensureUnitDom(box);
+  box._ttSizer.textContent = str;   // 窗口宽度：当帧按目标档落定
+
+  const stops = unitStopsFor(str, prev);
+  const index = Math.max(0, stops.indexOf(str));
+  const sameBelt = !!box._ttStops && box._ttStops.join('\u0001') === stops.join('\u0001');
+
+  if (!animate || prev === undefined) {
+    renderBelt(box, stops);
+    placeBelt(box, index, false);
+    return;
   }
 
-  box._ttUnitTimer = setTimeout(() => {
-    for (const o of [...box.children]) {
-      if (o.dataset.ttOut === '1') o.remove();
-    }
-    incoming.style.opacity = '';
-    box._ttUnitTimer = 0;
-  }, UNIT_MS + 40);
+  if (!sameBelt) {
+    // 带子要重建（首次、或进/出了档位表）：先把旧档摆好，再从那里滚过去。
+    // 不先落位就直接写目标，会从 0 往目标冲 —— 看起来像“从无单位滚到 M”，不是从 K 滚到 M。
+    const from = Math.max(0, stops.indexOf(prev));
+    renderBelt(box, stops);
+    placeBelt(box, from, false);
+    if (from === index) return;
+  }
+  placeBelt(box, index, true);
 }
 
 /**
@@ -231,8 +370,11 @@ function setUnit(box, text, animate) {
  *
  * 预期结构（首次调用时自动建立）：
  *   <strong data-tt-value="27.45 B">
- *     <span class="tt-num">…位…</span>
- *     <span class="tt-unit">B</span>
+ *     <span class="tt-num"><span class="tt-num-row">…位…</span></span>
+ *     <span class="tt-unit">
+ *       <span class="tt-unit-sizer">B</span>
+ *       <span class="tt-unit-belt">…档…</span>
+ *     </span>
  *   </strong>
  *
  * data-tt-value 是「逻辑值」：DOM 里的文字已经被拆成带子，textContent 不再可读，
@@ -262,13 +404,14 @@ export function setValue(strong, text, options) {
   const canAnimate = animate && prev !== undefined;
 
   const { prefix, core, suffix } = splitValue(str);
+
+  // 空段不占位：否则 flex 的 gap 会在「—」这种没有数字的值上留一道空。
+  // 数字的显隐要先定（单位的那份交给 setUnit：它要留着旧单位滚出去）。
+  num.hidden = !(prefix + core);
+
   // prefix（$ 之类）当静态字符塞进 num，它不滚，但跟着一起排版。
   setCore(num, prefix + core, canAnimate);
   setUnit(unit, suffix, canAnimate);
-
-  // 空段不占位：否则 flex 的 gap 会在「—」这种没有数字的值上留一道空。
-  num.hidden = num.childElementCount === 0;
-  unit.hidden = unit.childElementCount === 0;
 }
 
 /** 取逻辑值（给 kpi-fit.mjs 量字用）。没有 data-tt-value 的老节点退回 textContent。 */
