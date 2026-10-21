@@ -636,14 +636,24 @@ function createFlowPanel() {
 }
 
 const flowPanels = new WeakMap();   // container -> 常驻面板实例。换范围不能重建它，否则没有“从哪儿来”
-// container -> 上次渲染时「今日用量」的展示状态。看板每帧都 replaceChildren 全量重建，
-// 新节点天生没有“上一个状态”；想知道这次是“本来有、该收起”还是“本来没有、该放出”，
-// 只能把上次的结果记在外面。顺带存下文字，退出时才能拿着旧值淡出而不是凭空消失。
-const kpiTodayState = new WeakMap();
-// 上一帧的数值：key = 标签文字。
-// 看板每帧都 replaceChildren，KPI 是全新节点，自己不知道自己刚才显示的是几。
-// 滚动要「从旧值滚到新值」，所以旧值必须由外部带进来 —— 跟 kpiTodayState 同一个道理。
-const kpiValueState = new WeakMap();
+// 跨渲染的状态都不能挂在 container 上。
+// 看板视图把 board 当容器、一直复用，卡片视图却是每次渲染都新建一个 board div
+// （renderOverview 里 h('div')），一挂 WeakMap 就随风飘走。结果就是：卡片里
+// 数字从来不滚、今日用量从来不进出，因为它永远以为自己刚出生、没有“上一次”。
+// 所以改挂在 document 上，按 scope 分组（容器用 data-tt-kpi-scope 声明自己属于哪一组，
+// 默认 'board'）：同一个 document 里两个视图各记各的，互不串。
+const kpiMemory = new WeakMap();   // document -> Map<string, any>
+function kpiMem(container) {
+  const doc = container.ownerDocument || document;
+  let map = kpiMemory.get(doc);
+  if (!map) { map = new Map(); kpiMemory.set(doc, map); }
+  const scope = container.dataset?.ttKpiScope || 'board';
+  const prefix = `${scope}\u0000`;
+  return {
+    get: key => map.get(prefix + key),
+    set: (key, value) => map.set(prefix + key, value),
+  };
+}
 
 export function renderAnalytics(container, dashboard, state, patch) {
   container.replaceChildren(); container.className = 'tt-board';
@@ -693,16 +703,18 @@ export function renderAnalytics(container, dashboard, state, patch) {
   //
   // 为什么不能直接 h('strong', {}, value)：看板每帧都 replaceChildren，
   // 新节点天生不知道“自己刚才显示的是几”，滚动就没有起点（只能从 9 掉下来或直接闪现）。
-  // 所以把上一帧的显示值记在容器上（kpiValueState，key=标签文字），
+  // 所以把上一帧的显示值记在文档上（kpiMem('values')，key=标签文字），
   // 新节点出生时先落到旧值（不带动画），等它进了文档再滚到新值。
-  // 这跟 kpiTodayState 是同一套手法：把“上一帧的状态”从 DOM 里拿出来。
+  // 这跟今日用量那份状态是同一套手法：把“上一帧的状态”从 DOM 里拿出来。
+  const mem = kpiMem(container);
+  const prevValues = mem.get('values') || new Map();
   const nextValues = new Map();
   const pendingRolls = [];
   const valueNode = (labelText, text) => {
     const strong = h('strong', {});
     const str = String(text ?? '');
     nextValues.set(labelText, str);
-    const prev = kpiValueState.get(container)?.get(labelText);
+    const prev = prevValues.get(labelText);
     if (prev !== undefined && prev !== str) {
       setValue(strong, prev, { animate: false });   // 先站到旧刻度
       pendingRolls.push({ strong, text: str });     // 进文档后再滚过去
@@ -722,7 +734,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
   }, h('span', {}, label), valueNode(label, value));
   // 主卡：合计 + （只在全部历史下出现的）今日用量。
   const primaryCard = () => {
-    const prev = kpiTodayState.get(container);
+    const prev = mem.get('today');
     const main = h('div', { className: 'tt-kpi-main', 'data-tt-fit-box': '' },
       h('span', {}, '合计 Token'), valueNode('合计 Token', compact(total)));
     const card = h('div', { className: 'tt-kpi tt-kpi-primary', title: primaryHint, 'data-tt-select': '' }, main);
@@ -738,7 +750,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
       // 只在“状态真的变了”时才放过渡；否则每次换筛选都会重放一遍进出。
       if (prev && prev.show !== showToday) card.dataset[showToday ? 'ttEnter' : 'ttLeave'] = '';
     }
-    kpiTodayState.set(container, {
+    mem.set('today', {
       show: showToday,
       text: showToday ? todayText : null,
       hint: showToday ? todayHint : null,
@@ -784,7 +796,7 @@ export function renderAnalytics(container, dashboard, state, patch) {
     kpiBlock.getBoundingClientRect();
     for (const r of pendingRolls) setValue(r.strong, r.text, { animate: true });
   }
-  kpiValueState.set(container, nextValues);
+  mem.set('values', nextValues);
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
   let flowPanel = flowPanels.get(container);

@@ -1147,11 +1147,16 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
 
    横向不裁：窗口宽度在换档时是补间过去的（见 kpi-fit 的 glideWidth），
    期间比窗口宽的那一格不该被削掉右边 —— 竖着裁、横着放。
-   （visible 配 clip 是合法的组合，浏览器不会把它降成 auto。） */
-.tt-unit { position: relative; display: inline-block; height: 1em; line-height: 1em; overflow-x: visible; overflow-y: clip; letter-spacing: 0; }
-.tt-unit-sizer { display: block; height: 1em; line-height: 1em; visibility: hidden; white-space: pre; }
+   （visible 配 clip 是合法的组合，浏览器不会把它降成 auto。）
+
+   text-align 必须写死 left：外层的 strong 是居中，这个属性能穿过 inline 继承下来，
+   带子的每一格都比窗口宽（取的是整张裱里最宽那档），格子里的字一旦居中
+   就整体右移半个宽度差，K 的右半边直接被窗口切掉 —— 实测过一次。
+   padding-right 只是给字往右吐出来的那点余量（负 margin 抵回去，布局宽度不变）。 */
+.tt-unit { position: relative; display: inline-block; height: 1em; line-height: 1em; overflow-x: visible; overflow-y: clip; letter-spacing: 0; text-align: left; padding-right: .04em; margin-right: -.04em; }
+.tt-unit-sizer { display: block; height: 1em; line-height: 1em; visibility: hidden; white-space: pre; text-align: left; }
 .tt-unit-belt { position: absolute; left: 0; top: 0; transition: transform .34s cubic-bezier(.22,.61,.36,1); will-change: transform; }
-.tt-unit-cell { display: block; height: 1em; line-height: 1em; white-space: pre; }
+.tt-unit-cell { display: block; height: 1em; line-height: 1em; white-space: pre; text-align: left; }
 
 /* 系统级「减弱动效」：数字不再滚、单位不再淡入，只留最终状态。
    digit-roll.mjs 的 prefersReduced() 也会提前退场，两层各管一道。 */

@@ -156,7 +156,10 @@ export class CardApp extends WorkspaceApp {
     if (['balance', 'details', 'realtime'].includes(active)) return;
     el.replaceChildren();
     if (!this.dashboard) { el.append(h('div', { className: 'tt-board-empty' }, '正在读取所选范围…')); return; }
-    const board = h('div');
+    // 每次渲染都新建一个 board（下面把 KPI 块摘出来再挂进常驻容器），
+    // 所以得先声明自己是哪一组：跨渲染的“上次显示的是几”按 scope 存在 document 上，
+    // 不声明就跟完整看板同一组，两个视图会互相当成“自己的上一次”。
+    const board = h('div', { dataset: { ttKpiScope: 'card' } });
     renderAnalytics(board, this.dashboard, state, patch => this.state.patch(patch));
     if (active === 'overview') {
       el.append(h('header', { className: 'tt-card-summary-title' }, h('h2', {}, '用量总览'), h('span', {}, `${this.dashboard.agents.length} 个活跃 Agent`)), board.querySelector('.tt-board-kpis'));

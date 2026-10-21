@@ -36,7 +36,8 @@ export const ROLL_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
 // 位数变化时「换人」的参数：旧串原地向上滚着淡出，新串稍晚一点从下面落进来。
 // 错开 40ms 是为了避开两串同时满透明度（那样会看成重影，而不像一次交接）。
-const SWAP_LIFT = 0.18;      // em
+const SWAP_LIFT = 0.5;       // em。小于半行会被看成“淡了一下”，大于一行会在格子外穿帮。
+// 0.18em 试过：在卡片那种小字号上只有两个像素，看着就是闪。
 const SWAP_OUT_MS = 200;
 const SWAP_IN_MS = 240;
 const SWAP_IN_DELAY = 40;
