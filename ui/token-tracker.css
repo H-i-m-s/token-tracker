@@ -1099,8 +1099,14 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
 
    旧层为何要 absolute + inset:0 + 居中：整组是居中排的，而“换人”时
    只有最后一位改宽度，它的中心本来就不动、变的只是两条边。
-   把它钉在同一个中心上淡出，就不会有“字忽然往旁边跳一下”的观感。 */
-.tt-num { display: inline-grid; align-items: center; letter-spacing: 0; }
+
+   为什么还要 position: relative：没有它，inset:0 会去找最近的定位祖先
+   （卡片的 overflow:hidden 那一层），退场层就会拿整张卡的宽度去居中 ——
+   新旧两串在左右不同的位置错开，看着就是“凭空冒出来”，而不是一次转动。
+
+   clip-path 只裁竖向：上面裁在框沿、下面也裁在框沿，横向放到 ±10em。
+   这样滚出去的旧串不会压到左边的标签上，而比框宽的新串不会在宽度补间途中被削边。 */
+.tt-num { position: relative; display: inline-grid; align-items: center; letter-spacing: 0; clip-path: inset(0 -10em); }
 .tt-num-row { grid-area: 1 / 1; display: inline-flex; align-items: center; justify-content: center; letter-spacing: 0; }
 .tt-num-row[data-tt-out="1"] { position: absolute; inset: 0; }
 

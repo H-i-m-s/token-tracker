@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  splitValue, tokenize, digitOffset, unitRollStops, ROLL_MS, ROLL_EASING,
+  splitValue, tokenize, digitOffset, unitRollStops, rollDirection, ROLL_MS, ROLL_EASING,
 } from "../ui/digit-roll.mjs";
 
 // KPI 数字滚动的纯逻辑层。DOM 层要靠浏览器实测（见仓库里的探针做法），
@@ -79,4 +79,21 @@ test("unitRollStops：单位带子的档位由键，小档在上、大档在下"
   assert.deepEqual(unitRollStops("zh"), ["", " 万", " 亿", " 万亿"]);
   // 第一档必须是没有单位：不足最小量级的数（“7”）就停在这一档。
   for (const system of ["en", "zh"]) assert.equal(unitRollStops(system)[0], "", system);
+});
+
+test("rollDirection：位数变了往哪边转，跟显示值的大小走", () => {
+  // 1 = 往上（数值变大），-1 = 往下（数值变小）。
+  // 拿的必须是「带子上那个数」，不是乘完单位的总量：
+  // 18.8 K → 7 在屏上是变小，轮子就该往下退，不能因为 18800 > 7 就往上升。
+  assert.equal(rollDirection("7", "413"), 1);
+  assert.equal(rollDirection("413", "7"), -1);
+  assert.equal(rollDirection("18.8", "7"), -1);
+  assert.equal(rollDirection("2.40", "3.03"), 1);
+  // 比例串（176:1）只看得到数字部分，够用：它只决定往哪边转。
+  assert.equal(rollDirection("176:1", "274:1"), 1);
+  assert.equal(rollDirection("274:1", "176:1"), -1);
+  // 取不到值（“—”）或两边一样：默认往上，不能因为算不出来就不动。
+  assert.equal(rollDirection("—", "7"), 1);
+  assert.equal(rollDirection("7", "7"), 1);
+  assert.equal(rollDirection("", "7"), 1);
 });

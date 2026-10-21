@@ -34,13 +34,14 @@ export const ROLL_MS = 340;
 /** 滚轮的曲线，与 CSS 里那两条 transition 同一条。 */
 export const ROLL_EASING = 'cubic-bezier(.22,.61,.36,1)';
 
-// 位数变化时「换人」的参数：旧串原地向上滚着淡出，新串稍晚一点从下面落进来。
-// 错开 40ms 是为了避开两串同时满透明度（那样会看成重影，而不像一次交接）。
-const SWAP_LIFT = 0.5;       // em。小于半行会被看成“淡了一下”，大于一行会在格子外穿帮。
-// 0.18em 试过：在卡片那种小字号上只有两个像素，看着就是闪。
-const SWAP_OUT_MS = 200;
-const SWAP_IN_MS = 240;
-const SWAP_IN_DELAY = 40;
+// 位数变化：整串像滚轮过一格。
+//
+// 旧串滚出一整行，新串同时从另一侧补上同一行 —— 两者永远差一整行，
+// 中途不会叠在同一个位置上，所以不需要淡入淡出：看到的就是一次转动，
+// 而不是两串字在一个地方互相透（那看着就是“凭空丢出来”）。
+// 方向跟显示值的增减走（变大往上、变小往下），与单位带子同一套语言。
+const SWAP_LINES = 1;        // 转动行程，单位是一行（em）
+const SWAP_MS = ROLL_MS;
 
 function prefersReduced() {
   try {
@@ -103,6 +104,18 @@ export function unitRollStops(system = getUnitSystem()) {
 }
 
 // ── DOM 层 ──────────────────────────────────────────────────────────────
+
+/**
+ * 位数变化时轮子往哪边转：显示值变大往上（+1），变小往下（-1）。
+ * 只看显示出来的那个数（「18.8」而不是乘完单位的总量），
+ * 因为人看到的就是这个数在变大变小。
+ */
+export function rollDirection(prev, next) {
+  const num = v => Number.parseFloat(String(v ?? '').replace(/[^0-9.]/g, ''));
+  const a = num(prev), b = num(next);
+  if (!Number.isFinite(a) || !Number.isFinite(b) || a === b) return 1;
+  return b > a ? 1 : -1;
+}
 
 function span(className) {
   const el = document.createElement('span');
@@ -188,25 +201,25 @@ function fillRow(row, tokens) {
   }
 }
 
-/** 旧层退场：向上滚着淡出，然后从 DOM 里摘掉。 */
-function retireRow(row) {
+/** 旧层退场：向上（或向下）滚出一整行，然后从 DOM 里摘掉。 */
+function retireRow(row, dir) {
   row.dataset.ttOut = '1';
   const anim = row.animate([
-    { opacity: 1, transform: 'translateY(0)' },
-    { opacity: 0, transform: `translateY(${-SWAP_LIFT}em)` },
-  ], { duration: SWAP_OUT_MS, easing: ROLL_EASING, fill: 'forwards' });
+    { transform: 'translateY(0)' },
+    { transform: `translateY(${-SWAP_LINES * dir}em)` },
+  ], { duration: SWAP_MS, easing: ROLL_EASING, fill: 'forwards' });
   const drop = () => { if (row.isConnected) row.remove(); };
   anim.addEventListener('finish', drop);
   // finish 在后台页签里不一定发（合成器可能不推），用定时器兼底。
-  setTimeout(drop, SWAP_OUT_MS + 80);
+  setTimeout(drop, SWAP_MS + 80);
 }
 
-/** 新层进场：稍晚半拍，从下面落回原位。 */
-function enterRow(row) {
+/** 新层进场：从同一行的另一侧补上来，与旧层卡在同一个节奏上。 */
+function enterRow(row, dir) {
   row.animate([
-    { opacity: 0, transform: `translateY(${SWAP_LIFT}em)` },
-    { opacity: 1, transform: 'translateY(0)' },
-  ], { duration: SWAP_IN_MS, delay: SWAP_IN_DELAY, easing: ROLL_EASING, fill: 'backwards' });
+    { transform: `translateY(${SWAP_LINES * dir}em)` },
+    { transform: 'translateY(0)' },
+  ], { duration: SWAP_MS, easing: ROLL_EASING, fill: 'backwards' });
 }
 
 /** 数字段：位数不变逐位滚；位数变了就换一层（旧层上滚淡出，新层落进来）。 */
@@ -241,14 +254,16 @@ function setCore(box, core, animate) {
     return;
   }
 
+  // 方向先量好：row.dataset.ttCore 就是上一次显示的那串。
+  const dir = rollDirection(row.dataset.ttCore, str);
   clearRetired(box);
   const next = span('tt-num-row');
   next.dataset.ttCore = str;
   fillRow(next, tokens);
   box.append(next);
   if (!animate) { row.remove(); return; }
-  retireRow(row);
-  enterRow(next);
+  retireRow(row, dir);
+  enterRow(next, dir);
 }
 
 // ── 单位段：第二根滚轮 ────────────────────────────────────────────────
