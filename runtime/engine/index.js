@@ -13,6 +13,7 @@ import { createJsonJournalStore } from "./services/json-journal-store.js";
 import { loadLedger } from "./services/ledger-source.js";
 import { openArchiveStore } from "./services/archive-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
+import { hitRatePercentText } from "./services/hit-rate.js";
 
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
@@ -528,8 +529,11 @@ function shapeSample(sample) {
 }
 
 function realtimeSnapshot(rt, agentNames) {
-  const sessionRatio = rt.sessionTotalTokens > 0 ? ((rt.sessionCacheRead / rt.sessionTotalTokens) * 100).toFixed(1) : "0.0";
-  const lastRatio = rt.lastTotalTokens > 0 ? ((rt.lastCacheRead / rt.lastTotalTokens) * 100).toFixed(1) : "0.0";
+  // 命中率统一走 services/hit-rate.js（口径：缓存读 / 输入总量，输入含缓存读、不含输出）。
+  // 以前这里是 cacheRead / totalTokens，分母把输出也算进去了，于是同一个会话
+  // 实时面板的命中率永远低于明细行，却没有一处说明它们不是一回事。
+  const sessionRatio = hitRatePercentText(rt.sessionCacheRead, (rt.sessionInput || 0) + (rt.sessionCacheRead || 0));
+  const lastRatio = hitRatePercentText(rt.lastCacheRead, (rt.lastInput || 0) + (rt.lastCacheRead || 0));
   const contextPercent = rt.contextWindow > 0 ? ((rt.contextTokens / rt.contextWindow) * 100).toFixed(1) : "0.0";
   return {
     agentId: rt.agentId,

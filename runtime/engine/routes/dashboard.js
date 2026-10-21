@@ -1140,6 +1140,15 @@ export function toList(v) {
   return out;
 }
 
+// 供应商 / 模型筛选：一个谓词管住全部组合。纯逻辑在 services/dashboard-filter.js，
+// 那里避开环境依赖，可以被测试直接导入；这里只引用。
+import {
+  providerModelMatcher,
+  sumProviderTotals,
+  HOURLY_PT_FIELDS,
+} from "../services/dashboard-filter.js";
+import { hitRatePercent } from "../services/hit-rate.js";
+
 // 已是 string[] 就原样用（不重复解码），否则走 toList。下游拿到的永远是数组。
 function asList(v) {
   return Array.isArray(v) ? v : toList(v);
@@ -1322,6 +1331,8 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
   // ── Agent / Provider / Type 筛选 ──
   const filterModel = asList(filters.model);
   const filterProvider = asList(filters.provider);
+  // 一个谓词管住「供应商+模型 / 只供应商 / 只模型」三种组合；null = 不筛。
+  const pkMatch = providerModelMatcher(filterProvider, filterModel);
   sessions = filterSessions(sessions, filters);
 
   // 保存一份不含模型筛选的 sessions，用于前端下拉选项
@@ -1353,34 +1364,11 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
     for (const [day, d] of Object.entries(s.dailyBreakdown || {})) {
       if (dateFilter && !dateFilter(day)) continue;
       let di, dout, dcr, dtot, dasst;
-      if (filterProvider.length && filterModel.length) {
-        // 供应商+模型：取「供应商 ∈ 选中 且 模型 ∈ 选中」的 provider/model 组合之和（选中集合的交集）
-        di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
-        for (const [pk, pt] of Object.entries(d.providerTotals || {})) {
-          const sep = pk.indexOf("/");
-          const p = sep > 0 ? pk.slice(0, sep) : "";
-          const m = sep > 0 ? pk.slice(sep + 1) : "";
-          if (filterProvider.includes(p) && filterModel.includes(m)) {
-            dtot += pt.totalTokens; di += pt.input; dout += pt.output; dcr += pt.cacheRead; dasst += pt.assistantCount || 0;
-          }
-        }
-      } else if (filterProvider.length) {
-        // 只选供应商：该供应商下所有 provider/model 项之和
-        di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
-        for (const [pk, pt] of Object.entries(d.providerTotals || {})) {
-          const sep = pk.indexOf("/");
-          const p = sep > 0 ? pk.slice(0, sep) : "";
-          if (filterProvider.includes(p)) {
-            dtot += pt.totalTokens; di += pt.input; dout += pt.output; dcr += pt.cacheRead; dasst += pt.assistantCount || 0;
-          }
-        }
-      } else if (filterModel.length) {
-        // 只选模型：各选中模型之和
-        di = 0; dout = 0; dcr = 0; dtot = 0; dasst = 0;
-        for (const m of filterModel) {
-          const md = d.models?.[m];
-          if (md) { di += md.input || 0; dout += md.output || 0; dcr += md.cacheRead || 0; dtot += md.totalTokens || 0; dasst += md.assistantCount || 0; }
-        }
+      if (pkMatch) {
+        // 三种筛选组合共用同一条取数路径（以前是四条分支，其中「只选模型」从 models 取、
+        // 另两种从 providerTotals 取，两层的字段不完全一样，口径就这么分岔了）。
+        const t = sumProviderTotals(d, pkMatch);
+        di = t.input; dout = t.output; dcr = t.cacheRead; dtot = t.totalTokens; dasst = t.assistantCount;
       } else {
         di = d.input || 0; dout = d.output || 0; dcr = d.cacheRead || 0; dtot = d.totalTokens || 0; dasst = d.assistantCount || 0;
       }
@@ -1475,14 +1463,6 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
     for (const s of sessions) {
       const hb = s.hourlyBreakdown?.[hourlyTargetDay];
       if (!hb) continue;
-      // 会话级模型→供应商映射
-      const hp = {};
-      if (s.providers) {
-        for (const pk of Object.keys(s.providers)) {
-          const sep = pk.indexOf("/");
-          if (sep > 0) hp[pk.slice(sep + 1)] = pk.slice(0, sep);
-        }
-      }
       for (const [hour, v] of Object.entries(hb)) {
         if (!hMap[hour]) hMap[hour] = { totalTokens: 0, desktop: 0, channel: 0, bridge: 0, background: 0, sub: 0, ledger: 0, cacheRead: 0, assistantCount: 0 };
         if (!hMMap[hour]) hMMap[hour] = {};
@@ -1494,58 +1474,14 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
             hMMap[hour][mn].cacheRead += mv.cacheRead || 0;
           }
         }
-        if (filterProvider.length && filterModel.length) {
-          // 供应商+模型：providerTotals 里「供应商 ∈ 选中 且 模型 ∈ 选中」的组合之和
-          for (const [pk, vt] of Object.entries(v.providerTotals || {})) {
-            const sep = pk.indexOf("/");
-            const p = sep > 0 ? pk.slice(0, sep) : "";
-            const m = sep > 0 ? pk.slice(sep + 1) : "";
-            if (filterProvider.includes(p) && filterModel.includes(m)) {
-              hMap[hour].totalTokens += vt.totalTokens;
-              hMap[hour].desktop += vt.desktop || 0;
-              hMap[hour].channel += vt.channel || 0;
-              hMap[hour].cacheRead += vt.cacheRead;
-              hMap[hour].assistantCount += vt.assistantCount || 0;
-            }
-          }
-        } else if (filterProvider.length) {
-          if (v.providerTotals) {
-            // totalTokens 精确，desktop/channel/cacheRead 从 model 级推算
-            for (const [pk, pt] of Object.entries(v.providerTotals)) {
-              const sep = pk.indexOf("/");
-              const p = sep > 0 ? pk.slice(0, sep) : "";
-              if (filterProvider.includes(p)) {
-                hMap[hour].totalTokens += pt.totalTokens;
-                hMap[hour].desktop += pt.desktop || 0;
-                hMap[hour].channel += pt.channel || 0;
-                hMap[hour].cacheRead += pt.cacheRead;
-                hMap[hour].assistantCount += pt.assistantCount || 0;
-              }
-            }
-            for (const [mn, mv] of Object.entries(v.models || {})) {
-              if (filterProvider.includes(hp[mn])) {
-                hMap[hour].desktop += mv.desktop || 0;
-                hMap[hour].channel += mv.channel || 0;
-                hMap[hour].cacheRead += mv.cacheRead || 0;
-              }
-            }
-          } else if (v.models) {
-            for (const [mn, mv] of Object.entries(v.models)) {
-              if (filterProvider.includes(hp[mn])) {
-                hMap[hour].totalTokens += mv.totalTokens || 0; hMap[hour].desktop += mv.desktop || 0;
-                hMap[hour].channel += mv.channel || 0; hMap[hour].cacheRead += mv.cacheRead || 0;
-              }
-            }
-          }
-        } else if (filterModel.length) {
-          for (const m of filterModel) {
-            const vm = v.models?.[m];
-            if (vm) {
-              hMap[hour].totalTokens += vm.totalTokens || 0; hMap[hour].desktop += vm.desktop || 0; hMap[hour].channel += vm.channel || 0; hMap[hour].cacheRead += vm.cacheRead || 0; hMap[hour].assistantCount += vm.assistantCount || 0;
-            }
-          }
+        if (pkMatch) {
+          // 与日桶走同一个谓词、同一套字段。
+          // 以前「只选供应商」这条分支把 providerTotals 与 models 各加了一遍（desktop/channel
+          // 因此正好翻倍）；「只选模型」又只往 models 取，拿不到 type 拆分。现在都归到这里。
+          const t = sumProviderTotals(v, pkMatch, HOURLY_PT_FIELDS);
+          for (const f of HOURLY_PT_FIELDS) hMap[hour][f] += t[f];
         } else {
-          hMap[hour].totalTokens += v.totalTokens; hMap[hour].desktop += v.desktop; hMap[hour].channel += v.channel; hMap[hour].bridge += v.bridge||0; hMap[hour].background += v.background||0; hMap[hour].sub += v.sub||0; hMap[hour].ledger += v.ledger||0; hMap[hour].cacheRead += (v.cacheRead || 0); hMap[hour].assistantCount += (v.assistantCount || 0);
+          for (const f of HOURLY_PT_FIELDS) hMap[hour][f] += Number(v[f]) || 0;
         }
       }
     }
@@ -1633,7 +1569,22 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
   return {
     analytics: buildVisualAnalytics(sessions, dateFilter, filters, turnPairs),
     agentNames: cache.agentNames || {},
-    summary: { ...sums, cacheHitRate: sums.totalTokens > 0 ? +((sums.totalCacheRead / sums.totalTokens * 100).toFixed(1)) : 0, estimatedCost },
+    // 命中率的分母必须是「输入总量」（含缓存读、不含输出）。
+    // sums.totalInput 是未命中的输入，所以这里要把它和 totalCacheRead 加回去。
+    //
+    // excludedTokens：顶部合计（内存日桶）减掉表内合计（turns 表）的差额，几乎全是账本用量：
+    // 宿主账本里的调用没有会话文件，进不了明细表，但它们确实是花掉的 token。
+    // 以前这个差额就静静摆在那里（全部历史时差 8,900 万），界面上一句解释也没有。
+    // 现在把差额交出去，让界面能写明白「另有 X 未列入明细」。
+    // 放在 summary 而不是 details 里：details 的形状有契约与对拍测试钉着（整份 / 只取明细两条路必须深相等），
+    // 而这个数只有整份看板算得出来。
+    summary: {
+      ...sums,
+      cacheHitRate: hitRatePercent(sums.totalCacheRead, sums.totalInput + sums.totalCacheRead),
+      estimatedCost,
+      excludedTokens: Math.max(0, sums.totalTokens - (details?.sumTokens || 0)),
+      excludedLedgerTokens: sums.totalLedger || 0,
+    },
     agents, models, modelOptions, providers: allProviderList, daily, hourly,
     // 明细改成服务端分页：只发当前页，行数组编码 + 列名（前端 decodeRows 解回对象）。
     details,

@@ -490,6 +490,8 @@ body {
 /* 头部一行里现在放：条数/合计、排序、门槛、导出。窄卡下允许换行，不要把按钮挤成一条线。 */
 .tt-module-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
 .tt-module-meta { font-size: 10px; color: var(--tt-t3); font-variant-numeric: tabular-nums; }
+/* 明细「另有 X 未列入」：与「共 N 条 · 合计」同一行，但退一档，靠虚线下划线提示能悬停看原因 */
+.tt-meta-sub { color: var(--tt-t4, var(--tt-t3)); opacity: .85; border-bottom: 1px dashed color-mix(in srgb, currentColor 45%, transparent); cursor: help; }
 .tt-details-pager {
   display: flex;
   align-items: center;

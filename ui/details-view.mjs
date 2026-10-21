@@ -69,6 +69,8 @@ export function uncachedInput(r) {
 }
 
 // 命中缓存的输入占比（0~1）。没有缓存口径的记录返回 null —— 用 0 冒充“完全没命中”是假话。
+// 口径与引擎侧 runtime/engine/services/hit-rate.js 是同一个（缓存读 / 输入总量，输入含缓存读、不含输出），
+// 两边都有 test/hit-rate.test.js 做对拍：改一处不改另一处，测试会当场红。
 export function hitRate(r) {
   const read = r?.cacheRead;
   const input = Number(r?.inputTokens);

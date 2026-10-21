@@ -1027,6 +1027,11 @@ export class WorkspaceApp {
     this.detailsPage = page; // 夹过界的页码写回去，否则输入框会一直显示一个不存在的页
     const total = server ? server.total : view.length;
     const sum = server ? server.sumTokens : sumTokens(view);
+    // 顶部合计与表内合计的差额：几乎全是账本用量（没有会话文件，进不了这张表）。
+    // 不把差额说出来，就是让「顶部 27.71 B、表内 27.62 B」两个数字默默并存。
+    // 差额挂在 summary 上（只有整份看板算得出来），翻页时旧值会被 summary 的合并保住。
+    const excluded = Math.max(0, Number(this.dashboard?.summary?.excludedTokens) || 0);
+    const excludedLedger = Math.max(0, Number(this.dashboard?.summary?.excludedLedgerTokens) || 0);
     const maxTokens = Math.max(...pageRows.map((r) => r.totalTokens || 0), 1);
 
     const keepScroll = preserveScroll ? el.scrollTop : 0;
@@ -1036,6 +1041,12 @@ export class WorkspaceApp {
         h("span", { className: "tt-module-title" }, "消费明细"),
         h("div", { className: "tt-module-actions" },
           h("span", { className: "tt-module-meta" }, `共 ${total.toLocaleString()} 条 · 合计 ${fmt(sum)} tok`),
+          excluded > 0 ? h("span", {
+            className: "tt-module-meta tt-meta-sub",
+            title: excludedLedger > 0
+              ? `其中账本用量 ${fmt(excludedLedger)} tok：宿主账本里有调用记录，但没有会话文件，进不了这张表。顶部合计算上了它们。`
+              : `顶部合计比表内合计多 ${fmt(excluded)} tok，这部分没有可展开的轮次`,
+          }, `另有 ${fmt(excluded)} 未列入`) : null,
           h("select", { id: "details-sort", className: "tt-pill", "aria-label": "明细排序" },
             ...selectOptions(DETAIL_SORTS.map((s) => ({ value: s.key, label: s.label })), this.detailsSort)),
           h("select", { id: "details-min", className: "tt-pill", "aria-label": "按单轮用量过滤" },
