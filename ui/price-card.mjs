@@ -13,6 +13,12 @@
 //   「你填的」   用户表里有这一项，输入框显示它
 //   「默认」     程序自带的价格，输入框留空、显示默认值作占位
 //   「未填」     谁都没给，这一项算不出钱
+//
+// 一行里只有两样东西：模型名 + 四个价格框。
+// 不加用量、不加最后使用日期、不加上面那三种来源标签、不加「恢复默认」按钮。
+// 这些曾经都加过，代价是把模型名挤成「dee...」—— 填价前先得看清填的是哪个模型，
+// 名字只占得到一点点，后面摆什么都白废。
+// 「恢复默认」的行为保留，但不再用按钮：把四格清空就是恢复默认（这个语义本来就有）。
 import { h } from "./components.mjs";
 
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
@@ -33,15 +39,6 @@ export const PRICE_FIELDS = [
   { key: "output", label: "输出", hint: "" },
   { key: "cacheWrite", label: "缓存写", hint: "多数模型为 0" },
 ];
-
-function compactTokens(n) {
-  if (!n) return "";
-  const units = [[1e9, "B"], [1e6, "M"], [1e3, "K"]];
-  for (const [base, suffix] of units) {
-    if (n >= base) return (n / base).toFixed(n >= base * 10 ? 0 : 1) + suffix;
-  }
-  return String(n);
-}
 
 // 一个价格对象 → 界面上的四个字符串。缺的项给空串（不是 0）：空 = 没填。
 function priceToValues(price) {
@@ -116,7 +113,7 @@ export class PriceCard {
     return this.el;
   }
 
-  /** 卡片头那句结论：几项已定价 / 共几项。没数据时给一句实话，不编。 */
+  /** 卡片头那句结论：共几个模型。没数据时给一句实话，不编。 */
   setSummary(text) {
     if (this.countEl) this.countEl.textContent = text;
   }
@@ -175,8 +172,8 @@ export class PriceCard {
   // 数据到了：重画整块。价格表重画是廉价的，不值得为增量更新写一套 diff。
   paint() {
     if (!this.data) return;
-    const { groups, count, pricedCount } = this.data;
-    if (this.countEl) this.setSummary(count ? `${pricedCount} / ${count} 已定价` : "尚未加载到模型");
+    const { groups, count } = this.data;
+    if (this.countEl) this.setSummary(count ? `${count} 个模型` : "尚未加载到模型");
     this.bodyEl.replaceChildren();
     // 批量栏与「添加模型」永远在最上面，哪怕清单是空的 ——
     // 没有这几行，一个全新用户打开这张卡就只看到一句「还没有可填的模型」，无处下手。
@@ -193,6 +190,13 @@ export class PriceCard {
     }
     // 批量栏：勾选项 → 一次填四价 → 套用。
     this.bodyEl.append(this.renderBatchBar());
+    // 列头紧贴在清单上方：四个数字框长得一模一样，没列头分不出哪格是输入。
+    // 列数布局与行共用 --price-cols（见 settings-price.css），
+    // 所以第一格是「模型」，后面四格与行里的四个输入框一一对应。
+    this.bodyEl.append(h("div", { className: "tts-price__colhead" },
+      h("span", { className: "tts-price__colhead-name" }, "模型"),
+      PRICE_FIELDS.map((f) => h("span", { className: "tts-price__colhead-cell", title: f.hint || f.label }, f.label)),
+    ));
     for (const group of groups) this.bodyEl.append(this.renderGroup(group));
     this.syncBatchBar();
   }
@@ -284,6 +288,10 @@ export class PriceCard {
   }
 
   // ── 批量套用栏 ──
+  //
+  // 这里的输入框**不**用 .tts-price__cell：那个类现在带 width:100%，
+  // 是为「行里占满一列」（grid 列）设计的，拿到批量栏的 flex 行里就会被拉成半行。
+  // 两处尺寸诉求相反，共用一个类只能靠覆盖，覆盖又很容易漏 —— 分开两个类最省事。
   renderBatchBar() {
     const inputs = {};
     this.batchInputs = inputs;
@@ -291,7 +299,7 @@ export class PriceCard {
       const input = h("input", {
         type: "text",
         inputmode: "decimal",
-        className: "tts-price__cell",
+        className: "tts-price__batch-input",
         placeholder: "0",
         name: `batch-${spec.key}`,
         title: spec.hint ? `${spec.label}（${spec.hint}）` : spec.label,
@@ -354,10 +362,7 @@ export class PriceCard {
       h("label", { className: "tts-price__group-label" },
         allBox,
         h("span", { className: "tts-price__group-name" }, group.provider),
-        h("span", { className: "tts-price__group-meta" },
-          `${group.total} 个模型`,
-          group.tokens ? ` · ${compactTokens(group.tokens)} tokens` : "",
-          group.pricedCount ? ` · ${group.pricedCount} 个已定价` : " · 都还没定价"),
+        h("span", { className: "tts-price__group-meta" }, `${group.total} 个模型`),
       ),
     );
 
@@ -382,7 +387,7 @@ export class PriceCard {
       }
     });
 
-    // 显示用哪一份价：填过的显示填的，否则把默认价当占位符（灰色），一眼能分出是不是自己填的。
+    // 显示用哪一份价：填过的显示填的，否则把默认价当占位符（灰色）。
     const shown = item.price || null;
     const placeholder = item.defaultPrice || null;
     const cells = {};
@@ -403,30 +408,18 @@ export class PriceCard {
       cells[spec.key] = input;
     }
 
-    const restore = h("button", {
-      type: "button",
-      className: "tts-price__restore",
-      title: "从文件里删掉这一项，回到程序默认价",
-      onClick: () => void this.restoreRow(item),
-    }, "恢复默认");
-    restore.hidden = item.source !== "user";
-
-    const sourceTag = h("span", {
-      className: "tts-price__tag",
-      "data-source": item.source,
-    }, item.source === "user" ? "你填的" : item.source === "default" ? "默认" : "未填");
-
-    // 用量那一栏：这是「值不值得填」的判断依据，比模型名本身更有用。
-    const meta = h("span", { className: "tts-price__meta" },
-      item.tokens ? compactTokens(item.tokens) : "未用过",
-      item.lastDay ? ` · 最后 ${item.lastDay}` : "");
-
+    // 只有模型名与四个价格框。
+    // 四个输入框直接拼进行里、自己占一列（grid），不再包一层容器 ——
+    // 包一层就得多给那层写 display:contents，而 contents 会连带
+    // 影响无障碍树里这一层的语义，不值当。
+    // title 给完整键（供应商/模型），因为模型名可能重名；显示上只留模型名，
+    // 供应商已经在块头写着了。
     return h("div", { className: "tts-price__row" },
-      h("label", { className: "tts-price__row-name" }, box, h("span", { className: "tts-price__model", title: item.model }, item.model)),
-      h("div", { className: "tts-price__cells" }, PRICE_FIELDS.map((f) => cells[f.key])),
-      meta,
-      sourceTag,
-      restore,
+      h("label", { className: "tts-price__row-name" },
+        box,
+        h("span", { className: "tts-price__model", title: item.key }, item.model),
+      ),
+      PRICE_FIELDS.map((f) => cells[f.key]),
     );
   }
 
@@ -461,10 +454,6 @@ export class PriceCard {
       price[spec.key] = n;
     }
     return Object.keys(price).length ? price : null;
-  }
-
-  async restoreRow(item) {
-    await this.patch([{ key: item.key, price: null }], item.key);
   }
 
   async applyBatch() {

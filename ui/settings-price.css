@@ -5,10 +5,14 @@
    排成卡片又会高到没法用。这里取「一家供应商一段、段内一行一个模型」：
    行高压到 30px，四格数字等宽右对齐，名称左对齐不换行、过长省略。
 
+   四格宽度与列的布局统一由 --price-cols 决定：行与顶部列头共用同一套列宽，
+   否则列头会与下面的框错开，比没有列头更难读。
+
    三处刻意留下的克制：
-   ① 价格来源只用一个小标签和占位符的深浅区分，不加边框、不加底色块。
-   ② 「恢复默认」只在真的填过时才出现，平时不占位。
-   ③ 未用过的模型整行降一级透明度 —— 它们同样能填，只是不该抢眼。
+   ① 价格来源不单独做标签：填过的值就在输入框里，没填的是灰色占位符，
+      这个区分已经足够，再加一行「你填的 / 默认 / 未填」只是拿来挤模型名。
+   ② 不做「恢复默认」按钮：四格清空就是恢复默认，行为本来就在。
+   ③ 不显示用量与最后使用日期：这是填价格，不是查账。
    ========================================================================== */
 
 /* ── 卡片头：整行可点，左侧三角 ──
@@ -116,9 +120,32 @@
 .tts-price__batch-actions { display: flex; gap: 8px; }
 .tts-price__batch-actions .tt-btn[disabled] { opacity: 0.4; cursor: default; }
 
+/* 批量栏自己的输入框。与行里的价格框尺寸不同（这里有标签在前、也不在 grid 里），
+   所以单独一个类，不共用 .tts-price__cell。 */
+.tts-price__batch-input {
+  width: 84px;
+  padding: 4px 7px;
+  box-sizing: border-box;
+  text-align: right;
+  border: 1px solid var(--tt-b1);
+  border-radius: 6px;
+  background: var(--tt-bg);
+  color: var(--tt-t1);
+  font: 500 12px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tts-price__batch-input::placeholder { color: var(--tt-t4); }
+.tts-price__batch-input:hover { border-color: var(--tt-b2); }
+.tts-price__batch-input:focus-visible {
+  outline: none;
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+
 /* ── 一格数字 ── */
 .tts-price__cell {
-  width: 84px;
+  width: 100%;
+  min-width: 0;
   padding: 4px 7px;
   box-sizing: border-box;
   text-align: right;
@@ -152,55 +179,79 @@
 .tts-price__group-meta { color: var(--tt-t3); font-size: 11.5px; }
 .tts-price__box { width: 13px; height: 13px; margin: 0; accent-color: var(--tt-select-b); }
 
-/* ── 一行一个模型 ── */
+/* ── 一行一个模型 ──
+   用 grid 而不是 flex。理由：flex 下「模型名 flex:1」只是个诉求，
+   右边那几块宽度一加起来超过行长，模型名就会被压到只剩「dee...」。
+   grid 把列宽写死：四格固定，剩下全部给名字，不存在抢不到的情况。
+   列头与行共用同一套 --price-cols，不可能对齐不上。
+
+   每一格的列位置必须显式指定。写「只给 grid-row」是不够的：
+   自动摆放会把第一个价格框放到第 1 列（模型名那一列），
+   实测那就是 426px 宽的输入框压着 63px 的模型名。 */
+.tts-price {
+  --price-cols: minmax(0, 1fr) repeat(4, 84px);
+  --price-gap: 6px;
+}
 .tts-price__row {
-  display: flex;
+  display: grid;
+  grid-template-columns: var(--price-cols);
   align-items: center;
-  gap: 8px;
+  gap: var(--price-gap);
   min-height: 30px;
   padding: 1px 0;
 }
 .tts-price__row:hover { background: var(--tt-row-hover); border-radius: 4px; }
-.tts-price__row-name { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.tts-price__row-name { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
 .tts-price__model {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 12.5px;
+  font: 500 12.5px var(--font-mono);
+  color: var(--tt-t1);
 }
-.tts-price__cells { display: flex; gap: 6px; flex: 0 0 auto; }
+/* 第 1 列：勾选框 + 模型名。第 2~5 列：四个价格框。
+   用 nth-child 不用 nth-of-type：nth-of-type 按标签种类数，
+   而行里第一个子项是 label、列头里第一个是 span，两种数法对不上。
 
-/* 用量那一栏：填不填价，先看这个模型值不值得 */
-.tts-price__meta {
-  flex: 0 0 auto;
-  width: 128px;
-  text-align: right;
-  color: var(--tt-t3);
-  font-size: 11.5px;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+   选择器必须限定在 .tts-price__row > 之下：批量栏的输入框也用了 .tts-price__cell 类，
+   不限定的话它们会继承 grid-column 与 width:100%，把批量栏撑得七零八落。 */
+.tts-price__row > .tts-price__row-name { grid-column: 1; }
+.tts-price__row > .tts-price__cell:nth-child(2) { grid-column: 2; }
+.tts-price__row > .tts-price__cell:nth-child(3) { grid-column: 3; }
+.tts-price__row > .tts-price__cell:nth-child(4) { grid-column: 4; }
+.tts-price__row > .tts-price__cell:nth-child(5) { grid-column: 5; }
+
+/* 列头。
+   必要性：四个数字框长得一模一样，没列头就不知道哪格是输入、哪格是输出。
+   与行共用 --price-cols 与 --price-gap，否则列头会与下面的框错开。 */
+.tts-price__colhead {
+  display: grid;
+  grid-template-columns: var(--price-cols);
+  align-items: center;
+  gap: var(--price-gap);
+  padding: 2px 0 4px;
+  margin-bottom: 2px;
+  border-bottom: 1px solid var(--tt-b1);
 }
-
-/* 来源标签：只靠颜色和文字，不加边框 */
-.tts-price__tag { flex: 0 0 auto; width: 44px; text-align: center; font-size: 11px; }
-.tts-price__tag[data-source="user"] { color: var(--tt-green); }
-.tts-price__tag[data-source="default"] { color: var(--tt-t3); }
-.tts-price__tag[data-source="none"] { color: var(--tt-t4); }
-
-.tts-price__restore {
-  flex: 0 0 auto;
-  padding: 2px 7px;
-  border: none;
-  border-radius: 5px;
-  background: transparent;
-  color: var(--tt-t3);
-  font: 400 11px var(--font-sans);
-  cursor: pointer;
+/* 列头第一列要和行里「勾选框 + 模型名」的左缘对齐：行里勾选框 13px + gap 8px。 */
+.tts-price__colhead-name {
+  grid-column: 1;
+  min-width: 0;
+  padding-left: 21px;
+  color: var(--tt-t4);
+  font-size: 11px;
 }
-.tts-price__restore:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
-.tts-price__restore[hidden] { display: none !important; }
+.tts-price__colhead-cell { grid-row: 1; text-align: right; color: var(--tt-t4); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tts-price__colhead > .tts-price__colhead-cell:nth-child(2) { grid-column: 2; }
+.tts-price__colhead > .tts-price__colhead-cell:nth-child(3) { grid-column: 3; }
+.tts-price__colhead > .tts-price__colhead-cell:nth-child(4) { grid-column: 4; }
+.tts-price__colhead > .tts-price__colhead-cell:nth-child(5) { grid-column: 5; }
+
+/* 窄屏：四格先让位。名字被压没就失去这张卡的意义，
+   而四个价格框里装的都是短数字，压到 60px 依旧能读。 */
+@media (max-width: 720px) {
+  .tts-price { --price-cols: minmax(0, 1fr) repeat(4, minmax(56px, 1fr)); }
+}
 
 .tts-price__empty { margin: 8px 0; color: var(--tt-t3); font-size: 12px; }
 
