@@ -11,21 +11,54 @@
    ③ 未用过的模型整行降一级透明度 —— 它们同样能填，只是不该抢眼。
    ========================================================================== */
 
-.tts-price__toggle {
-  padding: 3px 9px;
-  border: 1px solid var(--tt-b1);
-  border-radius: 6px;
+/* ── 卡片头：整行可点，左侧三角 ──
+   写法照 doc-intake 的「环境依赖管理」卡：三角用 border 画（不用字符，字号变了也不会胖瘦不一），
+   展开时旋转 90°。头里不只标题，还有一句结论（几项已定价），
+   收起状态下也能知道里面是什么状况。 */
+.tts-price__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  width: 100%;
+  padding: 0;
+  border: 0;
   background: transparent;
-  color: var(--tt-t2);
-  font: 500 12px var(--font-sans);
+  font: inherit;
+  text-align: left;
+  color: inherit;
   cursor: pointer;
 }
-.tts-price__toggle:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tts-price__head:focus-visible {
+  outline: 2px solid var(--tt-select-b);
+  outline-offset: 3px;
+  border-radius: 6px;
+}
+.tts-price__caret {
+  flex: 0 0 auto;
+  width: 0;
+  height: 0;
+  margin-top: 7px;
+  border-left: 5px solid var(--tt-t3);
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  transition: transform 0.16s ease;
+}
+.tts-price__head[aria-expanded="true"] .tts-price__caret { transform: rotate(90deg) translateX(1px); }
 
-.tts-price__body { margin-top: 4px; }
+.tts-price__label { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+.tts-price__title { font-size: 14px; font-weight: 650; }
+.tts-price__summary { color: var(--tt-t3); font-size: 12px; line-height: 1.5; }
+
+/* 展开后的内容区：自己滚。
+   58 个模型全展开会顶掉下面四张卡，整页高度不可控；
+   锁在 460px 既能让过渡看得见，也不把页面拉长。 */
+.tts-price__body {
+  margin-top: 10px;
+  max-height: 460px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
 .tts-price__body[hidden] { display: none !important; }
-
-/* ── 批量栏 ── */
 .tts-price__batch {
   position: sticky;
   top: 0;

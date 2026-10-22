@@ -14,7 +14,17 @@
 //   「默认」     程序自带的价格，输入框留空、显示默认值作占位
 //   「未填」     谁都没给，这一项算不出钱
 import { h } from "./components.mjs";
-import { moneySymbol } from "./currency.mjs";
+
+// 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
+// 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
+// 让两处折叠在手上的感觉是同一个东西。
+const COLLAPSE_MIN_MS = 200;
+const COLLAPSE_MAX_MS = 420;
+const COLLAPSE_EASE = "cubic-bezier(0.22, 0.61, 0.36, 1)";
+const collapseDuration = (height) => Math.round(Math.min(
+  COLLAPSE_MAX_MS,
+  Math.max(COLLAPSE_MIN_MS, 150 + height * 0.22),
+));
 
 // 四个价位。cacheWrite 放最后：绝大多数模型是 0，用户确认过「不写就是 0」。
 export const PRICE_FIELDS = [
@@ -66,51 +76,107 @@ export class PriceCard {
   }
 
   // 卡片骨架。价格数据是异步来的，先把壳挂上去，数据到了再填，避免整页等一次请求。
+  //
+  // 折叠的写法照着 doc-intake 的「环境依赖管理」：
+  //   · 卡片头本身就是一个按钮（左侧三角 + 标题 + 一句结论）
+  //   · 三角用 border 画，展开时旋转 90°
+  //   · 高度用 WAAPI 量高后过渡，不写死、不靠 max-height 猜
   render() {
-    const countEl = h("span", { className: "tts-badge" }, "…");
-    this.countEl = countEl;
-    const toggle = h("button", {
+    this.countEl = h("span", { className: "tts-price__summary" }, "检测中…");
+    this.caretEl = h("span", { className: "tts-price__caret", "aria-hidden": "true" });
+    // 卡片头整个是按钮：点标题、点三角、点摘要都是同一次开合。
+    const head = h("button", {
       type: "button",
-      className: "tts-price__toggle",
+      className: "tts-price__head",
+      id: "price-toggle",
       "aria-expanded": String(!this.collapsed),
+      "aria-controls": "price-body",
       onClick: () => this.setCollapsed(!this.collapsed),
-    }, this.collapsed ? "展开" : "收起");
-    this.toggleEl = toggle;
+    },
+      this.caretEl,
+      h("span", { className: "tts-price__label" },
+        h("span", { className: "tts-price__title" }, "模型价格"),
+        this.countEl,
+      ),
+    );
 
-    this.bodyEl = h("div", { className: "tts-price__body" });
+    this.bodyEl = h("div", { className: "tts-price__body", id: "price-body" });
     this.bodyEl.hidden = this.collapsed;
     this.batchEl = h("div", { className: "tts-price__batch" });
     this.batchEl.hidden = true;
 
     this.el = h("section", { className: "tts-card tts-price" },
-      h("div", { className: "tts-card__head" },
-        h("h2", { className: "tts-card__title" }, "模型价格"),
-        h("div", { className: "tts-card__right" }, countEl, toggle),
-      ),
+      head,
       h("p", { className: "tts-card__desc" },
-        "按用量给每个模型算钱。单位是「", moneySymbol() === "¥" ? "美元" : "美元",
-        " / 每百万 token」，与显示用的货币无关 —— 价格本身永远存美元，换币种只是显示时换算。",
-        "填了才会计入预估费用；没填的模型在消费明细里显示「未完整定价」。",
-        "价格存在 price-table.json，也可以直接用编辑器改。"),
+        "按用量给每个模型算钱。单位是「美元 / 每百万 token」，与显示用的货币无关 —— ",
+        "价格本身永远存美元，换币种只是显示时换算。填了才会计入预估费用；",
+        "没填的模型在消费明细里显示「未完整定价」。价格存在 price-table.json，也可以直接用编辑器改。"),
       this.bodyEl,
     );
     return this.el;
   }
 
+  /** 卡片头那句结论：几项已定价 / 共几项。没数据时给一句实话，不编。 */
+  setSummary(text) {
+    if (this.countEl) this.countEl.textContent = text;
+  }
+
+  // ── 开合（WAAPI 量高，和 doc-intake 同一套）──
+  // 三条坑都是 doc-intake 那边踩过的，原样避开：
+  //   ① fill:"forwards" 的动画播完会继续锁住高度，之后内容长高就溢出 —— 播完必须 cancel。
+  //   ② 收起的块 body 是 hidden，量高得先临时揭开，量完盖回去。
+  //   ③ reduced-motion 下直接切，不做动画。
   setCollapsed(collapsed) {
-    this.collapsed = collapsed;
-    if (this.bodyEl) this.bodyEl.hidden = collapsed;
-    if (this.toggleEl) {
-      this.toggleEl.textContent = collapsed ? "展开" : "收起";
-      this.toggleEl.setAttribute("aria-expanded", String(!collapsed));
-    }
+    const next = !!collapsed;
+    if (next === this.collapsed && this.bodyEl) return;
+    const body = this.bodyEl;
+    if (!body) { this.collapsed = next; return; }
+    const from = body.hidden ? 0 : body.getBoundingClientRect().height;
+    this.collapsed = next;
+    const to = next ? 0 : this.measureBody();
+    const head = this.el?.querySelector(".tts-price__head");
+    if (head) head.setAttribute("aria-expanded", String(!next));
+
+    const reduce = window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+    if (reduce || from === to) { this.paintCollapse(next); return; }
+    if (this.anim) { try { this.anim.cancel(); } catch {} this.anim = null; }
+    body.hidden = false;
+    // 只锁 overflow-y：x 方向不该被遮（行里的输入框聚焦环会出界一点）。
+    body.style.overflowY = "hidden";
+    body.style.height = `${from}px`;
+    this.anim = body.animate(
+      [{ height: `${from}px` }, { height: `${to}px` }],
+      { duration: collapseDuration(Math.abs(to - from)), easing: COLLAPSE_EASE, fill: "forwards" },
+    );
+    this.anim.onfinish = () => { this.anim = null; this.paintCollapse(next); };
+  }
+
+  /** 量展开后的高度：先把 hidden 揭开量，量完盖回去，避免闪一下。
+   *  要夹到 max-height 上限：内容比上限高时，动画越过上限再弹回来会看出一下多余的下探。 */
+  measureBody() {
+    const body = this.bodyEl;
+    const wasHidden = body.hidden;
+    if (wasHidden) body.hidden = false;
+    const raw = body.scrollHeight;
+    if (wasHidden) body.hidden = true;
+    const cap = parseFloat(getComputedStyle(body).maxHeight);
+    return Number.isFinite(cap) ? Math.min(raw, cap) : raw;
+  }
+
+  /** 过渡落地：把动画留下的内联高度清掉，交回布局自己算。 */
+  paintCollapse(collapsed) {
+    const body = this.bodyEl;
+    if (this.anim) { try { this.anim.cancel(); } catch {} this.anim = null; }
+    body.hidden = collapsed;
+    body.style.height = "";
+    body.style.overflowY = "";
   }
 
   // 数据到了：重画整块。价格表重画是廉价的（58 行），不值得为增量更新写一套 diff。
   paint() {
     if (!this.data) return;
     const { groups, count, pricedCount } = this.data;
-    if (this.countEl) this.countEl.textContent = `${pricedCount} / ${count} 已定价`;
+    if (this.countEl) this.setSummary(`${pricedCount} / ${count} 已定价`);
     this.bodyEl.replaceChildren();
     if (!groups.length) {
       this.bodyEl.append(h("p", { className: "tts-price__empty" }, "还没有可填的模型。用过或配置过模型之后这里会自动出现。"));
