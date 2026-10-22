@@ -2,6 +2,7 @@ import { bootstrap } from "./bootstrap.mjs";
 import { h } from "./components.mjs";
 import { closeOpenSelect, enhanceSelects } from "./custom-select.mjs";
 import { UNIT_SYSTEMS, normalizeUnitSystem, scaleText } from "./units.mjs";
+import { CURRENCIES, DEFAULT_CURRENCY, normalizeCurrency, formatMoney, getFxRate, setFxRate } from "./currency.mjs";
 
 // 供应商表。id 必须与服务端 runtime/engine/services/settings.js 的 PROVIDERS 逐字一致：
 // 不认识的名字、或者某个 id 下多写一个键，写回时整条会被拒收。
@@ -90,8 +91,12 @@ const raf = typeof requestAnimationFrame === "function" ? requestAnimationFrame 
 
 // 设置页自己的样例：拿一个够大的数，按选中的那套写一遍。
 // 这一页除了阈值没有别的数字，不给样例就看不出两套写法的差别。空格与看板一致（看板上是「260.92 亿」）。
+// 货币的样例用小金额：费用常常就是 $0.0032 这种量级，用大数看不出小数位规则。
 const SAMPLE_TOKENS = 123456789;
+const SAMPLE_COST = 12.3456;
 const unitSample = (key) => scaleText(SAMPLE_TOKENS, { system: key, space: " " });
+// 汇率还没取到时按美元写，并说明「按美元显示」—— 不能拿美元的数配上 ¥ 的符号。
+const currencySample = (key, fxRate) => formatMoney(SAMPLE_COST, { currency: key, rate: fxRate });
 
 // ── 这一页的契约 ──
 // 改了就是改了，没有整页保存。每张卡自己提交：下拉、开关一改就写；文本框在失焦或回车时写。
@@ -118,6 +123,13 @@ export class SettingsApp {
   async init() {
     this.renderShell();
     this.setPageNote("读取设置…");
+    // 设置页的「货币单位」样例要知道汇率。它由看板算钱时取（引擎缓存），
+    // 这里拿一次当前的：拿不到就按美元写样例，不编一个数字。
+    try {
+      const snap = await this.api.getSnapshot({ mock: this.mock });
+      const rate = Number(snap?.display?.fxRate);
+      if (rate > 0) setFxRate(rate);
+    } catch {}
     // 「关于」卡片跟着更新快照走：不管弹窗有没有浮起来，版本号和标记都要是最新的。
     this.unsubscribeUpdate = this.update?.subscribe(() => this.syncAbout()) || null;
     try {
@@ -141,7 +153,7 @@ export class SettingsApp {
       scanInterval: 60,
       highUsageThreshold: 30000,
       balanceApis: {},
-      display: { density: "compact", units: "zh", colorScheme: "auto" },
+      display: { density: "compact", units: "zh", currency: DEFAULT_CURRENCY, colorScheme: "auto" },
     };
   }
 
@@ -551,11 +563,15 @@ export class SettingsApp {
   displayCard(s) {
     const density = s.display?.density === "comfortable" ? "comfortable" : "compact";
     const units = normalizeUnitSystem(s.display?.units);
+    const currency = normalizeCurrency(s.display?.currency);
+    // 汇率只有看板知道（它算钱时取的）。设置页不另算一份：拿当前的，拿不到就说清楚。
+    const fxRate = getFxRate();
     const card = this.registerCard("display", {
       read: () => ({
         display: {
           density: this.root.querySelector("#display-density")?.value || "compact",
           units: normalizeUnitSystem(this.root.querySelector("#display-units")?.value),
+          currency: normalizeCurrency(this.root.querySelector("#display-currency")?.value),
         },
       }),
       write: async (values) => {
@@ -572,9 +588,12 @@ export class SettingsApp {
           el._ttSelect?.sync?.();
         };
         const units = normalizeUnitSystem(values.display?.units);
+        const currency = normalizeCurrency(values.display?.currency);
         set("display-density", values.display?.density || "compact");
         set("display-units", units);
+        set("display-currency", currency);
         if (unitsField) unitsField.hintEl.textContent = `当前写法：${unitSample(units)}`;
+        if (currencyField) currencyField.hintEl.textContent = `当前写法：${currencySample(currency, fxRate)}`;
       },
     });
     const densityField = this.selectField({
@@ -597,10 +616,23 @@ export class SettingsApp {
         unitsField.hintEl.textContent = `当前写法：${unitSample(key)}`;
       },
     });
+    // 货币单位：紧接着数字单位，同一个 selectField、同一套行结构。
+    // 样例用一小笔钱（12.3456），因为费用常常就是 $0.0032 这个量级，大数看不出小数位规则。
+    const currencyField = this.selectField({
+      card: "display",
+      id: "display-currency",
+      title: "货币单位",
+      hint: (key) => `当前写法：${currencySample(key, fxRate)}`,
+      options: CURRENCIES,
+      value: currency,
+      onChange: (key) => {
+        currencyField.hintEl.textContent = `当前写法：${currencySample(key, fxRate)}`;
+      },
+    });
     return h("section", { className: "tts-card" },
       this.cardHead("显示", card),
       h("p", { className: "tts-card__desc" }, "只影响这个 App 自己的页面：看板、卡片、明细和输入栏状态位都跟着走。"),
-      h("div", { className: "tts-fields" }, densityField.node, unitsField.node),
+      h("div", { className: "tts-fields" }, densityField.node, unitsField.node, currencyField.node),
     );
   }
 

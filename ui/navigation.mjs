@@ -2,7 +2,8 @@ import { applyAppearance } from "./appearance.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { decodeRows } from "./details-view.mjs";
 import { bootstrap } from "./bootstrap.mjs";
-import { h, RANGES, fmt, fmtCost, fmtPct, renderPills, rankAgents } from "./components.mjs";
+import { h, RANGES, fmt, fmtPct, renderPills, rankAgents } from "./components.mjs";
+import { getCurrency, moneyCode, moneyHint, formatMoney, setFxRate, getFxRate, currencyFromSnapshot } from "./currency.mjs";
 import { selectionKey } from "./selection.mjs";
 import { getUnitSystem, setUnitSystem, unitsFromSnapshot } from "./units.mjs";
 
@@ -77,12 +78,20 @@ export class NavigationApp {
         } catch {}
         if (!current()) return;
         this.snapshot = snapshot;
-        // 数字单位：引擎把它搭在快照上（可能是别的页面刚改的），变了就跟着换，
-        // 念数字的那两块（摘要、排行）重画一遍。拿不到口径就不动（快照没带这一项是另一回事）。
+        // 显示口径：引擎把它搭在快照上（可能是别的页面刚改的），变了就跟着换。
+        // 拿不到口径就不动（快照没带这一项是另一回事）。
         const units = unitsFromSnapshot(snapshot);
         if (units && units !== getUnitSystem()) {
           setUnitSystem(units);
-          if (this.dashboard) { this.renderSummary(); this.renderRanking(); }
+          if (this.dashboard) this.renderAllSummaries();
+        }
+        // 货币同理：口径变了、或汇率变了，念钱那一块都要重画。
+        const money = currencyFromSnapshot(snapshot);
+        if (money) {
+          let moneyChanged = false;
+          if (money.currency !== getCurrency()) { setCurrency(money.currency); moneyChanged = true; }
+          if (money.fxRate && money.fxRate !== getFxRate()) { setFxRate(money.fxRate); moneyChanged = true; }
+          if (moneyChanged && this.dashboard) this.renderAllSummaries();
         }
         this.renderBalance();
       })(),
@@ -91,20 +100,25 @@ export class NavigationApp {
         try { dashboard = decodeRows(await this.api.getDashboard(filters, { mock: this.mock })); } catch {}
         if (!current()) return;
         this.dashboard = dashboard;
-        this.renderSummary();
-        this.renderRanking();
+        // 看板里带着「算钱时用的那个汇率」。以它为准：这是同一帧里 estimatedCost 的换算基准，
+        // 拿别的来源去换算会出现「数字按 6.69 算、界面按 7.1 写」的不一致。
+        if (dashboard?.summary?.fxRate) setFxRate(dashboard.summary.fxRate);
+        this.renderAllSummaries();
       })(),
     ]);
   }
 
-  renderSummary() {
-    if (!this.dashboard) { this.summarySection.textContent = "所选范围加载失败，请刷新重试"; return; }
+  renderSummary() {  if (!this.dashboard) { this.summarySection.textContent = "所选范围加载失败，请刷新重试"; return; }
     const summary = this.dashboard.summary;
     this.summarySection.innerHTML = "";
     this.summarySection.append(
       h("div", { className: "tt-nav-title" }, (RANGES.find(r => r.key === this.state.get().range)?.label || "所选范围") + "摘要"),
       h("div", { className: "tt-nav-row" }, h("span", { className: "k" }, "Token"), h("span", { className: "v" }, fmt(summary.totalTokens))),
-      h("div", { className: "tt-nav-row" }, h("span", { className: "k" }, "成本"), h("span", { className: "v" }, (summary.totalTokens > 0 && !summary.estimatedCost ? "未完整定价" : fmtCost(summary.estimatedCost)))),
+      h("div", { className: "tt-nav-row", title: moneyHint(getCurrency(), { rate: summary.fxRate }) },
+        h("span", { className: "k" }, `成本 · ${moneyCode()}`),
+        h("span", { className: "v" }, (summary.totalTokens > 0 && !summary.estimatedCost
+          ? "未完整定价"
+          : formatMoney(summary.estimatedCost, { rate: summary.fxRate })))),
       h("div", { className: "tt-nav-row" }, h("span", { className: "k" }, "活跃 Agent"), h("span", { className: "v" }, String(summary.agentCount || 0))),
     );
   }
@@ -134,6 +148,13 @@ export class NavigationApp {
         );
       }
     }
+  }
+
+  // 口径（单位 / 货币）换了就重画「念数字念钱」的两块。
+  // 合成一个方法而不是在四处各写两行：以后再加第三块读口径的内容时，只改这里。
+  renderAllSummaries() {
+    this.renderSummary();
+    this.renderRanking();
   }
 
   renderRanking() {

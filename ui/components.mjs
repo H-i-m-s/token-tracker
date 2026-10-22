@@ -3,6 +3,7 @@
 // card.mjs 还内联了一份 —— 同一个「近7天」在界面上有三个入口、两套词表。
 // 收敛成：四个滚动窗口 + 本月 + 全部历史；自定义日期由看板的日期选择负责。
 import { scaleText, UNIT_SYSTEMS, setUnitSystem, getUnitSystem } from "./units.mjs";
+import { CURRENCIES, normalizeCurrency, setCurrency, getCurrency } from "./currency.mjs";
 
 export const RANGES = [
   { key: "today", label: "今日" },
@@ -45,15 +46,6 @@ export function fmt(n) {
   const v = Number(n);
   if (!Number.isFinite(v)) return "—";
   return scaleText(v, { trim: true, plain: () => v.toLocaleString() });
-}
-
-export function fmtCost(n) {
-  if (n == null) return "—";
-  if (n === 0) return "$0";
-  const v = Number(n);
-  if (!Number.isFinite(v)) return "—";
-  if (v < 0.01) return "$" + v.toFixed(4).replace(/\.?0+$/, "");
-  return "$" + v.toFixed(2).replace(/\.?0+$/, "").replace(/\.$/, "");
 }
 
 export function fmtPct(n, digits = 0) {
@@ -182,20 +174,36 @@ export function createPills(items, activeKey, onChange, extraClass = "") {
   return { root, update };
 }
 
-// 显示设置菜单里的「数字单位」：看板与卡片各要一个，词表与口径只有一份（ui/units.mjs）。
+// 显示设置菜单里的「数字单位」与「货币单位」：看板与卡片各要一个，
+// 词表与口径只有一份（ui/units.mjs / ui/currency.mjs）。
 // 行结构与旁边那几行一致（左标签、右控件）；菜单普遍偏窄，所以标签在上、下拉整行铺开。
 // 下拉用自绘那个（mountSelect）：菜单里放一个浏览器默认样子的原生 select，会跟旁边那排按压行不像一家人。
-// 选中先就地换口径，再交给调用方落盘与重画 —— 单位制是渲染时读的，换了口径不重画也不会变。
-export function createUnitRow(onPick) {
-  const select = h("select", { className: "tt-unit-select", "aria-label": "数字单位" },
-    UNIT_SYSTEMS.map((u) => h("option", { value: u.key, selected: u.key === getUnitSystem() ? "" : undefined }, u.label)));
-  select.addEventListener("change", () => {
-    setUnitSystem(select.value);
-    onPick?.(select.value);
-  });
+// 选中先就地换口径，再交给调用方落盘与重画 —— 两者都是渲染时读的，换了口径不重画也不会变。
+const unitRow = ({ label, ariaLabel, options, value, onPick, className }) => {
+  const select = h("select", { className: `tt-unit-select ${className}`, "aria-label": ariaLabel },
+    options.map((o) => h("option", { value: o.key, selected: o.key === value ? "" : undefined }, o.label)));
+  select.addEventListener("change", () => onPick?.(select.value));
   return h("div", { className: "tt-inputstatus-row tt-unit-row" },
-    h("span", { className: "tt-inputstatus-label" }, "数字单位"),
+    h("span", { className: "tt-inputstatus-label" }, label),
     select);
+};
+
+export function createUnitRow(onPick) {
+  return unitRow({
+    label: "数字单位", ariaLabel: "数字单位",
+    options: UNIT_SYSTEMS, value: getUnitSystem(), className: "tt-units",
+    onPick: (key) => { setUnitSystem(key); onPick?.(key); },
+  });
+}
+
+// 货币单位：结构与数字单位完全一样（左标签、下拉整行），只是换了一套词表。
+// 它不自己落盘、也不自己重画 —— 与 units 一样交给调用方（看板与卡片的 applyCurrency）。
+export function createCurrencyRow(onPick) {
+  return unitRow({
+    label: "货币单位", ariaLabel: "货币单位",
+    options: CURRENCIES, value: getCurrency(), className: "tt-currencies",
+    onPick: (key) => { setCurrency(key); onPick?.(key); },
+  });
 }
 
 export function renderPills(items, activeKey, onChange, extraClass = "") {

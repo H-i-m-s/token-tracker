@@ -5,8 +5,17 @@
 // 引擎直接查库拼好文本（约 1.5 MB）更省事。命中率口径仍与界面同一处（hitRate）。
 import { hitRate } from "../../../ui/details-view.mjs";
 
-export function buildDetailsCSV(rows) {
+export function buildDetailsCSV(rows, { currency = "usd", fxRate = null } = {}) {
   const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "缓存命中率", "调用次数", "总Token", "成本"];
+  // 成本列跟界面上的币种走：表里与屏幕上两份数字必须是同一种钱，
+  // 否则导出后一比对就发现对不上（而两边其实都没错）。
+  const cny = currency === "cny" && Number(fxRate) > 0;
+  const toMoney = (usd) => {
+    if (usd == null || usd === "") return "";
+    const v = Number(usd);
+    if (!Number.isFinite(v)) return "";
+    return cny ? +(v * Number(fxRate)).toFixed(4) : v;
+  };
   const lines = rows.map((r) => {
     // 缓存命中率是这两列里唯一需要算的：没口径就留空，不写 0%（那会读成“完全没命中”）。
     const hr = hitRate(r);
@@ -14,8 +23,10 @@ export function buildDetailsCSV(rows) {
       r.inputTokens ?? "", r.outputTokens ?? "",
       hr == null ? "" : (hr * 100).toFixed(1) + "%",
       r.calls ?? "",
-      r.totalTokens ?? 0, r.cost ?? ""];
+      r.totalTokens ?? 0, toMoney(r.cost)];
   });
+  // 表头带上币种：单独一个 CSV 文件离开了界面，必须能自己说清这一列是什么钱。
+  header[header.length - 1] = cny ? "成本(CNY)" : "成本(USD)";
   return "\uFEFF" + [header, ...lines].map(line => line.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\r\n");
 }
 

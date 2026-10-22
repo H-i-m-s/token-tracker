@@ -8,9 +8,10 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, THEME_OPTIONS, fmt, formatDateTime, createPills, createUnitRow, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
+import { h, RANGES, THEME_OPTIONS, fmt, formatDateTime, createPills, createUnitRow, createCurrencyRow, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
 import { getUnitSystem, setUnitSystem, unitsFromSnapshot } from "./units.mjs";
+import { getCurrency, setCurrency, setFxRate, getFxRate, currencyFromSnapshot } from "./currency.mjs";
 import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRate, decodeRows } from "./details-view.mjs";
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { createViewGestures } from "./view-track.mjs";
@@ -416,13 +417,14 @@ export class WorkspaceApp {
       this.snapshot = await this.api.getSnapshot({ mock: this.mock });
       // 扫描未完成时后端会回 ready:false（不算错误），记下来让 initialLoad 继续重试
       if (this.snapshot && this.snapshot.ready === false) this.notReady = true;
-      // 数字单位可能是在别的页面改的（设置页 / 另一张卡的显示设置）：引擎把它搭在快照上，
+      // 显示口径可能是在别的页面改的（设置页 / 另一张卡的显示设置）：引擎把它搭在快照上，
       // 变了就地换口径并重画本页。只在真的变了才重画 —— 快照每几秒来一次，不能每拍都重画一遍。
       const units = unitsFromSnapshot(this.snapshot);
-      if (units && units !== getUnitSystem()) {
-        setUnitSystem(units);
-        this.repaintForUnits();
-      }
+      const unitsChanged = !!units && units !== getUnitSystem();
+      if (unitsChanged) setUnitSystem(units);
+      // 货币同理：口径或汇率任一变了都要重画（人民币换汇率就是换数值）。
+      const currencyChanged = this.syncCurrencyFromSnapshot({ repaint: !unitsChanged });
+      if (unitsChanged && !currencyChanged) this.repaintForDisplay();
       if (this.snapshot?.realtime) {
         this.sparkHistory.push(Number(this.snapshot.realtime.tps) || 0);
         if (this.sparkHistory.length > MAX_SPARK_POINTS) this.sparkHistory.shift();
@@ -708,20 +710,43 @@ export class WorkspaceApp {
     }
   }
 
-  // 数字单位（万/亿 ↔ K/M/B）：词表与口径只有一份（ui/units.mjs），显示设置菜单里那个下拉用的就是它。
-  // 与主题那三档不同，单位制是渲染时读的 —— 换完口径必须把这一页重画，否则屏幕上的数字还是旧写法。
-  // 落盘走 /settings 的 display.units（设置页改的是同一格，输入栏状态位也从那一格读）。
+  // 显示口径（数字单位 + 货币单位）：词表与口径各只有一份（ui/units.mjs / ui/currency.mjs），
+  // 显示设置菜单与设置页改的是同一格。两者都是渲染时读的 —— 换完必须把这一页重画。
+  // 落盘走 /settings 的 display.units / display.currency。
+  // 货币口径与汇率：快照里带了就对齐（可能是别的页面刚改的，也可能是汇率变了），
+  // 真变了就记下来。opt.repaint=false 时只对齐不画 —— 让调用方把几处变动合成一次重画，
+  // 否则单位与货币同时在快照里变一次，这页会被画两遍。
+  syncCurrencyFromSnapshot({ repaint = true } = {}) {
+    const picked = currencyFromSnapshot(this.snapshot);
+    if (!picked) return false;
+    let changed = false;
+    if (picked.currency !== getCurrency()) { setCurrency(picked.currency); changed = true; }
+    if (picked.fxRate && picked.fxRate !== getFxRate()) { setFxRate(picked.fxRate); changed = true; }
+    if (changed && repaint) this.repaintForDisplay();
+    return changed;
+  }
+
   async applyUnits(value) {
     try {
       await this.api.saveSettings({ display: { units: value } });
     } catch (err) {
       this.setError?.(`数字单位没能存下来（本次只在当前画面生效）：${err?.message || err}`);
     }
-    this.repaintForUnits();
+    this.repaintForDisplay();
   }
 
-  // 单位换了就把读到口径的那几块重画一遍。两个入口：这个菜单里刚换完、快照里发现别的页面换过。
-  repaintForUnits() {
+  async applyCurrency(value) {
+    try {
+      await this.api.saveSettings({ display: { currency: value } });
+    } catch (err) {
+      this.setError?.(`货币单位没能存下来（本次只在当前画面生效）：${err?.message || err}`);
+    }
+    this.repaintForDisplay();
+  }
+
+  // 口径换了就把读到它们的那几块重画一遍。
+  // 两个入口：这个菜单里刚换完、快照里发现别的页面换过。
+  repaintForDisplay() {
     this.renderBoardControls();
     this.renderOverview({ preserveScroll: true });
     this.renderDetails({ preserveScroll: true });
@@ -765,7 +790,9 @@ export class WorkspaceApp {
           h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label)),
         h("div", { className: "tt-display-sep" }),
         // 单位制是全局口径，跟主题同属「画成什么样」，所以紧跟在主题三档之后。
+        // 货币紧跟其后：两行同一个结构（左标签、下拉整行）。
         createUnitRow((key) => this.applyUnits(key)),
+        createCurrencyRow((key) => this.applyCurrency(key)),
         h("div", { className: "tt-display-sep" }),
         prefRow("card", "对话框卡片"),
         prefRow("cache", "缓存"),

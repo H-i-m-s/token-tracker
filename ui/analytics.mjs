@@ -1,5 +1,6 @@
 import { splitRow } from './board-layout.mjs';
-import { h, fmtCost, fmtPct } from './components.mjs';
+import { h, fmtPct } from './components.mjs';
+import { getCurrency, moneyCode, moneyHint, formatMoney } from './currency.mjs';
 import { setValue, setLabel, rollDirection, labelStops } from './digit-roll.mjs';
 import { scaleText } from './units.mjs';
 import { asList, pickValues, modsOf } from './selection.mjs';
@@ -671,6 +672,9 @@ export function renderAnalytics(container, dashboard, state, patch) {
   container.replaceChildren(); container.className = 'tt-board';
   if (!dashboard) { empty(container, '正在读取用量统计…'); return; }
   const a = dashboard.analytics, summary = dashboard.summary;
+  // 金额一律按「这份数据自带的汇率」写：它与这一份 estimatedCost 出自同一次计算。
+  // 拿别处的汇率会出现「数字按 6.69 算、界面按 7.1 写」；拿不到就交给 currency.mjs 的当前值。
+  const moneyRate = Number(summary.fxRate) > 0 ? Number(summary.fxRate) : undefined;
   const days = a ? calendarDays(a, state) : [];
   const total = summary.totalTokens || 0;  const input = (summary.inputTokens || 0) + (summary.cacheRead || 0);
   // ── KPI 分三级 ──
@@ -828,11 +832,13 @@ export function renderAnalytics(container, dashboard, state, patch) {
         '有记录用量的日志会话数量（含桌面、子代理、后台、桥接四类）'),
       h('div', {
         className: 'tt-kpi tt-kpi-cost',
-        title: costKnown ? '按已配置价格估算；不是供应商结算账单' : '价格表里还没有可用单价，费用无法估算',
+        title: costKnown ? moneyHint(getCurrency(), { rate: moneyRate }) : '价格表里还没有可用单价，费用无法估算',
         'data-tt-select': '',
         ...(costKnown ? {} : { 'data-unpriced': '' }),
-      }, h('span', {}, '预估费用 · USD'),
-        valueNode('预估费用 · USD', costKnown ? fmtCost(summary.estimatedCost) : '—'))),
+      }, h('span', {}, `预估费用 · ${moneyCode()}`),
+        // 键用固定的 'cost' 而不是标签文字：货币一换（USD→CNY）标签就变了，
+        // 拿标签当键会让新节点找不到自己的上一帧，金额只能硬跳。
+        valueNode('cost', costKnown ? formatMoney(summary.estimatedCost, { rate: moneyRate }) : '—'))),
     // 三级：右侧下行，长条形。
     footprint.length ? h('div', { className: 'tt-kpi-row tt-kpi-row-tertiary' },
       ...footprint.map(([label, value, hint]) => strip(label, value, hint))) : null,

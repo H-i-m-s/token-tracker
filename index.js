@@ -272,8 +272,7 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
         // mock 路径没有引擎：用同一份 mock 明细行、同一个 CSV 拼装器，别另写一套。
         return jsonResponse(c, okResponse({ csv: buildDetailsCSV(mockDashboardRows(payload.range || "today")) }));
       }
-      const csv = await busClient.request("token-tracker.details.csv", payload);
-      if (typeof csv !== "string") throw Object.assign(new Error("导出内容必须是引擎生成的 CSV 文本"), { code: "CSV_FAILED" });
+      const csv = await busClient.request("token-tracker.details.csv", payload);      if (typeof csv !== "string") throw Object.assign(new Error("导出内容必须是引擎生成的 CSV 文本"), { code: "CSV_FAILED" });
       return jsonResponse(c, okResponse({ csv }));
     } catch (err) {
       log("error", "GET /details.csv error:", err?.message || err);

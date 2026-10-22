@@ -13,13 +13,14 @@ const PROVIDERS = {
 const SECRETS = new Set(['token', 'password', 'ak', 'sk', 'cookie']);
 const invalid = (message) => Object.assign(new Error(message), { code: 'INVALID_SETTINGS' });
 
-// display 读出来给前端的形状：表格密度 + 数字单位（中文万/亿 ↔ 英文 K/M/B）。
+// display 读出来给前端的形状：表格密度 + 数字单位（中文万/亿 ↔ 英文 K/M/B）+ 货币单位（美元/人民币）。
 // colorScheme 一直是 auto 占位。坏值一律回到默认：设置文件里一个手改的字符串不该把整页数字搞变形。
 function normalizeDisplay(value) {
   const d = value && typeof value === 'object' ? value : {};
   return {
     density: d.density === 'comfortable' ? 'comfortable' : 'compact',
     units: d.units === 'en' ? 'en' : 'zh',
+    currency: d.currency === 'cny' ? 'cny' : 'usd',
     colorScheme: 'auto',
   };
 }
@@ -78,7 +79,7 @@ export function createSettingsService({ dataDir, config, log }) {
       }
     }
     if (patch.display !== undefined) {
-      // 两项都可以单独发（显示设置菜单只换数字单位，设置页两项一起发）：没发的沿用盘上那份。
+      // 三项都可以单独发（显示设置菜单只换一项，设置页三项一起发）：没发的沿用盘上那份。
       // 盘上那份要先按 read() 的规矩规范化再用：从没存过 display、或文件被手改坏了，
       // 这里就该拿到默认值，而不是 undefined —— 拿到 undefined 会直接判成「无效的显示密度」。
       const stored = normalizeDisplay(next.display);
@@ -86,7 +87,9 @@ export function createSettingsService({ dataDir, config, log }) {
       if (!['compact', 'comfortable'].includes(density)) throw invalid('无效的显示密度');
       const units = patch.display?.units ?? stored.units;
       if (!['zh', 'en'].includes(units)) throw invalid('无效的数字单位');
-      next.display = normalizeDisplay({ density, units });
+      const currency = patch.display?.currency ?? stored.currency;
+      if (!['usd', 'cny'].includes(currency)) throw invalid('无效的货币单位');
+      next.display = normalizeDisplay({ density, units, currency });
     }
     const apis = loadApis();
     if (patch.balanceApis !== undefined) {

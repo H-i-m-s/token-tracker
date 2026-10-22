@@ -24,7 +24,7 @@ test("app-settings.json 坏了：不抛、回默认值、坏文件留底", () =>
   const service = createSettingsService({ dataDir: dir, log: { warn: (...a) => warnings.push(a.join(" ")) } });
   const read = service.read();
   assert.equal(read.scanInterval, 60, "坏文件必须退回默认值");
-  assert.deepEqual(read.display, { density: "compact", units: "zh", colorScheme: "auto" });
+  assert.deepEqual(read.display, { density: "compact", units: "zh", currency: "usd", colorScheme: "auto" });
 
   assert.equal(fs.existsSync(file), false, "坏文件应该被改名，而不是留在原地继续毒害下一次启动");
   const backups = fs.readdirSync(dir).filter((n) => n.startsWith("app-settings.json.broken-"));

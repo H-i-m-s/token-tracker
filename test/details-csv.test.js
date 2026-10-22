@@ -10,8 +10,15 @@ import { hitRate } from "../ui/details-view.mjs";
 // 搬迁前的实现：原样留在这里当基线。引擎那份必须与它逐字节相同 ——
 // 同一批行，前后端给出不同的 CSV 或换行/转义不一样，导出的文件就对不上账。
 // ─────────────────────────────────────────────────────────────────────────────
-function baselineBuildDetailsCSV(rows) {
+function baselineBuildDetailsCSV(rows, { currency = "usd", fxRate = null } = {}) {
   const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "缓存命中率", "调用次数", "总Token", "成本"];
+  const cny = currency === "cny" && Number(fxRate) > 0;
+  const toMoney = (usd) => {
+    if (usd == null || usd === "") return "";
+    const v = Number(usd);
+    if (!Number.isFinite(v)) return "";
+    return cny ? +(v * Number(fxRate)).toFixed(4) : v;
+  };
   const lines = rows.map((r) => {
     // 缓存命中率是这两列里唯一需要算的：没口径就留空，不写 0%（那会读成“完全没命中”）。
     const hr = hitRate(r);
@@ -19,14 +26,32 @@ function baselineBuildDetailsCSV(rows) {
       r.inputTokens ?? "", r.outputTokens ?? "",
       hr == null ? "" : (hr * 100).toFixed(1) + "%",
       r.calls ?? "",
-      r.totalTokens ?? 0, r.cost ?? ""];
+      r.totalTokens ?? 0, toMoney(r.cost)];
   });
+  header[header.length - 1] = cny ? "成本(CNY)" : "成本(USD)";
   return "\uFEFF" + [header, ...lines].map(line => line.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\r\n");
 }
 
-test("明细 CSV：表头含缓存命中率与调用次数两列", () => {
+test("明细 CSV：表头含缓存命中率与调用次数两列，末列自报币种", () => {
   const csv = buildDetailsCSV([]).replace("\uFEFF", "");
-  assert.equal(csv, '"时间","Agent","Provider","模型","输入Token","输出Token","缓存命中率","调用次数","总Token","成本"');
+  assert.equal(csv, '"时间","Agent","Provider","模型","输入Token","输出Token","缓存命中率","调用次数","总Token","成本(USD)"');
+});
+
+test("明细 CSV：人民币口径下成本列按汇率换算，表头同步改成 CNY", () => {
+  const rows = [{ time: "2026-09-30T01:00:00.000Z", model: "m", inputTokens: 1000, outputTokens: 10, totalTokens: 1010, cost: 1 }];
+  const usd = buildDetailsCSV(rows).replace("\uFEFF", "").split("\r\n");
+  const cny = buildDetailsCSV(rows, { currency: "cny", fxRate: 7.1 }).replace("\uFEFF", "").split("\r\n");
+  assert.match(usd[0], /"成本\(USD\)"$/);
+  assert.match(usd[1], /"1010","1"$/, "美元口径原样写");
+  assert.match(cny[0], /"成本\(CNY\)"$/);
+  assert.match(cny[1], /"1010","7\.1"$/, "1 美元 × 7.1");
+});
+
+test("明细 CSV：标了人民币但没有汇率时退回美元，不拿 ¥ 去标美元的数", () => {
+  const rows = [{ model: "m", totalTokens: 10, cost: 1 }];
+  const csv = buildDetailsCSV(rows, { currency: "cny", fxRate: null }).replace("\uFEFF", "").split("\r\n");
+  assert.match(csv[0], /"成本\(USD\)"$/, "换算不了就不声称是人民币");
+  assert.match(csv[1], /"10","1"$/);
 });
 
 test("明细 CSV：命中率按命中/输入算一位小数，没有口径就留空", () => {

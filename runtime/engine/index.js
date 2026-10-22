@@ -14,6 +14,7 @@ import { loadLedger } from "./services/ledger-source.js";
 import { openArchiveStore } from "./services/archive-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 import { hitRatePercentText } from "./services/hit-rate.js";
+import { cachedFxRate } from "./services/fx-rate.js";
 import { presentFiles, sweepVanished } from "./services/scan-sweep.js";
 
 const HOME = resolveHanaHome();
@@ -326,9 +327,14 @@ export default class TokenTrackerPlugin {
         balanceUpdatedAt: shared.balanceSnapshot?.updatedAt || null,
         agentNames: shared.agentNames || cacheData?.agentNames || {},
         lastScan: cacheData?.lastScan || null,
-        // 数字单位跟着快照走：看板与卡片每几秒取一次快照，在设置页（或另一张卡）改完单位，
+        // 显示口径跟着快照走：看板与卡片每几秒取一次快照，在设置页（或另一张卡）改完单位或货币，
         // 它们能在下一拍就地重画，不用等用户重开页面。就两三个小 JSON 的读。
-        display: { units: settings.read().display.units },
+        // 汇率先从看板 summary 拿（它是算钱时那一次真用的值）；引擎自己的汇率缓存作为兜底，
+        // 这样还没打开过看板的时候，左侧摘要、设置页样例也能按正确汇率显示。
+        display: (() => {
+          const d = settings.read().display;
+          return { units: d.units, currency: d.currency, fxRate: cachedFxRate(dataDir) };
+        })(),
         // 落盘统计（第 0 步的可观测性）：写入次数、累计字节、上次原因与耗时、今日累计
         persist: shared.persist?.stats || cacheData?.persist || null,
         ready: !!shared.ready
@@ -415,7 +421,10 @@ export default class TokenTrackerPlugin {
       try {
         const r = await fn(payload || {});
         if (r && r.notReady) return { error: r.error };
-        return buildDetailsCSV(r?.rows || []);
+        // 成本列跟当前设置的币种走（与界面同一份口径）。税率在 _buildDetailsRows 里算过，
+        // 这里只需从同一份设置读一次。
+        const cur = settings.read().display.currency;
+        return buildDetailsCSV(r?.rows || [], { currency: cur, fxRate: r?.fxRate ?? cachedFxRate(dataDir) });
       } catch (e) {
         return { error: e?.message || "导出失败" };
       }

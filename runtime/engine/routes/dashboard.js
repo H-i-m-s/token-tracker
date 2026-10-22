@@ -21,6 +21,9 @@ import {
   collectBalances,
   registerBalanceFetcher,
 } from "../services/balance.js";
+// 汇率搬到 services/fx-rate.js：它不只服务看板（左侧摘要、卡片、设置页都要按人民币显示），
+// 长在这个 2200 行的文件里就只能跟着看板一起加载。这里只负责用，不负责取。
+import { fetchFxRate, setFxRateForTests } from "../services/fx-rate.js";
 
 // OpenCode Go 官方定价表（opencode.ai/docs/go 校验，2026-08；已与官方账单实测对账）
 // 价格口径：全部为 OpenCode Go 官方美元价（含 DeepSeek，实测无峰谷）
@@ -163,90 +166,6 @@ function loadPriceTable(dataDir) {
   return merged;
 }
 
-// ── USD→CNY 汇率（免费 API：open.er-api.com，无 key，每日更新；本地缓存 6 小时）──
-// 关键：缓存必须落到磁盘。内存缓存随进程消失，而这个 App 的 runtime 每次打开都可能重启，
-// 于是每次进去都要重新请求一次汇率。接口不可达时默认超时 5 秒——界面就得干等 5 秒。
-const FX_TTL_MS = 6 * 3600 * 1000;
-const FX_FALLBACK = 7.1;      // 既无缓存又拉不到时的垫底值，避免凭空造出 0 汇率
-const FX_TIMEOUT_MS = 400;    // 首屏只给它这么点时间：拉不到就先用已知值，后台再试
-let _fxCache = { rate: null, ts: 0 };
-let _fxRefreshing = null;
-
-function fxCacheFile() {
-  return path.join(ENGINE_DATA || "", "fx-rate.json");
-}
-
-function readFxFromDisk() {
-  try {
-    const p = fxCacheFile();
-    if (!ENGINE_DATA || !fs.existsSync(p)) return null;
-    const saved = JSON.parse(readTextFile(p));
-    if (saved && Number(saved.rate) > 0) return { rate: Number(saved.rate), ts: Number(saved.ts) || 0 };
-  } catch {}
-  return null;
-}
-
-function writeFxToDisk(rate, ts) {
-  try {
-    if (!ENGINE_DATA) return;
-    fs.writeFileSync(fxCacheFile(), JSON.stringify({ rate, ts }));
-  } catch {}
-}
-
-// 单次请求；失败/超时返回 null，不抛。
-// 用 AbortSignal.timeout 而不是 https 的 timeout 选项：后者只管 socket 空闲，
-// 管不住 DNS 解析——域名不可达时照样能把首屏拖住好几秒。
-function requestFxRate(timeoutMs = FX_TIMEOUT_MS) {
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (value) => { if (!settled) { settled = true; resolve(value); } };
-    let req;
-    try {
-      req = https.get("https://open.er-api.com/v6/latest/USD", { signal: AbortSignal.timeout(timeoutMs) }, (res) => {
-        let buf = "";
-        res.on("data", (d) => (buf += d));
-        res.on("end", () => {
-          try {
-            const cny = JSON.parse(buf)?.rates?.CNY;
-            finish(cny > 0 ? cny : null);
-          } catch { finish(null); }
-        });
-      });
-    } catch { finish(null); return; }
-    req.on("error", () => finish(null));
-  });
-}
-
-// 后台刷新：只在已经拿得到值时用，绝不让请求等它。
-function refreshFxInBackground() {
-  if (_fxRefreshing) return;
-  _fxRefreshing = requestFxRate(3000)
-    .then((rate) => { if (rate) { _fxCache = { rate, ts: Date.now() }; writeFxToDisk(rate, _fxCache.ts); } })
-    .catch(() => {})
-    .finally(() => { _fxRefreshing = null; });
-}
-
-async function fetchFxRate() {
-  const now = Date.now();
-  if (_fxCache.rate && now - _fxCache.ts < FX_TTL_MS) return _fxCache.rate;
-  // 内存没有就翻磁盘：上次跑过的汇率足够先用，不必为了它卡住首屏
-  const disk = readFxFromDisk();
-  if (disk) _fxCache = disk;
-  if (_fxCache.rate) {
-    if (now - _fxCache.ts >= FX_TTL_MS) refreshFxInBackground();
-    return _fxCache.rate;
-  }
-  // 一个值都没有（全新安装）：只等一次，限时；拿不到就用垫底值，并丢到后台继续试
-  const fresh = await requestFxRate();
-  if (fresh) {
-    _fxCache = { rate: fresh, ts: now };
-    writeFxToDisk(fresh, now);
-    return fresh;
-  }
-  refreshFxInBackground();
-  return FX_FALLBACK;
-}
-
 const HOME = resolveHanaHome();
 const ENGINE_DATA = process.env.TOKEN_TRACKER_DATA_DIR;
 if (!ENGINE_DATA) throw new Error("TOKEN_TRACKER_DATA_DIR is required");
@@ -340,7 +259,7 @@ export default function (app, ctx) {
       // 明细分页/排序参数（服务端分页）：page/pageSize/sortKey/order/minTokens，一律由 build 内部白名单化。
       const detailsParams = { page: params.page, pageSize: params.pageSize, sortKey: params.sortKey, order: params.order, minTokens: params.minTokens };
       // 确保汇率可用（内部统一美元口径计算用）；opts.fxRate 供测试注入
-      const fxRate = opts.fxRate !== undefined ? opts.fxRate : await fetchFxRate();
+      const fxRate = opts.fxRate !== undefined ? opts.fxRate : await fetchFxRate(cache.dataDir);
       const result = build({ ...cache.data, dataDir: cache.dataDir }, range, { agent, model, type, provider, from, to, ...detailsParams }, fxRate, cache.turnsStore);
       // 用 agent:list 覆盖 agentNames，保证显示名正确；标记已删除的 agent
       const activeAgentIds = new Set();
@@ -826,7 +745,8 @@ export default function (app, ctx) {
     const { objectRows } = collectDetails({
       cache: view, sessions, sessionKeys, dateFilter, dayFrom, dayTo, filters, turnsStore: cache.turnsStore, allRows: true,
     });
-    return { rows: objectRows };
+    // 带上本次算钱用的汇率：CSV 的成本列要按与界面相同的基准换算。
+    return { rows: objectRows, fxRate: await fetchFxRate(cache.dataDir) };
   };
 
   // 只取「消费明细」这一块：界面翻页/换排序/换门槛时只重取明细，不再把整份看板
@@ -1582,6 +1502,10 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
       ...sums,
       cacheHitRate: hitRatePercent(sums.totalCacheRead, sums.totalInput + sums.totalCacheRead),
       estimatedCost,
+      // 估算一律以美元为内部口径（价格表就是美元），汇率只作为「怎么显示」的参考值交给前端。
+      // 放在 summary 里而不是另起一个顶层字段：它与 estimatedCost 是一体的，
+      // 任何读到钱的地方必然同时读得到汇率，不存在“拿到了数却不知道按什么换算”。
+      fxRate: fxRate || null,
       excludedTokens: Math.max(0, sums.totalTokens - (details?.sumTokens || 0)),
       excludedLedgerTokens: sums.totalLedger || 0,
     },
@@ -2205,5 +2129,5 @@ registerBalanceFetcher("opencode-go", (apiConfig) => fetchOpenCodeGoQuota(apiCon
 
 // ── 测试缝：预填 USD→CNY 汇率缓存，离线测试不打 open.er-api.com ──
 export function _setFxRateForTests(rate) {
-  _fxCache = { rate, ts: Date.now() };
+  setFxRateForTests(rate);
 }

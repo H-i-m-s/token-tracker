@@ -933,11 +933,12 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-display-sep { border-top: 1px solid var(--tt-b3); margin: 2px 0; }
 /* 输入栏卡片开关：一行一个，左标签右胶囊，字号与菜单里其它项同档（12px）。 */
 .tt-inputstatus-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; font: 12px var(--font-sans); color: var(--tt-t2); }
-/* 数字单位：标签在上、下拉整行铺开 —— 135px 宽的菜单里塞不下并排的标签 + 下拉
-   （选项文字是「中文（万 / 亿）」这种长标签，短写就成另一套词表了）。 */
+/* 数字单位 / 货币单位：标签在上、下拉整行铺开 —— 135px 宽的菜单里塞不下并排的标签 + 下拉
+   （选项文字是「中文（万 / 亿）」「人民币（¥）」这种长标签，短写就成另一套词表了）。 */
 .tt-unit-row { flex-direction: column; align-items: stretch; gap: 6px; }
 /* 写双类名是为了压过 card.css 里的 `.tt-switch-card .tt-select`（同为两段类名，靠后来者胜）——
-   两处菜单里这一行得是同一档字号，跟旁边那几行同为 12px。 */
+   两处菜单里这几行得是同一档字号，跟旁边那几行同为 12px。
+   数字单位与货币单位共用这一条：两者是同一个行结构，只换了词表。 */
 .tt-display-menu .tt-unit-select.tt-select { display: flex; width: 100%; font: 12px var(--font-sans); color: var(--tt-t2); }
 /* 开关本体：克制的小胶囊滑块，不是 iOS 大开关。选择器带上 .tt-display-menu 是为了压过上面那两条通用 button 规则。
    开态学 git-save-load：强调色实心铺满，圆点纯白（用卡片色会在饱和底上发闷）。 */
