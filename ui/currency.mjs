@@ -59,10 +59,11 @@ export function getFxRate() {
   return fxRate;
 }
 
-// 现在能不能把美元换算成目标货币。
-// 人民币 + 没有汇率 = 换算不了。这时界面必须说清楚，不能拿美元的数配上 ¥ 的符号。
+// 现在能不能把人民币金额换成目标显示币种。
+// 人民币是基准，任何时候都能显示（不需要汇率）；
+// 美元是折算值，没有汇率就显示不了。
 export function canConvert(key = current) {
-  return normalizeCurrency(key) === "usd" || fxRate > 0;
+  return normalizeCurrency(key) === "cny" || fxRate > 0;
 }
 
 // 快照里带的货币口径（引擎把设置里的这一项搭在 /snapshot 上）。
@@ -86,29 +87,34 @@ export function moneySymbol(key = current) {
 }
 
 /**
- * 把一笔美元金额写成当前货币。
+ * 把一笔金额写成当前显示币种。
  *
- *   没给值 / 不是有限数  → 「—」（与 fmt 的约定一致：取不到就是取不到）
- *   0                    → 「$0」/「¥0」（真的是 0，不是取不到）
- *   小于 0.01            → 留四位（费用常常是 $0.0032 这种量级，两位会写成 0）
+ * **入参是人民币**（价格表与 estimatedCost 的基准币种）。
+ * 这一点与上一版相反，是本轮最容易搞错的地方：
+ *   上一版入参是美元、人民币靠乘汇率得到；
+ *   现在是入参人民币、美元靠除汇率得到。
+ * 弄反了就是 6.7 倍的错，而且符号完全正常，看不出来。
+ *
+ *   没给值 / 不是有限数  → 「—」
+ *   0                    → 「¥0」/「$0」
+ *   小于 0.01            → 留四位（费用常常是 0.0032 这种量级，两位会写成 0）
  *   其余                 → 两位，去掉多余的尾零
  *
- * 人民币按汇率换算；换算不了（没有汇率）时**退回美元**并把 canConvert 置为 false，
- * 让调用方能在说明里交代一句 —— 宁可显示一个真实但币种不同的数，也不拿 ¥ 去标美元的数。
+ * 选了美元但没有汇率时**退回人民币**：宁可显示一个真实但币种不同的数，
+ * 也不拿 $ 去标人民币的数。
  */
-export function formatMoney(usd, options = {}) {
+export function formatMoney(cnyAmount, options = {}) {
   const { currency = current, rate = fxRate } = options;
-  if (usd == null) return "—";
+  if (cnyAmount == null) return "—";
   const key = normalizeCurrency(currency);
-  const raw = Number(usd);
+  const raw = Number(cnyAmount);
   if (!Number.isFinite(raw)) return "—";
 
-  const convertible = key === "usd" || (Number.isFinite(Number(rate)) && Number(rate) > 0);
-  // 换算不了时退回**美元**，不是退回「词表第一项」。
-  // 这里踩过一次：CURRENCIES[0] 原本恰好是美元，把缺省改成人民币之后，
-  // 这句就变成了「退回人民币」——直接拿 ¥ 去标一个美元数值，比不换算更糟。
-  const unit = convertible ? currencyInfo(key) : currencyInfo("usd");
-  const value = convertible && unit.key === "cny" ? raw * Number(rate) : raw;
+  const r = Number(rate);
+  const canToUsd = Number.isFinite(r) && r > 0;
+  const useUsd = key === "usd" && canToUsd;
+  const unit = useUsd ? currencyInfo("usd") : currencyInfo("cny");
+  const value = useUsd ? raw / r : raw;
 
   if (value === 0) return unit.symbol + "0";
   const abs = Math.abs(value);
@@ -119,16 +125,18 @@ export function formatMoney(usd, options = {}) {
 }
 
 /**
- * 金额的口径说明，给悬停用。换算成人民币时把汇率写出来 ——
- * 那是个会变的数，界面不该让它看起来像账单上的实数。
+ * 金额的口径说明，给悬停用。
+ *
+ * 现在基准是人民币，所以「人民币」不需要再提汇率 —— 那个数就是账上的数。
+ * 反而是「选了美元」时才需要说清它是折算值。
  */
 export function moneyHint(key = current, options = {}) {
   const { rate = fxRate, base = "按已配置价格估算；不是供应商结算账单" } = options;
   const info = currencyInfo(key);
-  if (info.key !== "cny") return base;
+  if (info.key !== "usd") return base;
   const r = Number(rate);
-  if (!(r > 0)) return base + "。汇率还没取到，暂时按美元显示";
-  return `${base}。按 1 美元 ≈ ${r.toFixed(2)} 元换算，汇率每日更新`;
+  if (!(r > 0)) return base + "。汇率还没取到，暂时按人民币显示";
+  return `${base}。美元金额是折算值（1 美元 ≈ ${r.toFixed(2)} 元），不是账上的原始数值`;
 }
 
 export default {

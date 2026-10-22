@@ -121,7 +121,7 @@ export default function (app, ctx) {
       const provider = toList(params.provider);
       // 明细分页/排序参数（服务端分页）：page/pageSize/sortKey/order/minTokens，一律由 build 内部白名单化。
       const detailsParams = { page: params.page, pageSize: params.pageSize, sortKey: params.sortKey, order: params.order, minTokens: params.minTokens };
-      // 确保汇率可用（内部统一美元口径计算用）；opts.fxRate 供测试注入
+      // 确保汇率可用（只有「折合美元」这类可选展示才用它）；opts.fxRate 供测试注入
       const fxRate = opts.fxRate !== undefined ? opts.fxRate : await fetchFxRate(cache.dataDir);
       // 价格表**一次请求只读一遍**。
       //
@@ -1316,8 +1316,7 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
         const prov = provModels[mn];
         if (!prov) continue;
         const price = prices[prov + "/" + mn];
-        // 价格表统一以美元 / 每百万 token 表示，不再有 per-slot 时段与本地货币字段，
-        // 所以这里只有一个口径，不需要再按价格自带的 currency 除汇率。
+        // 价格表本身就是人民币，直接乘除即可，不需要按币种再换算。
         estimatedCost += calcCost(price, mv);
       }
       if (d.mediaGen) {
@@ -1365,9 +1364,9 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
       ...sums,
       cacheHitRate: hitRatePercent(sums.totalCacheRead, sums.totalInput + sums.totalCacheRead),
       estimatedCost,
-      // 估算一律以美元为内部口径（价格表就是美元），汇率只作为「怎么显示」的参考值交给前端。
-      // 放在 summary 里而不是另起一个顶层字段：它与 estimatedCost 是一体的，
-      // 任何读到钱的地方必然同时读得到汇率，不存在“拿到了数却不知道按什么换算”。
+      // estimatedCost 的币种是人民币 —— 价格表本身就存人民币，算出来直接就是人民币，
+      // 没有任何换算。汇率在这里只用于「想看折合多少美元」这种可选展示，
+      // 它与金额本身无关：没拿到汇率时金额仍然是对的。
       fxRate: fxRate || null,
       excludedTokens: Math.max(0, sums.totalTokens - (details?.sumTokens || 0)),
       excludedLedgerTokens: sums.totalLedger || 0,

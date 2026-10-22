@@ -114,20 +114,27 @@ test("splitKey：供应商与模型分开，模型名里可以再有斜杠", () 
 });
 
 // ── 二、合并与文件 ──
+// 断言不写死具体数字：默认价表的基准币种与汇率都可能在将来调整，
+// 写死 0.14 这种美元时代的字面量，会让“改基准”看起来像是“算错了”。
+// 要验证的是「用户填的覆盖、没填的沿用」，那就直接拿默认表自己当参照物。
 test("用户表按项覆盖默认：只填一格不会把另外三格清零", () => {
-  const merged = mergePriceTables({ "opencode-go/deepseek-v4-flash": { output: 1 } });
-  const entry = merged["opencode-go/deepseek-v4-flash"];
+  const key = "opencode-go/deepseek-v4-flash";
+  const def = DEFAULT_PRICE_TABLE[key];
+  const merged = mergePriceTables({ [key]: { output: 1 } });
+  const entry = merged[key];
   assert.equal(entry.output, 1, "用户填的覆盖默认");
-  assert.equal(entry.input, 0.14, "没填的项沿用默认，不能被清零");
-  assert.equal(entry.cacheRead, 0.0028);
+  assert.equal(entry.input, def.input, "没填的项沿用默认，不能被清零");
+  assert.equal(entry.cacheRead, def.cacheRead);
+  assert.ok(def.input > 0, "默认表本身得是有值的，否则上面两条形同虚设");
 });
 
 test("磁盘上的合并：引擎读到的就是 App 层写下去的", () => {
   const dir = tmp();
-  writeJson(dir, "price-table.json", { "opencode-go/deepseek-v4-flash": { output: 1 } });
+  const key = "opencode-go/deepseek-v4-flash";
+  writeJson(dir, "price-table.json", { [key]: { output: 1 } });
   const table = loadPriceTable(dir);
-  assert.equal(table["opencode-go/deepseek-v4-flash"].output, 1);
-  assert.equal(table["opencode-go/deepseek-v4-flash"].input, 0.14);
+  assert.equal(table[key].output, 1);
+  assert.equal(table[key].input, DEFAULT_PRICE_TABLE[key].input);
 });
 
 test("价格文件坏了：不抛、按默认算、文件原样留着（那是用户手改的东西）", () => {
@@ -186,7 +193,9 @@ test("写出来的文件是人能读的：带顶部说明、缩进 2、键有序
   writePriceTable(dir, { "b/z": { input: 2 }, "a/x": { input: 1 } });
   const text = fs.readFileSync(priceFilePath(dir), "utf8");
   assert.match(text, /"_comment"/, "顶上要写清单位，用户直接打开文件时第一眼能看到");
-  assert.match(text, /美元 \/ 每百万 token/);
+  // 单位口径跟着代码里的说明走，而不是在测试里另写一份 ——
+  // 写死「美元」的结果就是改基准时测试报错，而代码其实是对的。
+  assert.ok(text.includes("人民币 / 每百万 token"), "单位要写人民币");
   assert.match(text, /^\{\n {2}"_comment"/m, "缩进 2");
   assert.ok(text.indexOf('"a/x"') < text.indexOf('"b/z"'), "键按字母序，diff 才不会每次变");
   assert.ok(Array.isArray(PRICE_FILE_COMMENT) && PRICE_FILE_COMMENT.length > 5);
@@ -256,7 +265,11 @@ test("清单里每项都带来源标记：填过 / 默认 / 未填", () => {
   assert.equal(byKey.get("a/mine").source, "user");
   assert.equal(byKey.get("opencode-go/deepseek-v4-flash").source, "default");
   assert.equal(byKey.get("b/nothing").source, "none");
-  assert.equal(byKey.get("opencode-go/deepseek-v4-flash").defaultPrice.input, 0.14, "默认价要带过去，界面才能当占位符");
+  assert.equal(
+    byKey.get("opencode-go/deepseek-v4-flash").defaultPrice.input,
+    DEFAULT_PRICE_TABLE["opencode-go/deepseek-v4-flash"].input,
+    "默认价要原样带过去，界面才能当占位符",
+  );
 });
 
 test("块内按用量降序；块自己带统计（界面上块头要用）", () => {

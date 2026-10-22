@@ -21,6 +21,7 @@
 // 「恢复默认」的行为保留，但不再用按钮：把四格清空就是恢复默认（这个语义本来就有）。
 import { h } from "./components.mjs";
 import { filterPriceGroups, splitHighlight } from "./price-filter.mjs";
+import { displayPrice, toStoredPrice, priceUnitLabel } from "./price-money.mjs";
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
 // 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
 // 让两处折叠在手上的感觉是同一个东西。
@@ -40,11 +41,15 @@ export const PRICE_FIELDS = [
   { key: "cacheWrite", label: "缓存写", hint: "多数模型为 0" },
 ];
 
-// 一个价格对象 → 界面上的四个字符串。缺的项给空串（不是 0）：空 = 没填。
+// 一个价格对象 → 界面上的四个字符串。
+// 人民币基准下「界面价」就是「文件里的价」，displayPrice 原样返回，
+// 保留这一层是为了将来若真要支持多币种录入，改动集中在一处。
+// 缺的项给空串（不是 0）：空 = 没填。
 function priceToValues(price) {
+  const shown = displayPrice(price);
   const out = {};
   for (const f of PRICE_FIELDS) {
-    const v = price?.[f.key];
+    const v = shown?.[f.key];
     out[f.key] = Number.isFinite(v) ? String(v) : "";
   }
   return out;
@@ -119,9 +124,12 @@ export class PriceCard {
     this.el = h("section", { className: "tts-card tts-price" },
       head,
       h("p", { className: "tts-card__desc" },
-        "按用量给每个模型算钱。单位是「美元 / 每百万 token」，与显示用的货币无关 —— ",
-        "价格本身永远存美元，换币种只是显示时换算。填了才会计入预估费用；",
-        "没填的模型在消费明细里显示「未完整定价」。价格存在 price-table.json，也可以直接用编辑器改。"),
+        // 单位就是人民币，不再写「美元」。
+        // 上一版这里写的是「单位是美元，换币种只是显示时换算」——
+        // 那是把「存美元」当成了事实写进说明，与用户要的人民币基准正好相反。
+        `按用量给每个模型算钱。单位是「${priceUnitLabel()} / 每百万 token」。填了才会计入预估费用；`,
+        "没填的模型在消费明细里显示「未完整定价」。价格存在 price-table.json，可以用编辑器直接改，",
+        "填多少就是多少，不做币种换算。"),
       this.bodyEl,
     );
     return this.el;
@@ -531,8 +539,9 @@ export class PriceCard {
     });
 
     // 显示用哪一份价：填过的显示填的，否则把默认价当占位符（灰色）。
-    const shown = item.price || null;
-    const placeholder = item.defaultPrice || null;
+    // 两者都是人民币值，displayPrice 现在是恒等映身（保留挂点）。
+    const shown = displayPrice(item.price) || null;
+    const placeholder = displayPrice(item.defaultPrice) || null;
     const cells = {};
     for (const spec of PRICE_FIELDS) {
       const input = h("input", {
@@ -600,17 +609,24 @@ export class PriceCard {
     this.staleValues.delete(item.key);
   }
 
-  // 界面上的字符串 → 提交体。空串不写字段：没填 ≠ 0。
+  // 界面上的字符串 → 提交体。
+  //
+  // 这里的口径是：**填多少就存多少**。人民币基准，没有币种换算。
+  // toStoredPrice 只负责把数字收成 10 位有效数字（避免 1.7999999999999998）。
+  //
+  // 空串不写字段：没填 ≠ 0。
   toPatch(values) {
-    const price = {};
+    const displayed = {};
     for (const spec of PRICE_FIELDS) {
       const raw = values[spec.key];
       if (raw === "" || raw == null) continue;
       const n = Number(raw);
       if (!Number.isFinite(n) || n < 0) return null; // 非法：整行不提交
-      price[spec.key] = n;
+      displayed[spec.key] = n;
     }
-    return Object.keys(price).length ? price : null;
+    if (!Object.keys(displayed).length) return null;
+    const stored = toStoredPrice(displayed);
+    return stored && Object.keys(stored).length ? stored : null;
   }
 
   async applyBatch() {
