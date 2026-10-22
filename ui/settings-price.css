@@ -168,13 +168,22 @@
 .tts-price__search-clear:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
 .tts-price__search-clear[hidden] { display: none !important; }
 
+/* 批量栏。
+   注意：这里**不**写死 height:0 / opacity:0。
+   那样写会让「收着」变成 CSS 里的常态，而展开时靠清内联值就能回到自然高这一招
+   就失效了 —— 量到的高度永远是 0，于是过渡永远播不出来（看上去就是瞬现）。
+   「收着」只由 JS 写内联值表示（price-card 的 applyBatchVisibility），
+   CSS 只管躺着时的静态外观。 */
 .tts-price__batch {
   margin: 6px 0 10px;
   padding: 10px 12px;
   border: 1px solid var(--tt-select-b);
   border-radius: var(--tt-radius-inner);
   background: var(--tt-card);
+  box-sizing: border-box;
 }
+/* 展开过程中高度由内联值接管，边框与 padding 跟着高一起收，
+   否则收到 0 时会剩一条 20px 高的空框。 */
 .tts-price__batch-inner { display: flex; flex-direction: column; gap: 8px; }
 .tts-price__batch-head { display: flex; align-items: baseline; gap: 10px; }
 .tts-price__batch-title { font-weight: 550; font-size: 13px; }

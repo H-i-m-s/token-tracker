@@ -22,6 +22,7 @@
 import { h } from "./components.mjs";
 import { filterPriceGroups, splitHighlight } from "./price-filter.mjs";
 import { displayPrice, toStoredPrice, priceUnitLabel } from "./price-money.mjs";
+import { expandFromZero, collapseToZero, prefersReducedMotion } from "./collapse-anim.mjs";
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
 // 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
 // 让两处折叠在手上的感觉是同一个东西。
@@ -32,6 +33,42 @@ const collapseDuration = (height) => Math.round(Math.min(
   COLLAPSE_MAX_MS,
   Math.max(COLLAPSE_MIN_MS, 150 + height * 0.22),
 ));
+
+/** 抹掉批量栏上那几个「收着」的内联值，让它回到 CSS 里的自然高度。 */
+function clearCollapseInline(el) {
+  if (!el || !el.style) return;
+  el.style.height = "";
+  el.style.overflow = "";
+  el.style.opacity = "";
+  el.style.paddingTop = "";
+  el.style.paddingBottom = "";
+  el.style.marginTop = "";
+  el.style.marginBottom = "";
+  el.style.borderTopWidth = "";
+  el.style.borderBottomWidth = "";
+}
+
+/**
+ * 把批量栏写成「收着」的静态态。
+ *
+ * 为什么不能只写 height:0：本盒是 box-sizing:border-box，
+ * 而 `padding:10px` 加 `border:1px` 的二十来像素是**加不进 height 里**的 ——
+ * 写 height:0 之后它仍然占着 22px，页面上就是一条看得见的空框。
+ * 所以 padding / border / margin 必须一起归零。
+ */
+function applyCollapsedInline(el) {
+  if (!el || !el.style) return;
+  const s = el.style;
+  s.height = "0px";
+  s.overflow = "hidden";
+  s.opacity = "0";
+  s.paddingTop = "0px";
+  s.paddingBottom = "0px";
+  s.marginTop = "0px";
+  s.marginBottom = "0px";
+  s.borderTopWidth = "0px";
+  s.borderBottomWidth = "0px";
+}
 
 // 四个价位。cacheWrite 放最后：绝大多数模型是 0，用户确认过「不写就是 0」。
 export const PRICE_FIELDS = [
@@ -113,9 +150,16 @@ export class PriceCard {
     // 靠 hidden 控制显隐，但它从来没被 append 进任何父节点 ——
     // 于是「批量填价」面板其实一直没显示过。这里建完立即 fillBatchBar()，
     // 让「元素存在」与「有内容」不能分开。
-    this.batchEl = h("div", { className: "tts-price__batch" });
-    this.batchEl.hidden = true;
+    //
+    // 显隐不再用 hidden：那是个开关，开的一瞬就全部到位，无法补间。
+    // 改用 height 从 0 展开，下方清单被浏览器连续推下去（见 collapse-anim.mjs）。
+    // 初始态用内联的 height:0 / overflow:hidden 表示「收着」，而不是 display:none ——
+    // display:none 的元素量不到高度，展开时就没有起点。
+    this.batchEl = h("div", { className: "tts-price__batch", "aria-hidden": "true" });
     this.batchEl.append(this.renderBatchBar());
+    this.batchShown = false;
+    this.batchAnim = false;
+    this.applyBatchVisibility(false, { animate: false });
     // 清单区：位置固定，内容靠 repaintList() 整块替换。
     // 先建好并挂在 body 里，这样「清单在哪」永远只有一个答案，
     // 不依赖批量栏显隐、也不靠别的节点的 nextSibling 推算。
@@ -250,6 +294,18 @@ export class PriceCard {
     // repaintList() 只换清单区内部的内容，不再碰兄弟节点。
     this.bodyEl.append(this.batchEl);
     this.bodyEl.append(this.listEl);
+
+    // 重建后要把批量栏对到「当前选中状态」应有的显隐。
+    //
+    // 这里用 setBatchVisible（带过渡）而不是强行落到终态：
+    // 整组全选 / 取消选择 / 套用后清空都是走 paint() 的，
+    // 若这里用 animate:false，那些操作就是「瞬现瞬没」，
+    // 与单行勾选（走 syncBatchBar → 带过渡）手感不一致。
+    //
+    // 只有**首次**绘制不播：一进页面就看到批量栏自己撑开，很莫名。
+    const wantBatch = this.selected.size > 0;
+    this.setBatchVisible(wantBatch, { animate: this._paintedOnce === true });
+    this._paintedOnce = true;
 
     this.repaintList();
   }
@@ -525,11 +581,58 @@ export class PriceCard {
     const anyFilled = PRICE_FIELDS.some((f) => String(this.batch[f.key] ?? "").trim() !== "");
     this.applyBtn.disabled = n === 0 || !anyFilled;
     this.clearBtn.disabled = n === 0;
-    // 批量栏的显隐会改内容高度。若此刻 body 上还挂着一个 forwards 动画，
-    // 高度会停在旧值而内容继续长（就是「被顶出卡片」那个 bug）。
-    // 先把锁拆了再改显隐，顺序不能反。
-    this.releaseHeightLock();
-    if (this.batchEl) this.batchEl.hidden = n === 0;
+    this.setBatchVisible(n > 0);
+  }
+
+  /**
+   * 批量栏的出现与消失都走这里，两个方向共用一套过渡。
+   *
+   * 为什么不用 hidden：hidden 是个开关，切换那一瞬就全到位，中间没有任何可补间的量。
+   * 改成 height 从 0 ↔ 自然高，下方清单就是被**真实布局**连续推下去的；
+   * 这比自己做位移可靠 —— 后者会和浏览器的排版互相抢，看出顿卡。
+   *
+   * animate=false 用于：构建时的初始态、以及 paint() 重建后的复原（不该再播一次）。
+   */
+  setBatchVisible(show, { animate = true } = {}) {
+    const el = this.batchEl;
+    if (!el) return;
+    const next = !!show;
+    if (next === this.batchShown) return;
+    this.batchShown = next;
+    this.applyBatchVisibility(next, { animate });
+  }
+
+  /** setBatchVisible 的实际执行体：不管状态变没变，按目标值强制对齐一次。 */
+  applyBatchVisibility(show, { animate = true } = {}) {
+    const el = this.batchEl;
+    if (!el) return;
+    el.setAttribute("aria-hidden", show ? "false" : "true");
+
+    const reduced = prefersReducedMotion();
+    const willAnimate = animate && !reduced;
+
+    if (show) {
+      // 展开前先解除「收着」的静态态（零高 / 归零的 padding 与边框）。
+      // 不先解除就会量到 0 或者只量到边框那一点，过渡形同没有。
+      clearCollapseInline(el);
+      this.batchAnim = willAnimate ? expandFromZero(el, { reduced }) : false;
+      return;
+    }
+    if (!willAnimate) {
+      clearCollapseInline(el);
+      // 收着 = 零高 + 裁切。用内联而不是 display:none：保持可测量，下次展开有起点。
+      applyCollapsedInline(el);
+      this.batchAnim = false;
+      return;
+    }
+    this.batchAnim = collapseToZero(el, {
+      reduced,
+      onGone: () => {
+        // 动画结束后才归到「收着」的静态态，中途归零会把过渡直接戒掉。
+        applyCollapsedInline(el);
+        this.batchAnim = false;
+      },
+    });
   }
 
   // ── 一个供应商一块 ──
