@@ -25,13 +25,8 @@ import {
 // 长在这个 2200 行的文件里就只能跟着看板一起加载。这里只负责用，不负责取。
 import { fetchFxRate, setFxRateForTests } from "../services/fx-rate.js";
 
-// 价格表搬到 services/price-table.js：默认表、分档、算钱、读盘四件事原来散在这个 2200 行的文件里，
-// 而设置页要独立地列出「有哪些模型、各自什么价」，不该为了查一次价格把整个看板路由加载起来。
-// 这里只保留「拿着价格去算钱」的用法。
+// 价格算术在 lib/price-core.mjs，两个进程共用；引擎这边只负责读价与算钱。
 import { calcCost, loadPriceTable, pickPrice, isPriced } from "../services/price-table.js";
-// 价格清单（并集、按项读写）单独一层：它要读 catalog、要查用量、要落盘，
-// 与「拿价格算钱」是两件事，混在一起会让算钱那条路径带上 fs 和 catalog 依赖。
-import { buildPriceCatalog, applyPricePatches, writePriceTable } from "../services/price-catalog.js";
 
 
 const HOME = resolveHanaHome();
@@ -739,31 +734,6 @@ export default function (app, ctx) {
       if (result?.notReady) return c.json({ error: result.error }, 503);
       return c.json(result);
     } catch (e) { return c.json({ error: e.message, stack: e.stack }, 500); }
-  });
-
-  // 模型价格表：读一份可编辑清单（并集），或按项写。
-  // 旧版是 POST 整表覆盖 —— 58 个模型、200 多个输入框套整表提交，改一格要重写全部，
-  // 而且并发两个界面时后写的会把先写的抹掉。现在按项 patch，只动被点名的那几项。
-  app.get("/price-table", async c => {
-    try {
-      const tk = ctx._tokenCache;
-      if (!tk?.dataDir) return c.json({ error: "数据未就绪" }, 503);
-      return c.json({ ok: true, priceTable: buildPriceCatalog({ dataDir: tk.dataDir, store: tk.turnsStore, log: ctx.log }) });
-    } catch (e) { return c.json({ error: e.message }, 500); }
-  });
-
-  app.post("/price-table", async c => {
-    try {
-      const body = await c.req.json();
-      const tk = ctx._tokenCache;
-      if (!tk?.dataDir) return c.json({ error: "数据未就绪" }, 503);
-      // 两种入参：{ patches: [{key, price}] } 是按项写；直接给一张表是旧客户端的整表写。
-      const result = Array.isArray(body?.patches)
-        ? applyPricePatches(tk.dataDir, body.patches, ctx.log)
-        : writePriceTable(tk.dataDir, body, ctx.log);
-      if (!result.ok) return c.json({ error: result.error || "写入失败" }, 400);
-      return c.json({ ok: true, changed: result.changed ?? result.count ?? 0 });
-    } catch (e) { return c.json({ error: e.message }, 500); }
   });
 
   app.post("/balance-apis", async c => {

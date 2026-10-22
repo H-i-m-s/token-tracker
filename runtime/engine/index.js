@@ -5,9 +5,8 @@ import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
 import { createSqliteTurnsStore } from "./services/turns-store.js";
-// 价格表的读写口。注册 RPC 时要它们，所以在这里 import，不在 handler 里动态 import ——
-// 价格查询是设置页每次打开都会发的请求，热路径上不该有模块解析。
-import { buildPriceCatalog, applyPricePatches, writePriceTable } from "./services/price-catalog.js";
+// 「Hana 里配了哪些模型」只能由引擎读（App 进程被限制在自己的 dataDir 内）。
+import { readShownModels } from "./services/shown-models.js";
 import { buildDetailsCSV } from "./services/details-csv.js";
 import { openDsUsageStore } from "./services/ds-usage-store.js";
 import { createDsUsageService } from "./services/ds-usage-service.js";
@@ -452,20 +451,39 @@ export default class TokenTrackerPlugin {
       return { ok: true, lastScan: shared.data?.lastScan || null, full: force };
     });
 
-    // 模型价格表。读：并集清单（用过的 ∪ 现在展示的），要查 turns 表，所以必须在引擎这边。
-    // 写：按项 patch。写完要 emitUpdated，否则看板和卡片不重算金额（它们缓存了上一次的估算）。
-    regHandler("token-tracker.price-table.read", () => {
-      if (!shared.dataDir) return { error: "数据目录未就绪" };
-      return buildPriceCatalog({ dataDir: shared.dataDir, store: turnsStore, log });
-    });
-    regHandler("token-tracker.price-table.write", (payload) => {
-      if (!shared.dataDir) return { error: "数据目录未就绪" };
-      const patches = Array.isArray(payload?.patches) ? payload.patches : null;
-      const result = patches
-        ? applyPricePatches(shared.dataDir, patches, log)
-        : writePriceTable(shared.dataDir, payload, log);
-      if (result.ok) shared.emitUpdated?.();
-      return result;
+    // 「价格清单需要的那两份数据」—— 引擎唯一需要向外提供的一件事。
+    //
+    // 为什么连「现在展示的模型」也得由引擎给：App 进程被 Node 权限模型限制，
+    // 只能读自己的 dataDir，读 provider-catalog.json（在 ~/.hanako 根下）会直接报
+    // "Access to this API has been restricted. Use --allow-fs-read to manage permissions."
+    // 这个限制是宿主有意设的，不该因为一个价格表去改它。
+    //
+    // 于是：引擎给它能读的两份，App 层只负责把它们与用户自己写的价格拼起来。
+    // .used-models 这个名字不能用破折号语法，所以沿用旧名但扩展了返回内容。
+    regHandler("token-tracker.used-models", () => {
+      const out = { pairs: [], shown: [], ready: false, shownReady: false };
+      // 一）用过的：turns 表聚合。
+      if (turnsStore && typeof turnsStore.open === "function") {
+        try {
+          const rows = turnsStore.open().prepare(
+            "SELECT provider, model, SUM(total) AS tokens, COUNT(*) AS turns, MIN(day) AS firstDay, MAX(day) AS lastDay " +
+            "FROM turns WHERE provider <> '' AND model <> '' GROUP BY provider, model",
+          ).all();
+          out.pairs = rows.map((r) => ({
+            provider: String(r.provider), model: String(r.model),
+            tokens: Number(r.tokens) || 0, turns: Number(r.turns) || 0,
+            firstDay: r.firstDay || "", lastDay: r.lastDay || "",
+          }));
+          out.ready = true;
+        } catch (e) {
+          // 表还没建 / 驱动不可用：当作「没有历史」，清单靠另一半照样能用。
+          log.warn?.("[token-tracker] used-models 查询失败：", e?.message || e);
+        }
+      }
+      // 二）现在展示的：provider-catalog.json + preferences.json 的多媒体默认模型。
+      out.shown = readShownModels(HOME);
+      out.shownReady = out.shown.length > 0;
+      return out;
     });
 
     regHandler("token-tracker.settings.read", () => settings.read());

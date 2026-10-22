@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { createEventStreams } from "./lib/event-stream.mjs";
 import { EventEmitter } from "node:events";
-import { LocalClient } from "./lib/local-client.mjs";
+import { LocalClient, engineDataDir } from "./lib/local-client.mjs";
 import { createDisplayUnitsReader } from "./lib/display-units.mjs";
 import { SessionCacheStatus } from "./lib/session-cache.mjs";
 import { createInputStatusPrefs } from "./lib/input-status-prefs.mjs";
@@ -15,6 +15,10 @@ import { buildDetailsCSV } from "./runtime/engine/services/details-csv.js";
 import { mockDashboardRows } from "./lib/mock-data.mjs";
 // 更新说明：内容来自 GitHub Release，不硬编码进界面（见 lib/update-check.mjs 顶部的来源说明）。
 import { createUpdateCheck, displayVersion, DEFAULT_INTERVAL_MINUTES } from "./lib/update-check.mjs";
+// 价格表：写盘只在一处（price-file），算术与两个进程共用（price-core），
+// 清单形状是纯函数（price-catalog）。这三块都不需要引擎。
+import { readUserPrices, applyPricePatches, writePriceTable } from "./lib/price-file.mjs";
+import { buildPriceCatalog, normalizeShownModels } from "./lib/price-catalog.mjs";
 
 export const APP_ID = "token-tracker-app";
 
@@ -397,15 +401,47 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   }
 
-  // 模型价格表：读并集清单 / 按项写。真相在引擎侧（它才能查 turns 表里的用量），
-  // App 层只做转发，与 /settings 同形状。
+  // 模型价格表：读并集清单 / 按项写。
+  //
+  // 读写都在这一层，**不经引擎**。原因：引擎是常驻子进程，改它的代码要重启才生效，
+  // 而价格表是个会被反复调整的东西（新增模型、调价、加供应商），
+  // 锁在重启门槛后面等于每次改需求都要重启一次 Hana。
+  // 写盘唯一入口是 lib/price-file.mjs；算术在 lib/price-core.mjs，两个进程共用。
+  //
+  // 唯一向引擎要的东西是「用过哪些 provider/model」—— 看板载荷里只有模型名、没供应商，
+  // 而价格键是「供应商/模型」。那条窄查询调不通（引擎还是旧的）时，清单退化成
+  // catalog ∪ 用户表，能填价，只是少列「用过但已不在 catalog」的模型。
   async function handlePriceTableRead(c) {
     try {
-      const priceTable = await busClient.request("token-tracker.price-table.read", {}, { mock: isMock(c) });
-      return jsonResponse(c, okResponse({ priceTable }));
+      if (!dataDir) return jsonResponse(c, errResponse("NO_DATA_DIR", "数据目录未就绪"), 503);
+      // 引擎的并集数据目录是 <appData>/engine/，价格文件就在那里。
+      const engineDir = engineDataDir(dataDir);
+      const userPrices = readUserPrices(engineDir, log);
+      // 清单的两份外部数据都由引擎给：用过哪些（turns 表）、现在展示哪些（provider-catalog.json）。
+      // App 进程被限制在自己的 dataDir 内，后者读不了 —— 详见 runtime/engine/services/shown-models.js。
+      let usedPairs = [];
+      let shown = [];
+      let usedReady = false;
+      let shownReady = false;
+      let sourceError = "";
+      try {
+        const res = await busClient.request("token-tracker.used-models", {}, { mock: isMock(c) });
+        usedPairs = Array.isArray(res?.pairs) ? res.pairs : [];
+        shown = normalizeShownModels(res?.shown);
+        usedReady = res?.ready === true;
+        shownReady = res?.shownReady === true;
+      } catch (err) {
+        // 旧引擎没有这个方法；不退失败，请单退化成「只有用户自己填过的」那些项。
+        sourceError = err?.message || String(err);
+        log("warn", "used-models 不可用，价格清单退化：", sourceError);
+      }
+      const priceTable = buildPriceCatalog({ userPrices, shownModels: shown, usedPairs });
+      return jsonResponse(c, okResponse({
+        priceTable: { ...priceTable, usedReady, shownReady, sourceError },
+      }));
     } catch (err) {
       log("error", "GET /price-table error:", err?.message || err);
-      return jsonResponse(c, errResponse(err?.code || "PRICE_FAILED", err?.message || "读取价格表失败"), 503);
+      return jsonResponse(c, errResponse(err?.code || "PRICE_FAILED", err?.message || "读取价格表失败"), 500);
     }
   }
 
@@ -415,11 +451,16 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       body = await c.req.json();
     } catch { return jsonResponse(c, errResponse("INVALID_JSON", "请求体必须是 JSON"), 400); }
     try {
-      const result = await busClient.request("token-tracker.price-table.write", body, { mock: isMock(c) });
-      return jsonResponse(c, okResponse(result || {}));
+      if (!dataDir) return jsonResponse(c, errResponse("NO_DATA_DIR", "数据目录未就绪"), 503);
+      const engineDir = engineDataDir(dataDir);
+      const result = Array.isArray(body?.patches)
+        ? applyPricePatches(engineDir, body.patches, log)
+        : writePriceTable(engineDir, body, log);
+      if (!result.ok) return jsonResponse(c, errResponse("INVALID_PRICE", result.error || "写入失败"), 400);
+      return jsonResponse(c, okResponse(result));
     } catch (err) {
       log("error", "POST /price-table error:", err?.message || err);
-      return jsonResponse(c, errResponse(err?.code || "PRICE_FAILED", err?.message || "保存价格失败"), 400);
+      return jsonResponse(c, errResponse(err?.code || "PRICE_FAILED", err?.message || "保存价格失败"), 500);
     }
   }
 

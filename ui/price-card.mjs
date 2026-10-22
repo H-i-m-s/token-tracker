@@ -172,24 +172,49 @@ export class PriceCard {
     body.style.overflowY = "";
   }
 
-  // 数据到了：重画整块。价格表重画是廉价的（58 行），不值得为增量更新写一套 diff。
+  // 数据到了：重画整块。价格表重画是廉价的，不值得为增量更新写一套 diff。
   paint() {
     if (!this.data) return;
     const { groups, count, pricedCount } = this.data;
-    if (this.countEl) this.setSummary(`${pricedCount} / ${count} 已定价`);
+    if (this.countEl) this.setSummary(count ? `${pricedCount} / ${count} 已定价` : "尚未加载到模型");
     this.bodyEl.replaceChildren();
     // 批量栏与「添加模型」永远在最上面，哪怕清单是空的 ——
     // 没有这几行，一个全新用户打开这张卡就只看到一句「还没有可填的模型」，无处下手。
     this.bodyEl.append(this.renderAddBar());
+    // 清单不完整时说清楚原因。这比一句空白的「还没有模型」有用得多。
+    const missing = this.missingNote();
+    if (missing) this.bodyEl.append(h("p", { className: "tts-price__empty" }, missing));
     if (!groups.length) {
-      this.bodyEl.append(h("p", { className: "tts-price__empty" },
-        "清单里还没有模型。上面填一个「供应商 / 模型名」就能开始加价。"));
+      if (!missing) {
+        this.bodyEl.append(h("p", { className: "tts-price__empty" },
+          "清单里还没有模型。上面填一个「供应商 / 模型名」就能开始加价。"));
+      }
       return;
     }
     // 批量栏：勾选项 → 一次填四价 → 套用。
     this.bodyEl.append(this.renderBatchBar());
     for (const group of groups) this.bodyEl.append(this.renderGroup(group));
     this.syncBatchBar();
+  }
+
+  /**
+   * 清单不完整时的说明。两份外部数据（用过的 / 现在展示的）都由引擎提供，
+   * 引擎还是旧的或查询失败时它们都是空，用户会以为「我的模型不见了」。
+   * 不把这件事说出来，比少列几行更坑。
+   */
+  missingNote() {
+    const d = this.data;
+    if (!d) return "";
+    const used = d.usedReady === true;
+    const shown = d.shownReady === true;
+    if (used && shown) return "";
+    if (!used && !shown) {
+      return d.sourceError
+        ? `暂时读不到你在用的模型（内置服务还是旧版本：${d.sourceError}）。重启 Hana 之后会自动列出来；现在可以先在下面自己添加。`
+        : "暂时读不到你在用的模型。现在可以先在下面自己添加。";
+    }
+    if (!used) return "读不到「用过的模型」这一半，只列出了配置里有的模型。";
+    return "读不到「配置里有的模型」这一半，只列出了用过的模型。";
   }
 
   // ── 自己加一个模型 ──
