@@ -397,6 +397,32 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     }
   }
 
+  // 模型价格表：读并集清单 / 按项写。真相在引擎侧（它才能查 turns 表里的用量），
+  // App 层只做转发，与 /settings 同形状。
+  async function handlePriceTableRead(c) {
+    try {
+      const priceTable = await busClient.request("token-tracker.price-table.read", {}, { mock: isMock(c) });
+      return jsonResponse(c, okResponse({ priceTable }));
+    } catch (err) {
+      log("error", "GET /price-table error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "PRICE_FAILED", err?.message || "读取价格表失败"), 503);
+    }
+  }
+
+  async function handlePriceTableWrite(c) {
+    let body = {};
+    try {
+      body = await c.req.json();
+    } catch { return jsonResponse(c, errResponse("INVALID_JSON", "请求体必须是 JSON"), 400); }
+    try {
+      const result = await busClient.request("token-tracker.price-table.write", body, { mock: isMock(c) });
+      return jsonResponse(c, okResponse(result || {}));
+    } catch (err) {
+      log("error", "POST /price-table error:", err?.message || err);
+      return jsonResponse(c, errResponse(err?.code || "PRICE_FAILED", err?.message || "保存价格失败"), 400);
+    }
+  }
+
   async function handleSettingsWrite(c) {
     let body = {};
     try {
@@ -523,6 +549,8 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
       app.post("/refresh", handleRefresh);
       app.get("/settings", handleSettingsRead);
       app.post("/settings", handleSettingsWrite);
+      app.get("/price-table", handlePriceTableRead);
+      app.post("/price-table", handlePriceTableWrite);
       app.get("/input-status-prefs", handleInputStatusPrefsRead);
       app.post("/input-status-prefs", handleInputStatusPrefsWrite);
       app.get("/events", (c) => {

@@ -5,6 +5,9 @@ import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
 import { createSqliteTurnsStore } from "./services/turns-store.js";
+// 价格表的读写口。注册 RPC 时要它们，所以在这里 import，不在 handler 里动态 import ——
+// 价格查询是设置页每次打开都会发的请求，热路径上不该有模块解析。
+import { buildPriceCatalog, applyPricePatches, writePriceTable } from "./services/price-catalog.js";
 import { buildDetailsCSV } from "./services/details-csv.js";
 import { openDsUsageStore } from "./services/ds-usage-store.js";
 import { createDsUsageService } from "./services/ds-usage-service.js";
@@ -447,6 +450,22 @@ export default class TokenTrackerPlugin {
       if (typeof shared.scan !== "function") return { error: "scanner unavailable" };
       await shared.scan(force);
       return { ok: true, lastScan: shared.data?.lastScan || null, full: force };
+    });
+
+    // 模型价格表。读：并集清单（用过的 ∪ 现在展示的），要查 turns 表，所以必须在引擎这边。
+    // 写：按项 patch。写完要 emitUpdated，否则看板和卡片不重算金额（它们缓存了上一次的估算）。
+    regHandler("token-tracker.price-table.read", () => {
+      if (!shared.dataDir) return { error: "数据目录未就绪" };
+      return buildPriceCatalog({ dataDir: shared.dataDir, store: turnsStore, log });
+    });
+    regHandler("token-tracker.price-table.write", (payload) => {
+      if (!shared.dataDir) return { error: "数据目录未就绪" };
+      const patches = Array.isArray(payload?.patches) ? payload.patches : null;
+      const result = patches
+        ? applyPricePatches(shared.dataDir, patches, log)
+        : writePriceTable(shared.dataDir, payload, log);
+      if (result.ok) shared.emitUpdated?.();
+      return result;
     });
 
     regHandler("token-tracker.settings.read", () => settings.read());

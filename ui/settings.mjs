@@ -3,6 +3,7 @@ import { h } from "./components.mjs";
 import { closeOpenSelect, enhanceSelects } from "./custom-select.mjs";
 import { UNIT_SYSTEMS, normalizeUnitSystem, scaleText } from "./units.mjs";
 import { CURRENCIES, DEFAULT_CURRENCY, normalizeCurrency, formatMoney, getFxRate, setFxRate } from "./currency.mjs";
+import { PriceCard } from "./price-card.mjs";
 
 // 供应商表。id 必须与服务端 runtime/engine/services/settings.js 的 PROVIDERS 逐字一致：
 // 不认识的名字、或者某个 id 下多写一个键，写回时整条会被拒收。
@@ -181,7 +182,7 @@ export class SettingsApp {
     this.cardsEl.innerHTML = "";
     this.cards.clear();
     this.provRows = [];
-    this.cardsEl.append(this.basicCard(s), this.balanceCard(s), this.displayCard(s), this.aboutCard());
+    this.cardsEl.append(this.basicCard(s), this.balanceCard(s), this.priceCard(), this.displayCard(s), this.aboutCard());
     enhanceSelects(this.cardsEl);
     // 徽章与计数都读实时 DOM（比如「凭据填了没有」要看输入框），所以必须等这一批卡片挂进页面之后再算一次。
     for (const row of this.provRows) row.sync();
@@ -560,6 +561,22 @@ export class SettingsApp {
   }
 
   // ── 卡片 3：显示
+  // ── 卡片：模型价格
+  // 这一卡不归 registerCard 管：它的保存粒度是按项，而不是「整张卡一个基线」。
+  // 先把壳挂上，数据异步回来再填 —— 不因为一次请求把整页卡住。
+  priceCard() {
+    this.price = new PriceCard({ api: this.api, mock: this.mock, log: (...a) => console.warn("[token-tracker]", ...a) });
+    const el = this.price.render();
+    this.price.load()
+      .then(() => this.price.paint())
+      .catch((err) => {
+        // 读不到价格表不该让整张卡消失：说清楚原因，其余四张卡照常用。
+        const note = h("p", { className: "tts-price__empty" }, `价格表读取失败：${err?.message || err}`);
+        this.price.bodyEl.append(note);
+      });
+    return el;
+  }
+
   displayCard(s) {
     const density = s.display?.density === "comfortable" ? "comfortable" : "compact";
     const units = normalizeUnitSystem(s.display?.units);

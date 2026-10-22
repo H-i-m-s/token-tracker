@@ -25,146 +25,14 @@ import {
 // 长在这个 2200 行的文件里就只能跟着看板一起加载。这里只负责用，不负责取。
 import { fetchFxRate, setFxRateForTests } from "../services/fx-rate.js";
 
-// OpenCode Go 官方定价表（opencode.ai/docs/go 校验，2026-08；已与官方账单实测对账）
-// 价格口径：全部为 OpenCode Go 官方美元价（含 DeepSeek，实测无峰谷）
-// monthlyAllowance：OpenCode Go 各模型每月使用额度（美元，官方 docs「使用额度」列）
-// contextTiers：长上下文分档价格（超过 maxContext tokens 用该档，如 Luna >272K、Qwen >256K）
-// cacheWritePerM：缓存写入价（官方 docs「缓存写入」列，无 - 的模型为 0）
-const DEFAULT_PRICE_TABLE = {
-  "opencode-go/deepseek-v4-flash": {
-    currency: "USD",
-    monthlyAllowance: 60,
-    defaultPrice: { unit: "token", inputPerM: 0.14, inputCachePerM: 0.0028, outputPerM: 0.28, cacheWritePerM: 0 }
-  },
-  "opencode-go/deepseek-v4-pro": {
-    currency: "USD",
-    monthlyAllowance: 15,
-    defaultPrice: { unit: "token", inputPerM: 0.435, inputCachePerM: 0.003625, outputPerM: 0.87, cacheWritePerM: 0 }
-  },
-  "opencode-go/gpt-5.6-luna": {
-    currency: "USD",
-    monthlyAllowance: 15,
-    defaultPrice: { unit: "token", inputPerM: 0.2, inputCachePerM: 0.02, outputPerM: 1.2, cacheWritePerM: 0.25 },
-    contextTiers: [
-      { maxContext: 272000, price: { unit: "token", inputPerM: 0.4, inputCachePerM: 0.04, outputPerM: 1.8, cacheWritePerM: 0.5 } }
-    ]
-  },
-  "opencode-go/grok-4.5": { currency: "USD", monthlyAllowance: 15, defaultPrice: { unit: "token", inputPerM: 2, inputCachePerM: 0.3, outputPerM: 6, cacheWritePerM: 0 } },
-  "opencode-go/glm-5.2": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 1.4, inputCachePerM: 0.26, outputPerM: 4.4, cacheWritePerM: 0 } },
-  "opencode-go/glm-5.1": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 1.4, inputCachePerM: 0.26, outputPerM: 4.4, cacheWritePerM: 0 } },
-  "opencode-go/kimi-k3": { currency: "USD", monthlyAllowance: 15, defaultPrice: { unit: "token", inputPerM: 3, inputCachePerM: 0.3, outputPerM: 15, cacheWritePerM: 0 } },
-  "opencode-go/kimi-k2.7-code": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.95, inputCachePerM: 0.19, outputPerM: 4, cacheWritePerM: 0 } },
-  "opencode-go/kimi-k2.6": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.95, inputCachePerM: 0.16, outputPerM: 4, cacheWritePerM: 0 } },
-  "opencode-go/mimo-v2.5": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.14, inputCachePerM: 0.0028, outputPerM: 0.28, cacheWritePerM: 0 } },
-  "opencode-go/mimo-v2.5-pro": { currency: "USD", monthlyAllowance: 15, defaultPrice: { unit: "token", inputPerM: 0.435, inputCachePerM: 0.003625, outputPerM: 0.87, cacheWritePerM: 0 } },
-  "opencode-go/minimax-m3": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.3, inputCachePerM: 0.06, outputPerM: 1.2, cacheWritePerM: 0 } },
-  "opencode-go/minimax-m2.7": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.3, inputCachePerM: 0.06, outputPerM: 1.2, cacheWritePerM: 0.375 } },
-  "opencode-go/minimax-m2.5": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.3, inputCachePerM: 0.06, outputPerM: 1.2, cacheWritePerM: 0.375 } },
-  "opencode-go/qwen3.7-max": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 2.5, inputCachePerM: 0.5, outputPerM: 7.5, cacheWritePerM: 3.125 } },
-  "opencode-go/qwen3.7-plus": {
-    currency: "USD",
-    monthlyAllowance: 60,
-    defaultPrice: { unit: "token", inputPerM: 0.4, inputCachePerM: 0.04, outputPerM: 1.6, cacheWritePerM: 0.5 },
-    contextTiers: [
-      { maxContext: 256000, price: { unit: "token", inputPerM: 1.2, inputCachePerM: 0.12, outputPerM: 4.8, cacheWritePerM: 1.5 } }
-    ]
-  },
-  "opencode-go/qwen3.6-plus": {
-    currency: "USD",
-    monthlyAllowance: 60,
-    defaultPrice: { unit: "token", inputPerM: 0.5, inputCachePerM: 0.05, outputPerM: 3, cacheWritePerM: 0.625 },
-    contextTiers: [
-      { maxContext: 256000, price: { unit: "token", inputPerM: 2, inputCachePerM: 0.2, outputPerM: 6, cacheWritePerM: 2.5 } }
-    ]
-  },
-  "opencode-go/hy3": { currency: "USD", monthlyAllowance: 60, defaultPrice: { unit: "token", inputPerM: 0.14, inputCachePerM: 0.035, outputPerM: 0.58, cacheWritePerM: 0 } }
-};
+// 价格表搬到 services/price-table.js：默认表、分档、算钱、读盘四件事原来散在这个 2200 行的文件里，
+// 而设置页要独立地列出「有哪些模型、各自什么价」，不该为了查一次价格把整个看板路由加载起来。
+// 这里只保留「拿着价格去算钱」的用法。
+import { calcCost, loadPriceTable, pickPrice, isPriced } from "../services/price-table.js";
+// 价格清单（并集、按项读写）单独一层：它要读 catalog、要查用量、要落盘，
+// 与「拿价格算钱」是两件事，混在一起会让算钱那条路径带上 fs 和 catalog 依赖。
+import { buildPriceCatalog, applyPricePatches, writePriceTable } from "../services/price-catalog.js";
 
-// 选择实际计费档位：长上下文分档（按平均单次输入 token 估算，插件无单次请求明细）→ 特殊时段
-function pickPrice(price, mv, hour) {
-  if (!price) return null;
-  if (price.defaultPrice === undefined) return price;
-  let ap = price.defaultPrice;
-  // 长上下文分档：avgInputPerCall 超过阈值走高档（maxContext 为该档下限，多档取最高匹配档，不依赖配置顺序）
-  if (price.contextTiers && price.contextTiers.length) {
-    // 长上下文场景缓存命中占大头，用 input+cacheRead 反映总上下文量级，避免高档永不触发
-    const perCall = ((mv.input || 0) + (mv.cacheRead || 0)) / Math.max(1, mv.callCount || mv.assistantCount || 1);
-    let matched = null, matchedMax = -1;
-    for (const t of price.contextTiers) {
-      if (t.maxContext == null) { matched = t.price; matchedMax = Infinity; continue; }
-      if (perCall > t.maxContext && t.maxContext >= matchedMax) { matched = t.price; matchedMax = t.maxContext; }
-    }
-    if (matched) ap = { ...ap, ...matched };
-  }
-  if (price.slots && price.slots.length > 0) {
-    const cur = hour !== undefined ? hour * 60 + 30 : (new Date().getHours() * 60 + 30);
-    for (const s of price.slots) {
-      const f = (s.from||"00:00").split(":").map(Number);
-      const t = (s.to||"24:00").split(":").map(Number);
-      const fs = f[0]*60+(f[1]||0), ts = t[0]*60+(t[1]||0);
-      let match = false;
-      if (fs <= ts) { if (cur >= fs && cur < ts) match = true; }
-      else { if (cur >= fs || cur < ts) match = true; }
-      if (match) { ap = s; break; }
-    }
-  }
-  return ap;
-}
-
-function calcCost(price, mv, hour) {
-  if (!price) return 0;
-  // 新格式：defaultPrice（非特殊时段）+ slots（特殊时段）+ contextTiers（长上下文分档）
-  if (price.defaultPrice !== undefined) {
-    const ap = pickPrice(price, mv, hour);
-    const unit = ap.unit || "token";
-    if (unit === "per_call") return (mv.callCount || mv.assistantCount || 0) * (ap.pricePerCall || 0);
-    if (unit === "per_char") { const chars = (mv.output || 0) + (mv.input || 0); return chars * (ap.pricePer10K || 0) / 10000; }
-    return (mv.input || 0) * (ap.inputPerM || 0) / 1e6 + (mv.cacheRead || 0) * (ap.inputCachePerM || 0) / 1e6 + (mv.cacheWrite || 0) * (ap.cacheWritePerM || 0) / 1e6 + (mv.output || 0) * (ap.outputPerM || 0) / 1e6;
-  }
-  // 旧格式 slots（兼容）
-  if (price.slots && price.slots.length > 0) {
-    const cur = hour !== undefined ? hour * 60 + 30 : (new Date().getHours() * 60 + 30);
-    let slot = null;
-    for (const s of price.slots) {
-      const f = (s.from||"00:00").split(":").map(Number);
-      const t = (s.to||"24:00").split(":").map(Number);
-      const fs = f[0]*60+(f[1]||0), ts = t[0]*60+(t[1]||0);
-      if (fs <= ts) { if (cur >= fs && cur < ts) { slot = s; break; } }
-      else { if (cur >= fs || cur < ts) { slot = s; break; } }
-    }
-    if (slot) return calcCost(slot, mv);
-    return 0;
-  }
-  const unit = price.unit || "token";
-  if (unit === "per_call") {
-    return (mv.callCount || mv.assistantCount || 0) * (price.pricePerCall || 0);
-  }
-  if (unit === "per_char") {
-    const chars = (mv.output || 0) + (mv.input || 0);
-    return chars * (price.pricePer10K || 0) / 10000;
-  }
-  return (mv.input || 0) * (price.inputPerM || 0) / 1e6 + (mv.cacheRead || 0) * (price.inputCachePerM || 0) / 1e6 + (mv.cacheWrite || 0) * (price.cacheWritePerM || 0) / 1e6 + (mv.output || 0) * (price.outputPerM || 0) / 1e6;
-}
-
-function loadPriceTable(dataDir) {
-  const p = path.join(dataDir, "price-table.json");
-  const merged = { ...DEFAULT_PRICE_TABLE };
-  try {
-    if (fs.existsSync(p)) {
-      const saved = JSON.parse(readTextFile(p));
-      if (saved && typeof saved === "object") {
-        for (const [k, v] of Object.entries(saved)) {
-          if (merged[k] && v && typeof v === "object" && typeof merged[k] === "object") {
-            merged[k] = { ...merged[k], ...v };
-          } else {
-            merged[k] = v;
-          }
-        }
-      }
-    }
-  } catch {}
-  return merged;
-}
 
 const HOME = resolveHanaHome();
 const ENGINE_DATA = process.env.TOKEN_TRACKER_DATA_DIR;
@@ -672,29 +540,27 @@ export default function (app, ctx) {
             }
           }
           const mgEntry = mgMap[key];
-          const mv = (price?.unit === "per_call" && mgEntry) ? { ...m, callCount: mgEntry.callCount } : m;
-          const unit = price?.unit || "token";
+          const mv = m;
+          // 价格已经是扁平四价（input/cacheRead/cacheWrite/output），分档由 pickPrice 处理，
+          // 这里只负责把三项费用拆开（明细里要能看出「这笔钱贵在输入还是输出」）。
           var inputCost=0,outputCost=0,cacheCost=0;
-          if(price&&unit==="token"){
-            // 统一用完整用量判定分档（pickPrice 内部按平均输入 token 选档），三项同档计费，避免明细与顶部估算口径不一致
+          if (price) {
+            // 统一用完整用量判定分档（pickPrice 内部按平均输入 token 选档），三项同档计费，
+            // 避免明细与顶部估算口径不一致
             const mvc = { input: m.input||0, output: m.output||0, cacheRead: m.cacheRead||0, cacheWrite: m.cacheWrite||0, assistantCount: m.assistantCount||0, callCount: m.assistantCount||0 };
-            const tp = pickPrice(price, mvc, 12);
-            if ((tp.unit || "token") === "token") {
-              inputCost = mvc.input * (tp.inputPerM||0) / 1e6;
-              outputCost = mvc.output * (tp.outputPerM||0) / 1e6;
-              cacheCost = mvc.cacheRead * (tp.inputCachePerM||0) / 1e6 + mvc.cacheWrite * (tp.cacheWritePerM||0) / 1e6;
-            } else {
-              // 匹配到 per_call/per_char 特殊时段：无法按 token 拆分，总额走 calcCost
-              const tot = calcCost(price, mvc, 12);
-              inputCost = tot; outputCost = 0; cacheCost = 0;
-            }
+            const tp = pickPrice(price, mvc);
+            inputCost = mvc.input * (tp.input||0) / 1e6;
+            outputCost = mvc.output * (tp.output||0) / 1e6;
+            cacheCost = mvc.cacheRead * (tp.cacheRead||0) / 1e6 + mvc.cacheWrite * (tp.cacheWrite||0) / 1e6;
           }
-          const estimatedCost = (unit==="token"&&price) ? inputCost+outputCost+cacheCost : calcCost(price, mv);
+          const estimatedCost = price ? inputCost+outputCost+cacheCost : 0;
+          const unit = "token";
+          const priced = isPriced(price);
           const hasOfficialCost = prov === "opencode-go" && useOfficialOgCosts && Object.prototype.hasOwnProperty.call(officialOgCosts, m.id);
           const cost = hasOfficialCost ? officialOgCosts[m.id] : estimatedCost;
           const officialRow = officialOgRowMap[m.id];
           const officialHasTokens = !!officialRow && (officialRow.count > 0 || officialRow.inputTokens > 0 || officialRow.outputTokens > 0);
-          modelCosts.push({ model: m.id, provider: prov, cost, estimatedCost, costSource: hasOfficialCost ? "official" : "local-estimate", officialInputTokens: officialHasTokens ? officialRow.inputTokens : null, officialOutputTokens: officialHasTokens ? officialRow.outputTokens : null, unit, inputCost, outputCost, cacheCost, callCount: mgEntry?.callCount || 0, successCount: mgEntry?.successCount || 0, currency: price?.currency || "USD" });
+          modelCosts.push({ model: m.id, provider: prov, cost, estimatedCost, costSource: hasOfficialCost ? "official" : "local-estimate", officialInputTokens: officialHasTokens ? officialRow.inputTokens : null, officialOutputTokens: officialHasTokens ? officialRow.outputTokens : null, unit, inputCost, outputCost, cacheCost, callCount: mgEntry?.callCount || 0, successCount: mgEntry?.successCount || 0, currency: "USD", priced });
         }
         // KEY2 可能只调用了 Kimi 等模型，本地 Hana 日志没有对应行；补入官方费用行，保证消费明细合计可对账。
         if (useOfficialOgCosts && officialOgCosts && (!provider || provider === "opencode-go")) {
@@ -706,12 +572,13 @@ export default function (app, ctx) {
             modelCosts.push({ model: officialModel, provider: "opencode-go", cost, estimatedCost: 0, costSource: "official", officialInputTokens: officialHasTokens ? officialRow.inputTokens : null, officialOutputTokens: officialHasTokens ? officialRow.outputTokens : null, unit: "token", inputCost: 0, outputCost: 0, cacheCost: 0, callCount: officialRow?.count || 0, successCount: 0, currency: "USD" });
           }
         }
+        // 媒体生成（生图/生视频）：计价单位是「次」，不属于 token 四价。
+        // 本轮价格表不做这类模型（见设置页说明），这里保留原逻辑：没有 per_call 价就不计费。
         for (const mg of result.mediaGen || []) {
           const key = mg.provider + "/" + mg.model;
           if (modelCosts.find(mc => mc.provider + "/" + mc.model === key)) continue;
-          const price = pt[key];
-          const cost = calcCost(price, mg);
-          modelCosts.push({ model: mg.model, provider: mg.provider, cost, unit: price?.unit || "per_call", callCount: mg.callCount, successCount: mg.successCount });
+          const cost = calcCost(pt[key], mg);
+          modelCosts.push({ model: mg.model, provider: mg.provider, cost, unit: "per_call", callCount: mg.callCount, successCount: mg.successCount });
         }
         result._modelCosts = modelCosts;
       } catch(e) { result._balanceError = e.message; }
@@ -874,14 +741,29 @@ export default function (app, ctx) {
     } catch (e) { return c.json({ error: e.message, stack: e.stack }, 500); }
   });
 
+  // 模型价格表：读一份可编辑清单（并集），或按项写。
+  // 旧版是 POST 整表覆盖 —— 58 个模型、200 多个输入框套整表提交，改一格要重写全部，
+  // 而且并发两个界面时后写的会把先写的抹掉。现在按项 patch，只动被点名的那几项。
+  app.get("/price-table", async c => {
+    try {
+      const tk = ctx._tokenCache;
+      if (!tk?.dataDir) return c.json({ error: "数据未就绪" }, 503);
+      return c.json({ ok: true, priceTable: buildPriceCatalog({ dataDir: tk.dataDir, store: tk.turnsStore, log: ctx.log }) });
+    } catch (e) { return c.json({ error: e.message }, 500); }
+  });
+
   app.post("/price-table", async c => {
     try {
       const body = await c.req.json();
       const tk = ctx._tokenCache;
-      const p = path.join(tk?.dataDir || "", "price-table.json");
-      fs.writeFileSync(p, JSON.stringify(body, null, 2));
-      return c.json({ ok: true });
-    } catch(e) { return c.json({ error: e.message }, 500); }
+      if (!tk?.dataDir) return c.json({ error: "数据未就绪" }, 503);
+      // 两种入参：{ patches: [{key, price}] } 是按项写；直接给一张表是旧客户端的整表写。
+      const result = Array.isArray(body?.patches)
+        ? applyPricePatches(tk.dataDir, body.patches, ctx.log)
+        : writePriceTable(tk.dataDir, body, ctx.log);
+      if (!result.ok) return c.json({ error: result.error || "写入失败" }, 400);
+      return c.json({ ok: true, changed: result.changed ?? result.count ?? 0 });
+    } catch (e) { return c.json({ error: e.message }, 500); }
   });
 
   app.post("/balance-apis", async c => {
@@ -1446,10 +1328,9 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
         const prov = provModels[mn];
         if (!prov) continue;
         const price = priceTable[prov + "/" + mn];
-        let est = calcCost(price, mv, 12);
-        // 本地货币转美元统一口径（DeepSeek 人民币、GPT 美元）
-        if (price?.currency === "CNY" && fxRate) est = est / fxRate;
-        estimatedCost += est;
+        // 价格表统一以美元 / 每百万 token 表示，不再有 per-slot 时段与本地货币字段，
+        // 所以这里只有一个口径，不需要再按价格自带的 currency 除汇率。
+        estimatedCost += calcCost(price, mv);
       }
       if (d.mediaGen) {
         for (const [mk, mg] of Object.entries(d.mediaGen)) {
@@ -1464,13 +1345,7 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
   // ── 下面的 mediaGen 只用来把媒体生成的花费计入 estimatedCost；界面不读它，所以不再进载荷 ──
   const mediaGen = Object.values(mediaGenMap);
   for (const mg of mediaGen) {
-    const price = priceTable[mg.provider + "/" + mg.model];
-    if (price && price.unit === "per_call") {
-      mg.cost = mg.callCount * (price.pricePerCall || 0);
-      let est = mg.cost;
-      if (price.currency === "CNY" && fxRate) est = est / fxRate;
-      estimatedCost += est;
-    }
+    // 媒体生成不计费：价格表本轮只收 token 四价（见 services/price-table.js 顶部说明）。
   }
 
   // 按小时分摊消费金额

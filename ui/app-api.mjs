@@ -181,6 +181,22 @@ export class AppApi {
     return data.update;
   }
 
+  // 模型价格表：并集清单（用过的 ∪ 现在展示的）与按项写入。
+  // 读的是「按供应商分好组」的形状，界面直接拿来回渲染；写入按项 patch，不整表覆盖。
+  async getPriceTable({ mock = false } = {}) {
+    const data = await this.fetchJson(`/price-table${this._mockQs(mock)}`);
+    return data.priceTable;
+  }
+
+  async savePrices(patches, { mock = false } = {}) {
+    const data = await this.fetchJson(`/price-table${this._mockQs(mock)}`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ patches }),
+    });
+    return data;
+  }
+
   async loadSettings({ mock = false } = {}) {
     const data = await this.fetchJson(`/settings${this._mockQs(mock)}`);
     return data.settings;

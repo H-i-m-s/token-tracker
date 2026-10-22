@@ -1,0 +1,142 @@
+/* ==========================================================================
+   模型价格卡
+   --------------------------------------------------------------------------
+   这一块的难点不在样式，在密度：58 个模型 × 4 个价格框，排成表格会变成一堵墙，
+   排成卡片又会高到没法用。这里取「一家供应商一段、段内一行一个模型」：
+   行高压到 30px，四格数字等宽右对齐，名称左对齐不换行、过长省略。
+
+   三处刻意留下的克制：
+   ① 价格来源只用一个小标签和占位符的深浅区分，不加边框、不加底色块。
+   ② 「恢复默认」只在真的填过时才出现，平时不占位。
+   ③ 未用过的模型整行降一级透明度 —— 它们同样能填，只是不该抢眼。
+   ========================================================================== */
+
+.tts-price__toggle {
+  padding: 3px 9px;
+  border: 1px solid var(--tt-b1);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--tt-t2);
+  font: 500 12px var(--font-sans);
+  cursor: pointer;
+}
+.tts-price__toggle:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+
+.tts-price__body { margin-top: 4px; }
+.tts-price__body[hidden] { display: none !important; }
+
+/* ── 批量栏 ── */
+.tts-price__batch {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  margin: 6px 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--tt-select-b);
+  border-radius: var(--tt-radius-inner);
+  /* 半透明 + 模糊：滚到下面是还看得见它，但不遮挡内容。 */
+  background: color-mix(in srgb, var(--tt-card) 88%, transparent);
+  backdrop-filter: blur(12px);
+}
+.tts-price__batch-inner { display: flex; flex-direction: column; gap: 8px; }
+.tts-price__batch-head { display: flex; align-items: baseline; gap: 10px; }
+.tts-price__batch-title { font-weight: 550; font-size: 13px; }
+.tts-price__batch-note { color: var(--tt-t3); font-size: 12px; }
+.tts-price__batch-note[data-kind="err"] { color: var(--tt-red); }
+.tts-price__batch-fields { display: flex; gap: 8px; flex-wrap: wrap; }
+.tts-price__batch-cell { display: flex; align-items: center; gap: 6px; }
+.tts-price__batch-label { color: var(--tt-t3); font-size: 12px; white-space: nowrap; }
+.tts-price__batch-actions { display: flex; gap: 8px; }
+.tts-price__batch-actions .tt-btn[disabled] { opacity: 0.4; cursor: default; }
+
+/* ── 一格数字 ── */
+.tts-price__cell {
+  width: 84px;
+  padding: 4px 7px;
+  box-sizing: border-box;
+  text-align: right;
+  border: 1px solid var(--tt-b1);
+  border-radius: 6px;
+  background: var(--tt-bg);
+  color: var(--tt-t1);
+  font: 500 12px var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+.tts-price__cell::placeholder { color: var(--tt-t4); }
+.tts-price__cell:hover { border-color: var(--tt-b2); }
+.tts-price__cell:focus-visible {
+  outline: none;
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+
+/* ── 一家供应商一段 ── */
+.tts-price__group { margin-top: 6px; }
+.tts-price__group + .tts-price__group { border-top: 1px solid var(--tt-b1); padding-top: 6px; }
+.tts-price__group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  padding: 5px 0;
+  background: var(--tt-card);
+}
+.tts-price__group-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
+.tts-price__group-name { font-weight: 600; font-size: 12.5px; }
+.tts-price__group-meta { color: var(--tt-t3); font-size: 11.5px; }
+.tts-price__box { width: 13px; height: 13px; margin: 0; accent-color: var(--tt-select-b); }
+
+/* ── 一行一个模型 ── */
+.tts-price__row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 30px;
+  padding: 1px 0;
+}
+.tts-price__row:hover { background: var(--tt-row-hover); border-radius: 4px; }
+.tts-price__row-name { display: flex; align-items: center; gap: 8px; flex: 1 1 auto; min-width: 0; cursor: pointer; }
+.tts-price__model {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12.5px;
+}
+.tts-price__cells { display: flex; gap: 6px; flex: 0 0 auto; }
+
+/* 用量那一栏：填不填价，先看这个模型值不值得 */
+.tts-price__meta {
+  flex: 0 0 auto;
+  width: 128px;
+  text-align: right;
+  color: var(--tt-t3);
+  font-size: 11.5px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 来源标签：只靠颜色和文字，不加边框 */
+.tts-price__tag { flex: 0 0 auto; width: 44px; text-align: center; font-size: 11px; }
+.tts-price__tag[data-source="user"] { color: var(--tt-green); }
+.tts-price__tag[data-source="default"] { color: var(--tt-t3); }
+.tts-price__tag[data-source="none"] { color: var(--tt-t4); }
+
+.tts-price__restore {
+  flex: 0 0 auto;
+  padding: 2px 7px;
+  border: none;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--tt-t3);
+  font: 400 11px var(--font-sans);
+  cursor: pointer;
+}
+.tts-price__restore:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tts-price__restore[hidden] { display: none !important; }
+
+.tts-price__empty { margin: 8px 0; color: var(--tt-t3); font-size: 12px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tts-price__batch { backdrop-filter: none; }
+}
