@@ -20,8 +20,7 @@
 // 名字只占得到一点点，后面摆什么都白废。
 // 「恢复默认」的行为保留，但不再用按钮：把四格清空就是恢复默认（这个语义本来就有）。
 import { h } from "./components.mjs";
-import { filterPriceGroups } from "./price-filter.mjs";
-
+import { filterPriceGroups, splitHighlight } from "./price-filter.mjs";
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
 // 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
 // 让两处折叠在手上的感觉是同一个东西。
@@ -112,6 +111,10 @@ export class PriceCard {
     this.batchEl = h("div", { className: "tts-price__batch" });
     this.batchEl.hidden = true;
     this.batchEl.append(this.renderBatchBar());
+    // 清单区：位置固定，内容靠 repaintList() 整块替换。
+    // 先建好并挂在 body 里，这样「清单在哪」永远只有一个答案，
+    // 不依赖批量栏显隐、也不靠别的节点的 nextSibling 推算。
+    this.listEl = h("div", { className: "tts-price__list" });
 
     this.el = h("section", { className: "tts-card tts-price" },
       head,
@@ -144,8 +147,8 @@ export class PriceCard {
     if (reduce || from === to) { this.paintCollapse(next); return; }
     if (this.anim) { try { this.anim.cancel(); } catch {} this.anim = null; }
     body.hidden = false;
-    // 只锁 overflow-y：x 方向不该被遮（行里的输入框聚焦环会出界一点）。
-    body.style.overflowY = "hidden";
+    // 只锁 overflow：高度动画期间内容不能溢出。
+    body.style.overflow = "hidden";
     body.style.height = `${from}px`;
     this.anim = body.animate(
       [{ height: `${from}px` }, { height: `${to}px` }],
@@ -155,15 +158,18 @@ export class PriceCard {
   }
 
   /** 量展开后的高度：先把 hidden 揭开量，量完盖回去，避免闪一下。
-   *  要夹到 max-height 上限：内容比上限高时，动画越过上限再弹回来会看出一下多余的下探。 */
+   *
+   *  不再夹 max-height：内容区已改成随页面长，没有内滚动。
+   *  （以前夹它是因为卡内有个 460px 的滚动框，内容超过上限时要停在 460，
+   *   否则动画会先越过上限再弹回来，看出一下多余的下探。）
+   */
   measureBody() {
     const body = this.bodyEl;
     const wasHidden = body.hidden;
     if (wasHidden) body.hidden = false;
     const raw = body.scrollHeight;
     if (wasHidden) body.hidden = true;
-    const cap = parseFloat(getComputedStyle(body).maxHeight);
-    return Number.isFinite(cap) ? Math.min(raw, cap) : raw;
+    return raw;
   }
 
   /** 过渡落地：把动画留下的内联高度清掉，交回布局自己算。 */
@@ -172,7 +178,7 @@ export class PriceCard {
     if (this.anim) { try { this.anim.cancel(); } catch {} this.anim = null; }
     body.hidden = collapsed;
     body.style.height = "";
-    body.style.overflowY = "";
+    body.style.overflow = "";
   }
 
   // 数据到了：重画整块。价格表重画是廉价的，不值得为增量更新写一套 diff。
@@ -185,42 +191,17 @@ export class PriceCard {
     this.bodyEl.append(this.renderAddBar());
     this.bodyEl.append(this.renderSearchBar());
 
-    const visible = this.filteredGroups();
-    const visibleCount = visible.reduce((s, g) => s + g.items.length, 0);
-    this.syncSummary(count, visibleCount, visible.length);
-
     // 清单不完整时说清楚原因。这比一句空白的「还没有模型」有用得多。
     const missing = this.missingNote();
     if (missing) this.bodyEl.append(h("p", { className: "tts-price__empty" }, missing));
 
-    if (!count) {
-      if (!missing) {
-        this.bodyEl.append(h("p", { className: "tts-price__empty" },
-          "清单里还没有模型。上面填一个「供应商 / 模型名」就能开始加价。"));
-      }
-      this.syncBatchBar();
-      return;
-    }
-
-    // 搜不到就明说，不要留一片空白让人以为清单坏了。
-    if (!visibleCount) {
-      this.bodyEl.append(h("p", { className: "tts-price__empty" },
-        `没有匹配「${this.query}」的模型。`));
-      this.syncBatchBar();
-      return;
-    }
-
-    // 批量栏：勾选项 → 一次填四价 → 套用。
+    // 批量栏与清单区的**位置关系只在这里定义一次**：
+    // 批量栏、然后清单区。两者都只 append 到 body，不会插到别人前面。
+    // repaintList() 只换清单区内部的内容，不再碰兄弟节点。
     this.bodyEl.append(this.batchEl);
-    // 列头紧贴在清单上方：四个数字框长得一模一样，没列头分不出哪格是输入。
-    // 列数布局与行共用 --price-cols（见 settings-price.css），
-    // 所以第一格是「模型」，后面四格与行里的四个输入框一一对应。
-    this.bodyEl.append(h("div", { className: "tts-price__colhead" },
-      h("span", { className: "tts-price__colhead-name" }, "模型"),
-      PRICE_FIELDS.map((f) => h("span", { className: "tts-price__colhead-cell", title: f.hint || f.label }, f.label)),
-    ));
-    for (const group of visible) this.bodyEl.append(this.renderGroup(group));
-    this.syncBatchBar();
+    this.bodyEl.append(this.listEl);
+
+    this.repaintList();
   }
 
   /**
@@ -305,26 +286,37 @@ export class PriceCard {
     const visibleCount = visible.reduce((s, g) => s + g.items.length, 0);
     this.syncSummary(count, visibleCount, visible.length);
 
-    // 先把旧的清单节点拿掉（列头 + 各分组），保留添加栏/搜索栏/批量栏/说明。
-    for (const el of [...this.bodyEl.querySelectorAll(":scope > .tts-price__colhead, :scope > .tts-price__group, :scope > .tts-price__empty--filter")]) el.remove();
-
-    const anchor = this.batchEl;
-    const insert = (node) => { if (anchor?.parentNode === this.bodyEl) this.bodyEl.insertBefore(node, anchor.nextSibling); else this.bodyEl.append(node); };
+    // 清单区是一个固定位置的容器，只换它里面的内容。
+    //
+    // 以前这里是「每次搜索都把列头与分组插入到批量栏后面」，依赖 anchor.nextSibling 定位：
+    //   · 那段代码每插一个节点就重读一次 nextSibling，于是列头被放到了末尾、
+    //     第一个分组又被插到了列头前面 —— 结果表头跑到所有行下面。
+    //   · 更麻烦的是它靠“别的节点在哪”推算自己的位置，而那些节点会因为批量栏显隐而进出。
+    // 改成固定容器后，位置只有一个真相：listEl 在 body 里的位置。
+    // 重画就是 listEl.replaceChildren(...)，不可能再错位。
+    const listEl = this.listEl;
+    const nodes = [];
 
     if (!count || !visibleCount) {
       // 批量栏在没结果时也不该露出来。
-      const tip = h("p", { className: "tts-price__empty tts-price__empty--filter" },
-        count ? `没有匹配「${this.query}」的模型。` : "清单里还没有模型。");
-      insert(tip);
+      // 两种「空」的文案必须分开：
+      //   count 为 0 = 清单本身就空（还没加载到模型），提示用户去添加；
+      //   count > 0 而 visibleCount 为 0 = 搜不到，提示改词。
+      nodes.push(h("p", { className: "tts-price__empty tts-price__empty--filter" },
+        count
+          ? `没有匹配「${this.query}」的模型。`
+          : "清单里还没有模型。上面填一个「供应商 / 模型名」就能开始加价。"));
+      listEl.replaceChildren(...nodes);
       this.syncBatchBar();
       return;
     }
 
-    insert(h("div", { className: "tts-price__colhead" },
+    nodes.push(h("div", { className: "tts-price__colhead" },
       h("span", { className: "tts-price__colhead-name" }, "模型"),
       PRICE_FIELDS.map((f) => h("span", { className: "tts-price__colhead-cell", title: f.hint || f.label }, f.label)),
     ));
-    for (const group of visible) insert(this.renderGroup(group));
+    for (const group of visible) nodes.push(this.renderGroup(group));
+    listEl.replaceChildren(...nodes);
     this.syncBatchBar();
   }
 
@@ -507,13 +499,12 @@ export class PriceCard {
     });
     syncAll();
 
-    // 块头只报「当前可见几个」。搜索时写「3 个模型」会让人以为这块只剩三个，
-    // 而实际是「这块里命中了三个」。
+    // 供应商名也高亮：搜「deepseek」时命中的就是这个字，不标出来就不知道为何剩下这几行。
     const denominator = group.total !== group.items.length ? ` / 共 ${group.total}` : "";
     const head = h("div", { className: "tts-price__group-head" },
       h("label", { className: "tts-price__group-label" },
         allBox,
-        h("span", { className: "tts-price__group-name" }, group.provider),
+        h("span", { className: "tts-price__group-name" }, this.markText(group.provider)),
         h("span", { className: "tts-price__group-meta" }, `${group.items.length} 个模型${denominator}`),
       ),
     );
@@ -569,10 +560,24 @@ export class PriceCard {
     return h("div", { className: "tts-price__row" },
       h("label", { className: "tts-price__row-name" },
         box,
-        h("span", { className: "tts-price__model", title: item.key }, item.model),
+        h("span", { className: "tts-price__model", title: item.key }, this.markText(item.model)),
       ),
       PRICE_FIELDS.map((f) => cells[f.key]),
     );
+  }
+
+  /**
+   * 把一段文字里命中搜索词的部分包成 <mark>。
+   * 没搜索时原样返回字符串（不多包一层标签，DOM 保持干净）。
+   */
+  markText(text) {
+    const q = this.query.trim();
+    if (!q) return text;
+    const parts = splitHighlight(text, q);
+    if (!parts.some((p) => p.hit)) return text;
+    return parts.map((p) => (p.hit
+      ? h("mark", { className: "tts-price__mark" }, p.text)
+      : p.text));
   }
 
   readRow(cells) {

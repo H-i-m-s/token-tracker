@@ -40,3 +40,32 @@ export function filterPriceGroups(groups, query) {
 }
 
 export default { filterPriceGroups };
+
+/**
+ * 把一段文本拆成「命中 / 未命中」的片段，供界面高亮。
+ *
+ * 返回 [{ text, hit }]，拼接后与原文完全一致（包括大小写）——
+ * 高亮只影响显示，不能把用户看到的名字改掉。
+ * 空搜索词返回单个未命中片段，调用方不必先判空。
+ *
+ * 大小写不敏感匹配，与 filterPriceGroups 同一套口径：
+ * 搜 FLASH 能筛出来，就必须能把那里的 flash 也标上。
+ */
+export function splitHighlight(text, query) {
+  const src = String(text ?? "");
+  const q = String(query ?? "").trim();
+  if (!q || !src) return [{ text: src, hit: false }];
+  const hay = src.toLowerCase();
+  const needle = q.toLowerCase();
+  const out = [];
+  let at = 0;
+  for (;;) {
+    const i = hay.indexOf(needle, at);
+    if (i < 0) break;
+    if (i > at) out.push({ text: src.slice(at, i), hit: false });
+    out.push({ text: src.slice(i, i + needle.length), hit: true });
+    at = i + needle.length;
+  }
+  if (at < src.length) out.push({ text: src.slice(at), hit: false });
+  return out.length ? out : [{ text: src, hit: false }];
+}

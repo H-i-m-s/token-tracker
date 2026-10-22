@@ -53,16 +53,19 @@
 .tts-price__title { font-size: 14px; font-weight: 650; }
 .tts-price__summary { color: var(--tt-t3); font-size: 12px; line-height: 1.5; }
 
-/* 展开后的内容区：自己滚。
-   58 个模型全展开会顶掉下面四张卡，整页高度不可控；
-   锁在 460px 既能让过渡看得见，也不把页面拉长。 */
+/* 展开后的内容区：跟着页面一起长，自己**不**滚。
+   之前这里锁了 max-height: 460px + overflow-y: auto，于是卡片里套了一个小滚动区：
+   鼠标在卡片里往下滚，滚到底不会接着滚页面，要先把指针移出去才行 —— 很难用。
+   同时那个内滚动区让 sticky 有了参照物，组头、批量栏、列头
+   三层都写着 top: 0，滚动时互相盖住，看起来就是「表头一会儿在上面、一会儿在下面」。
+   改成随页面展开之后，这两个毛病一起没了。 */
 .tts-price__body {
   margin-top: 10px;
-  max-height: 460px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 .tts-price__body[hidden] { display: none !important; }
+
+/* 清单区：只是一个位置容器，自己不产生任何盒子（margin/padding 都交给子节点）。 */
+.tts-price__list { display: block; }
 
 /* ── 自己加一个模型 ──
    并集只能盖住「用过的」与「catalog 里配过的」，第三个来源得给个口。
@@ -166,16 +169,11 @@
 .tts-price__search-clear[hidden] { display: none !important; }
 
 .tts-price__batch {
-  position: sticky;
-  top: 0;
-  z-index: 2;
   margin: 6px 0 10px;
   padding: 10px 12px;
   border: 1px solid var(--tt-select-b);
   border-radius: var(--tt-radius-inner);
-  /* 半透明 + 模糊：滚到下面是还看得见它，但不遮挡内容。 */
-  background: color-mix(in srgb, var(--tt-card) 88%, transparent);
-  backdrop-filter: blur(12px);
+  background: var(--tt-card);
 }
 .tts-price__batch-inner { display: flex; flex-direction: column; gap: 8px; }
 .tts-price__batch-head { display: flex; align-items: baseline; gap: 10px; }
@@ -238,17 +236,26 @@
 /* ── 一家供应商一段 ── */
 .tts-price__group { margin-top: 6px; }
 .tts-price__group + .tts-price__group { border-top: 1px solid var(--tt-b1); padding-top: 6px; }
+/* 组头不吸顶。吸顶会让它盖住列头，于是「模型 / 输入 / 缓存读 …」
+   时隐时现，看起来就是表头位置在变。改成普通流式排版，列头永远在最上面一行。 */
 .tts-price__group-head {
-  position: sticky;
-  top: 0;
-  z-index: 1;
   padding: 5px 0;
-  background: var(--tt-card);
 }
 .tts-price__group-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .tts-price__group-name { font-weight: 600; font-size: 12.5px; }
 .tts-price__group-meta { color: var(--tt-t3); font-size: 11.5px; }
 .tts-price__box { width: 13px; height: 13px; margin: 0; accent-color: var(--tt-select-b); }
+
+/* 搜索命中高亮。
+   用自己的类而不是浏览器默认的 <mark>（默认是黄底黑字，在深色卡片上刺眼）：
+   强调色打底 + 文字颜色保持不变，靠 12% 的透明度降低存在感，
+   目的是「一眼看到命中在哪」而不是抢颜色的主。 */
+.tts-price__mark {
+  padding: 0 1px;
+  border-radius: 3px;
+  background: color-mix(in srgb, var(--tt-select-b) 30%, transparent);
+  color: inherit;
+}
 
 /* ── 一行一个模型 ──
    用 grid 而不是 flex。理由：flex 下「模型名 flex:1」只是个诉求，
@@ -334,5 +341,7 @@
 .tts-price__empty { margin: 8px 0; color: var(--tt-t3); font-size: 12px; }
 
 @media (prefers-reduced-motion: reduce) {
-  .tts-price__batch { backdrop-filter: none; }
+  .tts-price__search-clear,
+  .tts-price__cell,
+  .tts-price__batch-input { transition: none; }
 }

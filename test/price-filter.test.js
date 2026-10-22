@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { filterPriceGroups } from "../ui/price-filter.mjs";
+import { filterPriceGroups, splitHighlight } from "../ui/price-filter.mjs";
 
 // 造一个形状与 buildPriceCatalog 一致的最小清单。
 function groups() {
@@ -113,4 +113,60 @@ test("分组里 items 缺失时跳过该组而不是崩", () => {
   const r = filterPriceGroups([{ provider: "x", total: 0 }, { provider: "deepseek", total: 1, items: [{ key: "deepseek/a", model: "a" }] }], "deepseek");
   assert.equal(r.groups.length, 1);
   assert.equal(r.matched, 1);
+});
+
+// ── 高亮分段 ──
+// 高亮只影响显示，绝不能改动用户看到的字。所以每个用例都要验「拼回去等于原文」。
+const rejoin = (parts) => parts.map((p) => p.text).join("");
+
+test("高亮：空搜索词返回整段未命中", () => {
+  const parts = splitHighlight("deepseek-v4-flash", "");
+  assert.deepEqual(parts, [{ text: "deepseek-v4-flash", hit: false }]);
+  assert.equal(rejoin(parts), "deepseek-v4-flash");
+});
+
+test("高亮：只标命中那一段，且拼回去等于原文", () => {
+  const parts = splitHighlight("deepseek-v4-flash", "flash");
+  assert.deepEqual(parts, [
+    { text: "deepseek-v4-", hit: false },
+    { text: "flash", hit: true },
+  ]);
+  assert.equal(rejoin(parts), "deepseek-v4-flash");
+});
+
+test("高亮：大小写不敏感，但保留原文的大小写", () => {
+  const parts = splitHighlight("OpenAI/gpt-5", "openai");
+  assert.deepEqual(parts, [
+    { text: "OpenAI", hit: true },
+    { text: "/gpt-5", hit: false },
+  ]);
+  // 命中片段应当是原文的 "OpenAI" 而不是搜索词 "openai"
+  assert.equal(parts[0].text, "OpenAI");
+  assert.equal(rejoin(parts), "OpenAI/gpt-5");
+});
+
+test("高亮：多处命中全部标出", () => {
+  const parts = splitHighlight("m-m-m", "m");
+  assert.equal(parts.filter((p) => p.hit).length, 3);
+  assert.equal(rejoin(parts), "m-m-m");
+});
+
+test("高亮：命中在开头与结尾都不丢字符", () => {
+  const head = splitHighlight("flash-8b", "flash");
+  assert.equal(head[0].hit, true);
+  assert.equal(rejoin(head), "flash-8b");
+  const tail = splitHighlight("8b-flash", "flash");
+  assert.equal(tail[tail.length - 1].hit, true);
+  assert.equal(rejoin(tail), "8b-flash");
+});
+
+test("高亮：无命中时返回单个未命中片段", () => {
+  const parts = splitHighlight("deepseek-r1", "flash");
+  assert.deepEqual(parts, [{ text: "deepseek-r1", hit: false }]);
+});
+
+test("高亮：异常输入不抛错", () => {
+  assert.deepEqual(splitHighlight(null, "x"), [{ text: "", hit: false }]);
+  assert.deepEqual(splitHighlight(undefined, "x"), [{ text: "", hit: false }]);
+  assert.equal(rejoin(splitHighlight("abc", null)), "abc");
 });
