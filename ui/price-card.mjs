@@ -20,6 +20,7 @@
 // 名字只占得到一点点，后面摆什么都白废。
 // 「恢复默认」的行为保留，但不再用按钮：把四格清空就是恢复默认（这个语义本来就有）。
 import { h } from "./components.mjs";
+import { filterPriceGroups } from "./price-filter.mjs";
 
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
 // 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
@@ -64,6 +65,9 @@ export class PriceCard {
     this.bodyEl = null;
     this.batchEl = null;
     this.staleValues = new Map(); // key → 正在编辑但还没保存的值，避免重绘把字冲掉
+    // 搜索词。空串 = 不过滤。
+    // 这是本地过滤，不请求服务端：全量也就几十上百行，重画代价小于一次往返。
+    this.query = "";
   }
 
   async load() {
@@ -99,8 +103,15 @@ export class PriceCard {
 
     this.bodyEl = h("div", { className: "tts-price__body", id: "price-body" });
     this.bodyEl.hidden = this.collapsed;
+    // 批量栏只建一次，内容当场填好，之后由 paint() 负责插到搜索框下方。
+    //
+    // 之前踩过的坑：早期版本只 new 了元素存在 this.batchEl 上，
+    // 靠 hidden 控制显隐，但它从来没被 append 进任何父节点 ——
+    // 于是「批量填价」面板其实一直没显示过。这里建完立即 fillBatchBar()，
+    // 让「元素存在」与「有内容」不能分开。
     this.batchEl = h("div", { className: "tts-price__batch" });
     this.batchEl.hidden = true;
+    this.batchEl.append(this.renderBatchBar());
 
     this.el = h("section", { className: "tts-card tts-price" },
       head,
@@ -111,11 +122,6 @@ export class PriceCard {
       this.bodyEl,
     );
     return this.el;
-  }
-
-  /** 卡片头那句结论：共几个模型。没数据时给一句实话，不编。 */
-  setSummary(text) {
-    if (this.countEl) this.countEl.textContent = text;
   }
 
   // ── 开合（WAAPI 量高，和 doc-intake 同一套）──
@@ -172,24 +178,40 @@ export class PriceCard {
   // 数据到了：重画整块。价格表重画是廉价的，不值得为增量更新写一套 diff。
   paint() {
     if (!this.data) return;
-    const { groups, count } = this.data;
-    if (this.countEl) this.setSummary(count ? `${count} 个模型` : "尚未加载到模型");
+    const { count } = this.data;
     this.bodyEl.replaceChildren();
-    // 批量栏与「添加模型」永远在最上面，哪怕清单是空的 ——
-    // 没有这几行，一个全新用户打开这张卡就只看到一句「还没有可填的模型」，无处下手。
+    // 添加模型与搜索永远在最上面，哪怕清单是空的 ——
+    // 没有这两行，一个全新用户打开这张卡就只看到一句「还没有可填的模型」，无处下手。
     this.bodyEl.append(this.renderAddBar());
+    this.bodyEl.append(this.renderSearchBar());
+
+    const visible = this.filteredGroups();
+    const visibleCount = visible.reduce((s, g) => s + g.items.length, 0);
+    this.syncSummary(count, visibleCount, visible.length);
+
     // 清单不完整时说清楚原因。这比一句空白的「还没有模型」有用得多。
     const missing = this.missingNote();
     if (missing) this.bodyEl.append(h("p", { className: "tts-price__empty" }, missing));
-    if (!groups.length) {
+
+    if (!count) {
       if (!missing) {
         this.bodyEl.append(h("p", { className: "tts-price__empty" },
           "清单里还没有模型。上面填一个「供应商 / 模型名」就能开始加价。"));
       }
+      this.syncBatchBar();
       return;
     }
+
+    // 搜不到就明说，不要留一片空白让人以为清单坏了。
+    if (!visibleCount) {
+      this.bodyEl.append(h("p", { className: "tts-price__empty" },
+        `没有匹配「${this.query}」的模型。`));
+      this.syncBatchBar();
+      return;
+    }
+
     // 批量栏：勾选项 → 一次填四价 → 套用。
-    this.bodyEl.append(this.renderBatchBar());
+    this.bodyEl.append(this.batchEl);
     // 列头紧贴在清单上方：四个数字框长得一模一样，没列头分不出哪格是输入。
     // 列数布局与行共用 --price-cols（见 settings-price.css），
     // 所以第一格是「模型」，后面四格与行里的四个输入框一一对应。
@@ -197,7 +219,112 @@ export class PriceCard {
       h("span", { className: "tts-price__colhead-name" }, "模型"),
       PRICE_FIELDS.map((f) => h("span", { className: "tts-price__colhead-cell", title: f.hint || f.label }, f.label)),
     ));
-    for (const group of groups) this.bodyEl.append(this.renderGroup(group));
+    for (const group of visible) this.bodyEl.append(this.renderGroup(group));
+    this.syncBatchBar();
+  }
+
+  /**
+   * 按搜索词过滤后的分组。逻辑在 price-filter.mjs（纯函数，有单测）。
+   * 这里只把 this.query 递过去。
+   */
+  filteredGroups() {
+    return filterPriceGroups(this.data?.groups || [], this.query).groups;
+  }
+
+  /** 卡片头那句：命中数 / 总数。搜索时两句都要有，否则不知道是没搜到还是本来就没有。 */
+  syncSummary(total, visible, groupCount) {
+    if (!this.countEl) return;
+    if (!total) { this.countEl.textContent = "尚未加载到模型"; return; }
+    if (!this.query.trim()) { this.countEl.textContent = `${total} 个模型`; return; }
+    this.countEl.textContent = visible
+      ? `找到 ${visible} / ${total} 个模型（${groupCount} 个供应商）`
+      : `没有匹配「${this.query}」的模型`;
+  }
+
+  // ── 搜索 ──
+  // 只过滤界面，不碰数据、不写盘。空词就是不过滤。
+  // 不做防抖：本地过滤几十行是微秒级，加了防抖反而让输入跟手变差。
+  renderSearchBar() {
+    const input = h("input", {
+      type: "search",
+      className: "tts-price__search-input",
+      placeholder: "搜模型或供应商，例：flash / deepseek",
+      spellcheck: "false",
+      value: this.query,
+      autocomplete: "off",
+    });
+    // 输入框是重建的，重建后要保持打字位置。
+    if (this.query) {
+      queueMicrotask(() => {
+        input.focus();
+        input.setSelectionRange(input.value.length, input.value.length);
+      });
+    }
+    const clear = h("button", {
+      type: "button",
+      className: "tts-price__search-clear",
+      title: "清空搜索",
+      "aria-label": "清空搜索",
+      onClick: () => { this.query = ""; this.paint(); this.focusSearch(); },
+    }, "×");
+    clear.hidden = !this.query;
+
+    input.addEventListener("input", () => {
+      const next = input.value;
+      if (next === this.query) return;
+      this.query = next;
+      // 重画会把输入框换掉，打字会断。所以搜索只重画清单部分，
+      // 输入框保持原样 —— 见 repaintList()。
+      this.repaintList();
+      if (clear) clear.hidden = !this.query;
+    });
+    // Esc 清空：搜索框里的惯例。
+    input.addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && this.query) { e.preventDefault(); this.query = ""; this.paint(); this.focusSearch(); }
+    });
+
+    this.searchInput = input;
+    return h("div", { className: "tts-price__search" },
+      h("span", { className: "tts-price__search-icon", "aria-hidden": "true" }),
+      input, clear,
+    );
+  }
+
+  focusSearch() {
+    try { this.searchInput?.focus(); } catch {}
+  }
+
+  /**
+   * 只重画清单（不动添加栏与搜索框本身）。
+   * 搜索输入时走这条：整块重画会把正在打字的 input 换掉，光标与法输入全部断。
+   */
+  repaintList() {
+    if (!this.data) return;
+    const { count } = this.data;
+    const visible = this.filteredGroups();
+    const visibleCount = visible.reduce((s, g) => s + g.items.length, 0);
+    this.syncSummary(count, visibleCount, visible.length);
+
+    // 先把旧的清单节点拿掉（列头 + 各分组），保留添加栏/搜索栏/批量栏/说明。
+    for (const el of [...this.bodyEl.querySelectorAll(":scope > .tts-price__colhead, :scope > .tts-price__group, :scope > .tts-price__empty--filter")]) el.remove();
+
+    const anchor = this.batchEl;
+    const insert = (node) => { if (anchor?.parentNode === this.bodyEl) this.bodyEl.insertBefore(node, anchor.nextSibling); else this.bodyEl.append(node); };
+
+    if (!count || !visibleCount) {
+      // 批量栏在没结果时也不该露出来。
+      const tip = h("p", { className: "tts-price__empty tts-price__empty--filter" },
+        count ? `没有匹配「${this.query}」的模型。` : "清单里还没有模型。");
+      insert(tip);
+      this.syncBatchBar();
+      return;
+    }
+
+    insert(h("div", { className: "tts-price__colhead" },
+      h("span", { className: "tts-price__colhead-name" }, "模型"),
+      PRICE_FIELDS.map((f) => h("span", { className: "tts-price__colhead-cell", title: f.hint || f.label }, f.label)),
+    ));
+    for (const group of visible) insert(this.renderGroup(group));
     this.syncBatchBar();
   }
 
@@ -287,7 +414,7 @@ export class PriceCard {
     else delete this.addNote.dataset.kind;
   }
 
-  // ── 批量套用栏 ──
+  // ── 批量套用栏（内容）──
   //
   // 这里的输入框**不**用 .tts-price__cell：那个类现在带 width:100%，
   // 是为「行里占满一列」（grid 列）设计的，拿到批量栏的 flex 行里就会被拉成半行。
@@ -334,7 +461,24 @@ export class PriceCard {
   syncBatchBar() {
     if (!this.batchNote) return;
     const n = this.selected.size;
-    this.batchNote.textContent = n ? `已选 ${n} 个模型` : "先勾选模型，或勾上某个供应商的名字整块选中";
+    // 搜索时会出现一个真陷阱：选中集是跨组的，而你只看得见其中一部分。
+    // 「套用到选中」会把价写给**你看不见的**那些行 —— 用户根本不知道发生了什么。
+    // 所以这里把「选了几个 / 其中几个看不见」写给用户，不隐逗。
+    let hidden = 0;
+    if (this.query.trim() && n) {
+      const shownKeys = new Set();
+      for (const g of this.filteredGroups()) for (const i of g.items) shownKeys.add(i.key);
+      for (const k of this.selected) if (!shownKeys.has(k)) hidden++;
+    }
+    if (!n) {
+      this.batchNote.textContent = "先勾选模型，或勾上某个供应商的名字整块选中";
+    } else if (hidden) {
+      this.batchNote.textContent = `已选 ${n} 个，其中 ${hidden} 个不在当前搜索结果里（套用会一起写入）`;
+      this.batchNote.dataset.kind = "warn";
+    } else {
+      this.batchNote.textContent = `已选 ${n} 个模型`;
+      delete this.batchNote.dataset.kind;
+    }
     // 没选东西、或者四格全空，就不给按 —— 避免「点了没反应」。
     const anyFilled = PRICE_FIELDS.some((f) => String(this.batch[f.key] ?? "").trim() !== "");
     this.applyBtn.disabled = n === 0 || !anyFilled;
@@ -343,6 +487,11 @@ export class PriceCard {
   }
 
   // ── 一个供应商一块 ──
+  //
+  // group.items 是**过滤后**的（搜索时只含命中行），所以块头的全选框
+  // 勾的是「这块里你现在看得见的那些」，不是你搜之前勾过的全部。
+  // 反过来也要安全：全选框取消勾选时只能动可见行，不能把用户在别的搜索结果里
+  // 勾好的行默默清掉。两者都做到了，因为 keys 取自 group.items。
   renderGroup(group) {
     const allBox = h("input", { type: "checkbox", className: "tts-price__box" });
     const keys = group.items.map((i) => i.key);
@@ -358,11 +507,14 @@ export class PriceCard {
     });
     syncAll();
 
+    // 块头只报「当前可见几个」。搜索时写「3 个模型」会让人以为这块只剩三个，
+    // 而实际是「这块里命中了三个」。
+    const denominator = group.total !== group.items.length ? ` / 共 ${group.total}` : "";
     const head = h("div", { className: "tts-price__group-head" },
       h("label", { className: "tts-price__group-label" },
         allBox,
         h("span", { className: "tts-price__group-name" }, group.provider),
-        h("span", { className: "tts-price__group-meta" }, `${group.total} 个模型`),
+        h("span", { className: "tts-price__group-meta" }, `${group.items.length} 个模型${denominator}`),
       ),
     );
 

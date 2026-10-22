@@ -97,6 +97,74 @@
 .tts-price__add-note:empty { display: none; }
 .tts-price__add-note[data-kind="err"] { color: var(--tt-red); }
 
+/* ── 搜索 ──
+   模型一多，填某个模型的价就得找半天。这一行就是那个入口。
+   图标用 border 画一个圆 + 一根斜手柄，不引外部资源。 */
+.tts-price__search {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 8px;
+}
+.tts-price__search-icon {
+  flex: 0 0 auto;
+  width: 9px;
+  height: 9px;
+  margin-left: 2px;
+  border: 1.5px solid var(--tt-t3);
+  border-radius: 50%;
+  position: relative;
+}
+/* 手柄：沿 45° 画一小段，接在圆右下方。 */
+.tts-price__search-icon::after {
+  content: "";
+  position: absolute;
+  right: -4px;
+  bottom: -3px;
+  width: 4px;
+  height: 1.5px;
+  border-radius: 1px;
+  background: var(--tt-t3);
+  transform: rotate(45deg);
+  transform-origin: left center;
+}
+.tts-price__search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--tt-b1);
+  border-radius: 6px;
+  background: var(--tt-bg);
+  color: var(--tt-t1);
+  font: 400 12px var(--font-sans);
+}
+.tts-price__search-input::placeholder { color: var(--tt-t4); }
+.tts-price__search-input:hover { border-color: var(--tt-b2); }
+.tts-price__search-input:focus-visible {
+  outline: none;
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+/* type=search 的原生小叉与放大镜在 Chromium 里样式不可控，统一去掉，用自绘的那个。 */
+.tts-price__search-input::-webkit-search-cancel-button,
+.tts-price__search-input::-webkit-search-decoration { -webkit-appearance: none; appearance: none; }
+.tts-price__search-clear {
+  flex: 0 0 auto;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--tt-t3);
+  font: 400 14px/1 var(--font-sans);
+  cursor: pointer;
+}
+.tts-price__search-clear:hover { background: var(--tt-row-hover); color: var(--tt-t1); }
+.tts-price__search-clear[hidden] { display: none !important; }
+
 .tts-price__batch {
   position: sticky;
   top: 0;
@@ -114,6 +182,8 @@
 .tts-price__batch-title { font-weight: 550; font-size: 13px; }
 .tts-price__batch-note { color: var(--tt-t3); font-size: 12px; }
 .tts-price__batch-note[data-kind="err"] { color: var(--tt-red); }
+/* 搜到一部分时选择集里藏了看不见的行：这是提醒，不是错误，颜色用卡主色系里较亮的那个。 */
+.tts-price__batch-note[data-kind="warn"] { color: var(--tt-select-b); }
 .tts-price__batch-fields { display: flex; gap: 8px; flex-wrap: wrap; }
 .tts-price__batch-cell { display: flex; align-items: center; gap: 6px; }
 .tts-price__batch-label { color: var(--tt-t3); font-size: 12px; white-space: nowrap; }
