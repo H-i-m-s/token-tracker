@@ -121,10 +121,11 @@
 .tts-price__batch-actions .tt-btn[disabled] { opacity: 0.4; cursor: default; }
 
 /* 批量栏自己的输入框。与行里的价格框尺寸不同（这里有标签在前、也不在 grid 里），
-   所以单独一个类，不共用 .tts-price__cell。 */
+   所以单独一个类，不共用 .tts-price__cell。
+   宽度跟 --price-cell-w 同源：批量栏与行里的框是一回事，不该各自维护一个数。 */
 .tts-price__batch-input {
-  width: 84px;
-  padding: 4px 7px;
+  width: var(--price-cell-w);
+  padding: 4px 5px;
   box-sizing: border-box;
   text-align: right;
   border: 1px solid var(--tt-b1);
@@ -146,7 +147,7 @@
 .tts-price__cell {
   width: 100%;
   min-width: 0;
-  padding: 4px 7px;
+  padding: 4px 5px;
   box-sizing: border-box;
   text-align: right;
   border: 1px solid var(--tt-b1);
@@ -188,8 +189,15 @@
    每一格的列位置必须显式指定。写「只给 grid-row」是不够的：
    自动摆放会把第一个价格框放到第 1 列（模型名那一列），
    实测那就是 426px 宽的输入框压着 63px 的模型名。 */
+/*   四格宽度由 --price-cell-w 定，行、列头、批量栏三处同源。
+   84px 的三分之二 = 56px。
+   但仅缩宽度会把内容区压到 40px，而实测 12px 等宽下最长的真实价格串
+   （六位小数：0.0047、0.0006）正好 40px —— 一分余量都没有，字体渲染略有差异就截。
+   所以同时把左右内边距从 7px 收到 5px：内容区变成 56-10-2=44px，
+   宽度真的只剩三分之二，可用空间反而比原来多 4px。 */
 .tts-price {
-  --price-cols: minmax(0, 1fr) repeat(4, 84px);
+  --price-cell-w: 56px;
+  --price-cols: minmax(0, 1fr) repeat(4, var(--price-cell-w));
   --price-gap: 6px;
 }
 .tts-price__row {
@@ -247,10 +255,10 @@
 .tts-price__colhead > .tts-price__colhead-cell:nth-child(4) { grid-column: 4; }
 .tts-price__colhead > .tts-price__colhead-cell:nth-child(5) { grid-column: 5; }
 
-/* 窄屏：四格先让位。名字被压没就失去这张卡的意义，
-   而四个价格框里装的都是短数字，压到 60px 依旧能读。 */
+/* 窄屏：四格再缩到 52px（内容区 36px）。六位小数会截到小数点后三位，
+   但那种精度在窄屏上已经读不出差别，而模型名比它重要。 */
 @media (max-width: 720px) {
-  .tts-price { --price-cols: minmax(0, 1fr) repeat(4, minmax(56px, 1fr)); }
+  .tts-price { --price-cell-w: 52px; }
 }
 
 .tts-price__empty { margin: 8px 0; color: var(--tt-t3); font-size: 12px; }
