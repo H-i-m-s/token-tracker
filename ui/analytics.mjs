@@ -25,6 +25,18 @@ export function compact(n) {
   if (n == null || !Number.isFinite(Number(n))) return '—';
   return scaleText(n, { space: ' ', plain: (v) => Math.round(v).toLocaleString('zh-CN') });
 }
+
+// 日均 = 合计 ÷ 所选范围的日历天数。
+//
+// 分母取 calendarDays 的跨度（含中间没记录的空白日），不取“有记录的天数”：
+// 日图的横轴就是这个跨度，零用量那天在图上占一格，除它才对得上眼前的图；
+// 除“有记录的天”会得到一个比屏幕上任何数都大的速率，而那个集合在界面上看不见。
+// 天数不合法（0 天、NaN）时返回 null，交给 compact 写「—」，不能吐 Infinity 或 NaN。
+export function dailyAverage(total, days) {
+  const n = Number(total), d = Number(days);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d <= 0) return null;
+  return n / d;
+}
 function node(tag, attrs = {}, children = []) {
   const el = document.createElementNS('http://www.w3.org/2000/svg', tag);
   for (const [k,v] of Object.entries(attrs)) el.setAttribute(k, String(v));
@@ -678,9 +690,13 @@ export function renderAnalytics(container, dashboard, state, patch) {
   // 同一年的区间把年份只写一次（只进 title，不上屏）。
   const startDay = days[0], endDay = days.at(-1);
   const endLabel = startDay && endDay && startDay.slice(0, 4) === endDay.slice(0, 4) ? endDay.slice(5) : endDay;
-  const primaryHint = days.length
-    ? `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天，日均 ${compact(total / days.length)}`
-    : '所选范围没有记录';
+  // 只看一天时，日均恒等于合计（同一块地方把同一个数印两遍），主卡悬停里也不再写它。
+  const singleDay = days.length === 1;
+  const primaryHint = !days.length
+    ? '所选范围没有记录'
+    : singleDay
+      ? `所选范围累计用量；${startDay}`
+      : `所选范围累计用量；${startDay} → ${endLabel}，${days.length} 天`;
   // 今日用量：只在「全部历史」里才有意义。
   // 其他区间（今日 / 近7天 / 本月 …）里，合计与今天的关系已经包含在那个窗口里，
   // 再摆一个今日是在说一件已知的事。自定义日期同理。
@@ -770,8 +786,15 @@ export function renderAnalytics(container, dashboard, state, patch) {
     h('div', { className: 'tt-kpi-row tt-kpi-row-secondary' },
       tile('', '缓存命中率', fmtPct(summary.cacheHitRate, 1),
         '缓存读取 Token / 总 Token；命中部分按折后单价计'),
-      tile('', '单轮 P90', turns ? compact(turns.p90) : '—',
-        '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求'),
+      // 这一格在两个量之间换，跟着“选了几天的窗口”走：
+      // 只看一天时日均恒等于左边的合计，摆上去就是同一个数印两遍，而那一刻真正想知道的是
+      // “最贵的一轮有多贵”（尾部风险）。窗口一长，日均才开始回答真问题 —— 一天烧多少。
+      // 两个标签宽窄相近，标签字号是整块统一按卡宽取的，换字不会把版式撑开。
+      singleDay
+        ? tile('', '单轮 P90', turns ? compact(turns.p90) : '—',
+          '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求')
+        : tile('', '日均消耗', compact(dailyAverage(total, days.length)),
+          '合计 Token ÷ 所选范围的日历天数（含没有记录的空白日）'),
       tile('', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
         '有记录用量的日志会话数量（含桌面、子代理、后台、桥接四类）'),
       h('div', {

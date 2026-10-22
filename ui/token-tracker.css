@@ -1024,8 +1024,10 @@ html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-board-kpis { display: grid; grid-template-columns: minmax(0,1.12fr) minmax(0,2.16fr); grid-template-rows: auto auto; gap: 12px; min-width: 0; align-items: stretch; }
 .tt-kpi-primary { grid-row: 1 / -1; }
 .tt-kpi-row { min-width: 0; display: grid; gap: 12px; }
-/* 上行：四块均分（命中率 / P90 / 会话 / 费用）。列数必须跟着实际块数走，
-   多一列就在右侧留一大块空白（轮次降到三级时就会出现）。 */
+/* 上行：四块均分（命中率 / 日均消耗或单轮 P90 / 会话 / 费用）。列数必须跟着实际块数走，
+   多一列就在右侧留一大块空白（轮次降到三级时就会出现）。
+   第二格在两个量之间换，宽度差不多（「日均消耗」四个字 / 「单轮 P90」三字 + 三个字宽），
+   标签字号又是整块统一按卡宽取的，所以换字不会把版式撑开。 */
 .tt-kpi-row-secondary { grid-template-columns: repeat(4,minmax(0,1fr)); align-items: stretch; }
 /* 卡片高度只由宽度决定（aspect-ratio），不由文字撑。
    这是整套自适应的地基：字号要从卡高算，若卡高又由字号撑，两边就会互相喂着长，
