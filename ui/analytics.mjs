@@ -1,6 +1,6 @@
 import { splitRow } from './board-layout.mjs';
 import { h, fmtCost, fmtPct } from './components.mjs';
-import { setValue } from './digit-roll.mjs';
+import { setValue, setLabel, rollDirection, labelStops } from './digit-roll.mjs';
 import { scaleText } from './units.mjs';
 import { asList, pickValues, modsOf } from './selection.mjs';
 import { splineCurve, splineValueAt } from './curve.mjs';
@@ -726,14 +726,14 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const prevValues = mem.get('values') || new Map();
   const nextValues = new Map();
   const pendingRolls = [];
-  const valueNode = (labelText, text) => {
+  const valueNode = (labelText, text, opts) => {
     const strong = h('strong', {});
     const str = String(text ?? '');
     nextValues.set(labelText, str);
     const prev = prevValues.get(labelText);
     if (prev !== undefined && prev !== str) {
       setValue(strong, prev, { animate: false });   // 先站到旧刻度
-      pendingRolls.push({ strong, text: str });     // 进文档后再滚过去
+      pendingRolls.push({ strong, text: str, reel: !!opts?.reel });  // 进文档后再滚过去
     } else {
       setValue(strong, str, { animate: false });    // 首帧/未变：直接落位，不滚
     }
@@ -748,6 +748,36 @@ export function renderAnalytics(container, dashboard, state, patch) {
   const strip = (label, value, hint) => h('div', {
     className: 'tt-kpi tt-kpi-strip', title: hint, 'data-tt-select': '',
   }, h('span', {}, label), valueNode(label, value));
+
+  // 会换名字的那一格（二级第二格：单轮 P90 ↔ 日均消耗）。
+  //
+  // 三个地方要一起动，否则“换指标”看起来就是内容被换掉而不是一个表盘转过一格：
+  //   数字走 setValue({reel:true}) — 两个值分属不同的量（一个是尾部、一个是均值），
+  //   逐位滚会把它们当成一次进位，那是假动态；
+  //   标签走 setLabel — 名字也必须滚，只有数字滚、名字瞬移，看着像两张卡叠了一下；
+  //   两边方向用同一个 rollDirection（跟屏上那个数变大变小走），不能各转各的。
+  // 上一帧的标签存在 slotMem 里（而不是 values 的“标签作 key”那套）：
+  // 名字变了 key 就变了，新节点就找不到自己的上一帧，于是每次换名都是硬跳。
+  const slotMem = mem.get('secondSlot') || null;
+  const pendingLabelRolls = [];
+  const swapTile = (label, value, hint) => {
+    const text = String(value ?? '');
+    const labelEl = h('span', { className: 'tt-label' });
+    const renamed = !!slotMem && slotMem.label !== label;
+    // 方向只看数字：上一个值在 values 那份记录里（key 固定为 #second-slot），
+    // 与数字那边用的 rollDirection 同一个函数、同一对输入，两边不可能转反。
+    const dir = renamed ? rollDirection(prevValues.get('#second-slot'), text) : 1;
+    // 两帧共用同一张档位表：静态那一帧也把旧名摆到它在表里的那一格，
+    // 否则起始位置对不上，动画头一帧会先跳一下（实测）。
+    const order = renamed ? labelStops(slotMem.label, label, dir) : [label];
+    // 先站到上一次的名字上（带子铺好、不滚），进文档后再滚到新名字。
+    setLabel(labelEl, renamed ? slotMem.label : label, { animate: false, order });
+    if (renamed) pendingLabelRolls.push({ el: labelEl, text: label, order });
+    const strong = valueNode('#second-slot', text, { reel: renamed });
+    return h('div', {
+      className: 'tt-kpi', title: hint, 'data-tt-select': '', 'data-tt-slot': 'second',
+    }, labelEl, strong);
+  };
   // 主卡：合计 + （只在全部历史下出现的）今日用量。
   const primaryCard = () => {
     const prev = mem.get('today');
@@ -789,11 +819,10 @@ export function renderAnalytics(container, dashboard, state, patch) {
       // 这一格在两个量之间换，跟着“选了几天的窗口”走：
       // 只看一天时日均恒等于左边的合计，摆上去就是同一个数印两遍，而那一刻真正想知道的是
       // “最贵的一轮有多贵”（尾部风险）。窗口一长，日均才开始回答真问题 —— 一天烧多少。
-      // 两个标签宽窄相近，标签字号是整块统一按卡宽取的，换字不会把版式撑开。
       singleDay
-        ? tile('', '单轮 P90', turns ? compact(turns.p90) : '—',
+        ? swapTile('单轮 P90', turns ? compact(turns.p90) : '—',
           '一轮对话累计用量（含该轮全部工具调用）的 90 分位，不是单次 API 请求')
-        : tile('', '日均消耗', compact(dailyAverage(total, days.length)),
+        : swapTile('日均消耗', compact(dailyAverage(total, days.length)),
           '合计 Token ÷ 所选范围的日历天数（含没有记录的空白日）'),
       tile('', '会话数', a?.sessionCount ? compact(a.sessionCount) : '—',
         '有记录用量的日志会话数量（含桌面、子代理、后台、桥接四类）'),
@@ -815,11 +844,14 @@ export function renderAnalytics(container, dashboard, state, patch) {
   // 那次逼布局量到的是 0、什么都没落地。不补这一下，浏览器会把“旧刻度→新刻度”看成
   // 一次性赋值，过渡不会建立（实测就是直接跳到终值，看不到滚动）。
   // 用同步逼布局而不是 rAF：headless 下 rAF 会被节流，探针里量到的就是错的。
-  if (pendingRolls.length) {
+  if (pendingRolls.length || pendingLabelRolls.length) {
     kpiBlock.getBoundingClientRect();
-    for (const r of pendingRolls) setValue(r.strong, r.text, { animate: true });
+    for (const r of pendingRolls) setValue(r.strong, r.text, { animate: true, reel: r.reel });
+    for (const r of pendingLabelRolls) setLabel(r.el, r.text, { animate: true, order: r.order });
   }
   mem.set('values', nextValues);
+  // 这一格上一帧叫什么名字。值不另存一份：它在 values 的 '#second-slot' 里。
+  mem.set('secondSlot', { label: singleDay ? '单轮 P90' : '日均消耗' });
   if (!a) { empty(container, '小时分布尚未就绪，请稍后刷新。'); return; }
   // 全宽色带图：紧随 KPI，位于下面的细分图之前。它是唯一一张完整响应顶部时间范围的图。
   let flowPanel = flowPanels.get(container);

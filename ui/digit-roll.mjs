@@ -222,8 +222,10 @@ function enterRow(row, dir) {
   ], { duration: SWAP_MS, easing: ROLL_EASING, fill: 'backwards' });
 }
 
-/** 数字段：位数不变逐位滚；位数变了就换一层（旧层上滚淡出，新层落进来）。 */
-function setCore(box, core, animate) {
+/** 数字段：位数不变逐位滚；位数变了就换一层（旧层上滚，新层落进来）。
+ *  reel=true 时强制换层：标签换了名字、数字其实是另一个量（P90 ↔ 日均），
+ *  逐位滚会把两个不相干的数当成一次进位，那是假动态。 */
+function setCore(box, core, animate, options) {
   const str = String(core ?? '');
   let row = liveRow(box);
   if (row && row.dataset.ttCore === str) return;
@@ -240,7 +242,7 @@ function setCore(box, core, animate) {
   const slots = [...row.children];
   // 长度一样还不够：某一位可能从数字变成标点（或反过来），
   // 那时节点类型不对，逐位复用会把带子塞进标点格里。
-  const sameShape = slots.length === tokens.length
+  const sameShape = !options?.reel && slots.length === tokens.length
     && tokens.every((t, i) => t.digit === slots[i].classList.contains('tt-digit'));
 
   if (sameShape) {
@@ -382,8 +384,7 @@ function setUnit(box, text, animate) {
 }
 
 /**
- * 更新一个 KPI 数值节点。
- *
+ * 更新一个 KPI 数值节点。 *
  * 预期结构（首次调用时自动建立）：
  *   <strong data-tt-value="27.45 B">
  *     <span class="tt-num"><span class="tt-num-row">…位…</span></span>
@@ -398,7 +399,7 @@ function setUnit(box, text, animate) {
  *
  * @param {HTMLElement} strong
  * @param {string} text        要显示的文字，原样（含 $ % 单位）
- * @param {{animate?:boolean}} [options]
+ * @param {{animate?:boolean, reel?:boolean}} [options]
  */
 export function setValue(strong, text, options) {
   if (!strong) return;
@@ -426,7 +427,7 @@ export function setValue(strong, text, options) {
   num.hidden = !(prefix + core);
 
   // prefix（$ 之类）当静态字符塞进 num，它不滚，但跟着一起排版。
-  setCore(num, prefix + core, canAnimate);
+  setCore(num, prefix + core, canAnimate, options);
   setUnit(unit, suffix, canAnimate);
 }
 
@@ -434,5 +435,143 @@ export function setValue(strong, text, options) {
 export function valueText(el) {
   if (!el) return '';
   const v = el.dataset?.ttValue;
+  return v !== undefined ? v : (el.textContent || '');
+}
+
+// ── 标签段：第三根滚轮 ────────────────────────────────────
+//
+// 二级卡第二格会在「单轮 P90」和「日均消耗」之间换。换了名字却只有数字在滚、
+// 名字瞬移，看起来像两张卡叠了一下 —— 名字也该沿同一根带子滚过去。
+//
+// 与单位带子同一套：窗口开一格，里面竖排整张档位表，换档滚一格。
+// 差别只有一处：单位的档位是量级表（由 units.mjs 生成），标签的档位是调用方给的顺序。
+// 顺序就是带子的上下顺序，往表里靠后的那一档走 = 往上滚。
+//
+// 逻辑值放 data-tt-label：带子铺好之后 textContent 是「所有档拼在一起」，
+// kpi-fit 拿它量字宽会把标签字号算成三分之一。
+
+/** 标签的行高，与 kpi-fit.mjs 给标签设的 lineHeight 一致（中文上下要留量）。 */
+export const LABEL_LINE = 1.28;
+
+/**
+ * 换名字时的档位表（自上而下）。两张调用必须用同一张表：
+ * 静态那一帧把旧名摆到“它在新表里的那一格”，否则静态表只有旧名（下标 0）、
+ * 动画表有两格（旧名下标 1），起始位置对不上，头一帧就会看到它从错的位置跳一下。
+ *
+ * 方向由数字定（跟屏上那个数变大变小走），不能硬按一张固定顺序的表：
+ * 硬编会造出「数字往上、标题往下」这种互相矛盾的一帧。
+ *   dir > 0（数值变大）-> 旧名在上、新名在下，带子往上滚
+ *   dir < 0（数值变小）-> 新名在上、旧名在下，带子往下滚
+ */
+export function labelStops(oldText, newText, dir = 1) {
+  const o = String(oldText ?? ''), n = String(newText ?? '');
+  return dir < 0 ? [n, o] : [o, n];
+}
+
+function ensureLabelDom(el) {
+  if (el._ttLabelSizer && el._ttLabelBelt) return;
+  el.textContent = '';
+  const sizer = span('tt-label-sizer');
+  sizer.setAttribute('aria-hidden', 'true');
+  const belt = span('tt-label-belt');
+  belt.setAttribute('aria-hidden', 'true');
+  el.append(sizer, belt);
+  el._ttLabelSizer = sizer;
+  el._ttLabelBelt = belt;
+  el._ttLabelStops = null;
+}
+
+function renderLabelBelt(el, stops) {
+  const belt = el._ttLabelBelt;
+  belt.textContent = '';
+  for (const stop of stops) {
+    const cell = span('tt-label-cell');
+    cell.textContent = stop;
+    belt.append(cell);
+  }
+  el._ttLabelStops = stops.slice();
+}
+
+/** 横向永远居中（-50%），只让 translateY 动 —— 两串字宽不同也不会横向跑。
+ *
+ * 用 WAAPI 而不是 CSS transition，因为标签的字号是 kpi-fit 在这之后才定下来的：
+ * transition 会在开始时把 em 冻结成当时的 px，字号一变大，起点就只对应了半行
+ * （实测起点 -10.4px、整行 23.7px，两个名字都各露半截）。
+ * WAAPI 的关键帧每帧重新解 em，与数字带子（retireRow / enterRow）同一套语言。
+ *
+ * 静态落位反而要把 transition 设成 none 并不再恢复：出生时元素还没进文档，
+ * 那次 offsetWidth 逼不出任何东西，恢复过渡后它才入流，
+ * 浏览器会把它当成“从无值补间到目标”滑一遍（实测 600ms 后才到位）。
+ */
+function placeLabelBelt(el, index, animate) {
+  const belt = el._ttLabelBelt;
+  const to = `translate(-50%, ${-index * LABEL_LINE}em)`;
+  const fromIdx = Number.isFinite(el._ttLabelIndex) ? el._ttLabelIndex : index;
+  el._ttLabelIndex = index;
+  belt.style.transition = 'none';
+  if (!animate || fromIdx === index) {
+    belt.style.transform = to;
+    void belt.offsetWidth;
+    return;
+  }
+  const from = `translate(-50%, ${-fromIdx * LABEL_LINE}em)`;
+  const anim = belt.animate([
+    { transform: from },
+    { transform: to },
+  ], { duration: ROLL_MS, easing: ROLL_EASING, fill: 'forwards' });
+  const done = () => { anim.cancel(); belt.style.transform = to; };
+  anim.addEventListener('finish', done);
+  // 后台页签里 finish 不一定发（合成器可能不推），用定时器兼底。
+  setTimeout(done, ROLL_MS + 90);
+}
+
+/**
+ * 更新一个 KPI 标签节点（只给会换名字的标签用；不换名的标签不必套层）。
+ *
+ * @param {HTMLElement} el    标签的 span
+ * @param {string} text       要显示的名字（原样，进 data-tt-label）
+ * @param {{animate?:boolean, order?:string[]}} [options]
+ *   order 是整张档位表（自上而下）。换名字时要传，两帧共用同一张（见 labelStops）。
+ */
+export function setLabel(el, text, options) {
+  if (!el) return;
+  const str = String(text ?? '');
+  const animate = options?.animate !== false && !prefersReduced();
+  const prev = el.dataset.ttLabel;
+  el.dataset.ttLabel = str;
+  if (prev === str) { el._ttLabelSizer && (el._ttLabelSizer.textContent = str); return; }
+
+  ensureLabelDom(el);
+  el._ttLabelSizer.textContent = str;   // 窗口宽度：当帧按目标档落定
+
+  const stops = Array.isArray(options?.order) && options.order.includes(str)
+    ? options.order.slice()
+    : [prev ?? '', str];
+  const index = Math.max(0, stops.indexOf(str));
+  const sameBelt = !!el._ttLabelStops
+    && el._ttLabelStops.join('\u0001') === stops.join('\u0001');
+
+  // 首次（没上一个名字）不滚：首屏所有东西一起滚会把「变化」这个信号稀释掉。
+  if (!animate || prev === undefined) {
+    renderLabelBelt(el, stops);
+    placeLabelBelt(el, index, false);
+    return;
+  }
+
+  if (!sameBelt) {
+    // 带子要重建（首次、或档位表换了）：先把旧档摆好，再从那里滚过去，
+    // 否则会从 0 往目标冲 —— 看着像「从空白滚出来」，不是一个档到另一个档。
+    const from = Math.max(0, stops.indexOf(prev));
+    renderLabelBelt(el, stops);
+    placeLabelBelt(el, from, false);
+    if (from === index) return;
+  }
+  placeLabelBelt(el, index, true);
+}
+
+/** 取标签的逻辑值（给 kpi-fit.mjs 量字用）。 */
+export function labelText(el) {
+  if (!el) return '';
+  const v = el.dataset?.ttLabel;
   return v !== undefined ? v : (el.textContent || '');
 }

@@ -30,6 +30,8 @@
 //
 // 所有「占多少」都是比例（--tt-label-w / --tt-fit-w / --tt-fit-h / --tt-fit-floor），不是字号。
 
+import { labelText as logicalLabel } from './digit-roll.mjs';
+
 const PROBE_PX = 100;
 // 改动小于这个值就不写回：回调里反复改样式会把自己再叫起来。
 const EPSILON = 0.15;
@@ -297,7 +299,9 @@ function settleStripShift(scope) {
     for (const host of cols.length ? cols : [card]) {
       const label = host.querySelector('span');
       const strong = host.querySelector('strong');
-      const key = (label?.textContent || '').trim();
+      // 标签的“逻辑文字”：换名字那一格的 span 里是一条带子，textContent 是「所有档拼在一起」。
+      // 用它做 key 的话，名字一变 key 就变，上一帧的宽度就找不回来 —— FLIP 直接失效。
+      const key = logicalLabel(label).trim();
       if (!key || !strong) continue;
 
       // 标签跟着走（三级条是整组居中，数字一变宽它就被推着动）；
@@ -406,7 +410,7 @@ function fitGroup(card, holder, blockW) {
       const byH = num(cardStyle, '--tt-label-h');
       labelSize = byH > 0 ? cardH * byH : cardW * ratio(cardStyle, '--tt-label-w', 0.09);
     }
-    const labelText = (label.textContent || '').trim();
+    const labelText = logicalLabel(label).trim();
     if (labelText) {
       const lm = metrics(labelText, getComputedStyle(label));
       // 标签不许宽过容器内框：比例算得再大也得先装得下。
@@ -439,7 +443,7 @@ function fitGroup(card, holder, blockW) {
     // 主卡右列是上下排的，用横排那套公式会把标签宽白白扣掉一次，
     // 实测今日数字被压到 22（与标签同号）。这里按方向分开算。
     const rowLayout = card.classList.contains('tt-kpi-strip');
-    const lm2 = metrics((label?.textContent || '').trim(), label ? getComputedStyle(label) : cardStyle);
+    const lm2 = metrics(logicalLabel(label).trim(), label ? getComputedStyle(label) : cardStyle);
     const labelW = rowLayout && lm2 && lm2.width > 0 ? (labelSize * lm2.width) / PROBE_PX : 0;
     // 可用宽度：主卡的两列用整卡内宽，绝不拿列自己的宽（列宽由字撑，自引用）；
     // 其他卡（横排长条）照旧用自己那条的宽。
@@ -579,7 +583,7 @@ function unifyLabels(scope) {
     const hosts = cols.length ? cols : [card];
     for (const h of hosts) {
       const sp = h.querySelector('span');
-      if (sp && sp.textContent.trim()) labels.push(sp);
+      if (sp && logicalLabel(sp).trim()) labels.push(sp);
     }
   }
   if (labels.length < 2) return;

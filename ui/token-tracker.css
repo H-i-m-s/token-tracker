@@ -1168,11 +1168,27 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
 .tt-unit-belt { position: absolute; left: 0; top: 0; transition: transform .34s cubic-bezier(.22,.61,.36,1); will-change: transform; }
 .tt-unit-cell { display: block; height: 1em; line-height: 1em; white-space: pre; text-align: left; }
 
+/* 标签滚轮：只给会换名字的那一格用（二级卡的「单轮 P90 ↔ 日均消耗」）。
+   与数字带子、单位带子同一套语言：纵向换位，不是淡入淡出。
+
+   窗口高度必须恰好等于一行的行高（kpi-fit 把标签行高写成 1.28），
+   否则滚到中间会露出邻档的半截字。
+   横向不裁：两档字宽不同，居中靠 transform 的 -50%，窗口宽度由 sizer 按目标档定。
+
+   选择器要写成 .tt-kpi > span.tt-label：上面那条 .tt-kpi > span 带了
+   overflow:hidden 与 display:block，特异性（0,1,1）比单纯的 .tt-label 高，
+   不顶下去就裁掉纵向、且滚不动。 */
+.tt-kpi > span.tt-label { position: relative; display: inline-block; height: 1.28em; line-height: 1.28; overflow-x: visible; overflow-y: clip; text-align: center; }
+.tt-label-sizer { display: block; height: 1.28em; line-height: 1.28; visibility: hidden; white-space: pre; }
+.tt-label-belt { position: absolute; left: 50%; top: 0; width: max-content; transform: translate(-50%, 0); transition: transform .34s cubic-bezier(.22,.61,.36,1); will-change: transform; }
+.tt-label-cell { display: block; height: 1.28em; line-height: 1.28; white-space: pre; text-align: center; }
+
 /* 系统级「减弱动效」：数字不再滚、单位不再淡入，只留最终状态。
    digit-roll.mjs 的 prefersReduced() 也会提前退场，两层各管一道。 */
 @media (prefers-reduced-motion: reduce) {
   .tt-strip { transition: none !important; }
   .tt-unit-belt { transition: none !important; }
+  .tt-label-belt { transition: none !important; }
 }
 /* 主数卡：宽度随内容（栅格首列 auto），字号只看高度。
    高度定字，字定宽度，宽度不回喂高度，链条有终点。

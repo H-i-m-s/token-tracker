@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import {
-  splitValue, tokenize, digitOffset, unitRollStops, rollDirection, ROLL_MS, ROLL_EASING,
+  splitValue, tokenize, digitOffset, unitRollStops, rollDirection, labelStops, ROLL_MS, ROLL_EASING, LABEL_LINE,
 } from "../ui/digit-roll.mjs";
 
 // KPI 数字滚动的纯逻辑层。DOM 层要靠浏览器实测（见仓库里的探针做法），
@@ -81,8 +81,7 @@ test("unitRollStops：单位带子的档位由键，小档在上、大档在下"
   for (const system of ["en", "zh"]) assert.equal(unitRollStops(system)[0], "", system);
 });
 
-test("rollDirection：位数变了往哪边转，跟显示值的大小走", () => {
-  // 1 = 往上（数值变大），-1 = 往下（数值变小）。
+test("rollDirection：位数变了往哪边转，跟显示值的大小走", () => {  // 1 = 往上（数值变大），-1 = 往下（数值变小）。
   // 拿的必须是「带子上那个数」，不是乘完单位的总量：
   // 18.8 K → 7 在屏上是变小，轮子就该往下退，不能因为 18800 > 7 就往上升。
   assert.equal(rollDirection("7", "413"), 1);
@@ -96,4 +95,30 @@ test("rollDirection：位数变了往哪边转，跟显示值的大小走", () =
   assert.equal(rollDirection("—", "7"), 1);
   assert.equal(rollDirection("7", "7"), 1);
   assert.equal(rollDirection("", "7"), 1);
+});
+
+test("labelStops：换名字的档位表，方向跟数值走、两张调用同一张表", () => {
+  // 数值变大（dir=1）：旧名在上、新名在下，带子往上滚 —— 与数字往上是同一个方向。
+  assert.deepEqual(labelStops("单轮 P90", "日均消耗", 1), ["单轮 P90", "日均消耗"]);
+  // 数值变小（dir<0）：新名在上、旧名在下，带子往下滚。
+  assert.deepEqual(labelStops("单轮 P90", "日均消耗", -1), ["日均消耗", "单轮 P90"]);
+  // 两个名字都在表里，谁在表头谁就先看到 —— 这是「旧名停在它自己那一格」的前提。
+  for (const dir of [1, -1]) {
+    const table = labelStops("单轮 P90", "日均消耗", dir);
+    assert.equal(table.length, 2, "只造两格");
+    assert.ok(table.includes("单轮 P90") && table.includes("日均消耗"));
+    assert.equal(table.indexOf(dir < 0 ? "单轮 P90" : "日均消耗"), 1, "目标名必须在第二格");
+  }
+});
+
+test("labelStops：同一对名字换个方向，表就整张倒过来", () => {
+  const up = labelStops("单轮 P90", "日均消耗", 1);
+  const down = labelStops("单轮 P90", "日均消耗", -1);
+  assert.deepEqual(up.slice().reverse(), down, "方向只决定上下顺序");
+});
+
+test("LABEL_LINE 与标签行高一致", () => {
+  // 窗口高度 = 一行的行高，滚到中间才会正好是「上一档走完、下一档还没到」。
+  // 与 kpi-fit.mjs 给标签写的 lineHeight（1.28）不一致时，中间态会露出邻档的半截字。
+  assert.equal(LABEL_LINE, 1.28);
 });
