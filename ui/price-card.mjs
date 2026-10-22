@@ -178,14 +178,84 @@ export class PriceCard {
     const { groups, count, pricedCount } = this.data;
     if (this.countEl) this.setSummary(`${pricedCount} / ${count} 已定价`);
     this.bodyEl.replaceChildren();
+    // 批量栏与「添加模型」永远在最上面，哪怕清单是空的 ——
+    // 没有这几行，一个全新用户打开这张卡就只看到一句「还没有可填的模型」，无处下手。
+    this.bodyEl.append(this.renderAddBar());
     if (!groups.length) {
-      this.bodyEl.append(h("p", { className: "tts-price__empty" }, "还没有可填的模型。用过或配置过模型之后这里会自动出现。"));
+      this.bodyEl.append(h("p", { className: "tts-price__empty" },
+        "清单里还没有模型。上面填一个「供应商 / 模型名」就能开始加价。"));
       return;
     }
-    // 批量栏在最上面：勾选项 → 一次填四价 → 套用。
+    // 批量栏：勾选项 → 一次填四价 → 套用。
     this.bodyEl.append(this.renderBatchBar());
     for (const group of groups) this.bodyEl.append(this.renderGroup(group));
     this.syncBatchBar();
+  }
+
+  // ── 自己加一个模型 ──
+  // 并集只能盖住「用过的」与「catalog 里配过的」。用户手里总有第三个来源：
+  // 刚签的供应商、手动算的套餐、朋友报的一个价 —— 这些不该逼他先去用一次、
+  // 或者先去改 provider-catalog.json 才能填价。
+  //
+  // 输入方式就是价格表自己的键形状（供应商/模型），不另设两个下拉：
+  //   供应商名与模型名本来就没有权威清单（catalog 只是「Hana 知道的那部分」），
+  //   硬做下拉反而把用户关在里面。分隔符接受 / 和 空格外的第一个斜杠，
+  //   模型名里允许再带斜杠（如 magpie-gateway/workbuddy/xxx）。
+  renderAddBar() {
+    const keyInput = h("input", {
+      type: "text",
+      className: "tts-price__add-key",
+      placeholder: "供应商/模型名，例：deepseek/deepseek-v4-flash",
+      spellcheck: "false",
+    });
+    this.addKeyInput = keyInput;
+    const note = h("span", { className: "tts-price__add-note" });
+    this.addNote = note;
+
+    const commit = async () => {
+      const raw = keyInput.value.trim();
+      if (!raw) return;
+      const at = raw.indexOf("/");
+      if (at <= 0 || at === raw.length - 1) {
+        this.setAddNote("要写成「供应商/模型名」，中间那个斜杠不能省", true);
+        return;
+      }
+      const key = raw.slice(0, at) + "/" + raw.slice(at + 1);
+      // 已存在就只把它展开定位，不重写一个空价把人家填过的值盖掉。
+      const exists = this.data?.groups?.some((g) => g.items.some((i) => i.key === key));
+      if (exists) {
+        this.setAddNote(`${key} 已经在清单里，直接在上面改就行`, true);
+        return;
+      }
+      // 先写一个空价对象：只立键、不填数，让它立刻出现在清单里、能接着填。
+      // 不能写成四个 0：那是「免费」，与「还不知道」是两件事。
+      // 后端对空对象的处理是「立键但不写数字」，不会推出「恢复默认」。
+      const ok = await this.patch([{ key, price: {}, declare: true }], key);
+      if (ok) {
+        this.setAddNote(`已加入 ${key}，在上面那行填价`);
+        keyInput.value = "";
+      }
+    };
+
+    keyInput.addEventListener("keydown", (e) => {
+      if (e.key === "Enter") { e.preventDefault(); void commit(); }
+    });
+
+    const btn = h("button", { type: "button", className: "tt-btn ghost", onClick: () => void commit() }, "添加模型");
+    return h("div", { className: "tts-price__add" },
+      h("div", { className: "tts-price__add-row" },
+        h("span", { className: "tts-price__add-title" }, "清单里没有的模型"),
+        keyInput, btn,
+      ),
+      note,
+    );
+  }
+
+  setAddNote(text, isError = false) {
+    if (!this.addNote) return;
+    this.addNote.textContent = text || "";
+    if (isError) this.addNote.dataset.kind = "err";
+    else delete this.addNote.dataset.kind;
   }
 
   // ── 批量套用栏 ──

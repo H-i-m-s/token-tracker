@@ -12,25 +12,26 @@ import {
 //   3) 换算不了时的行为 —— 这一条最要紧：宁可显示真实但币种不同的数，
 //      也不能拿 ¥ 去标一个美元的数。
 
-test("词表：两种货币，默认美元", () => {
-  assert.deepEqual(CURRENCIES.map((c) => c.key), ["usd", "cny"]);
-  assert.deepEqual(CURRENCIES.map((c) => c.code), ["USD", "CNY"]);
-  assert.deepEqual(CURRENCIES.map((c) => c.symbol), ["$", "¥"]);
-  assert.equal(DEFAULT_CURRENCY, "usd");
-  assert.equal(normalizeCurrency("cny"), "cny");
+test("词表：两种货币，默认人民币，人民币排第一", () => {
+  assert.deepEqual(CURRENCIES.map((c) => c.key), ["cny", "usd"]);
+  assert.deepEqual(CURRENCIES.map((c) => c.code), ["CNY", "USD"]);
+  assert.deepEqual(CURRENCIES.map((c) => c.symbol), ["¥", "$"]);
+  assert.equal(DEFAULT_CURRENCY, "cny");
+  assert.equal(normalizeCurrency("usd"), "usd");
   for (const bad of [undefined, null, "", "CNY", "rmb", "jpy", 0, {}]) {
-    assert.equal(normalizeCurrency(bad), "usd", `坏值 ${String(bad)} 回默认`);
+    assert.equal(normalizeCurrency(bad), "cny", `坏值 ${String(bad)} 回默认`);
   }
 });
 
 test("setCurrency / getCurrency 是同一份当前值，坏值不生效", () => {
+  setCurrency("usd");
+  assert.equal(getCurrency(), "usd");
+  assert.equal(moneyCode(), "USD");
+  assert.equal(moneySymbol(), "$");
+  setCurrency("rmb");
+  assert.equal(getCurrency(), "cny", "认不出来就回到默认");
   setCurrency("cny");
   assert.equal(getCurrency(), "cny");
-  assert.equal(moneyCode(), "CNY");
-  assert.equal(moneySymbol(), "¥");
-  setCurrency("rmb");
-  assert.equal(getCurrency(), "usd", "认不出来就回到默认");
-  setCurrency("usd");
 });
 
 test("formatMoney：符号、小数位、0 与「取不到」分得清", () => {
@@ -108,8 +109,23 @@ test("moneyHint：人民币要把汇率写出来，因为那是个会变的数",
   assert.doesNotMatch(noRate, /≈/, "别写一个不存在的汇率");
 });
 
-test("currencyInfo：未知键回第一个（美元），不会返回 undefined", () => {
-  assert.equal(currencyInfo("cny").code, "CNY");
-  assert.equal(currencyInfo("jpy").code, "USD");
+test("currencyInfo：认不出的键回缺省项；不带参数时跟随当前值", () => {
+  assert.equal(currencyInfo("usd").code, "USD");
+  assert.equal(currencyInfo("jpy").code, "CNY", "认不出来就回缺省（人民币）");
+  // 不带参数 = 当前生效的那一个，而不是永远回缺省。
+  // 之前这里断言成 DEFAULT_CURRENCY，只要前面某个用例 setCurrency("usd") 过就会挂 ——
+  // 错在断言，不在实现。
+  setCurrency("usd");
+  assert.equal(currencyInfo().key, "usd", "跟随当前值");
+  setCurrency("cny");
   assert.equal(currencyInfo().key, DEFAULT_CURRENCY);
+});
+
+test("显式传 rate 时，换算不了就退回美元符号（不依赖模块里的当前汇率）", () => {
+  // 这里刻意只用显式参数：setFxRate(null) 按设计是忽略坏值（不抹掉已知汇率），
+  // 拿它来「清空」汇率是错的用法，会把测试变成依赖前面用例留下的状态。
+  setCurrency("cny");
+  assert.equal(formatMoney(1, { currency: "cny", rate: null }), "$1");
+  assert.equal(formatMoney(1, { currency: "cny", rate: 0 }), "$1");
+  assert.equal(formatMoney(1, { currency: "cny", rate: "abc" }), "$1");
 });

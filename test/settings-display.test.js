@@ -16,7 +16,7 @@ test("没写过的时候：中文单位 + 紧凑密度", () => {
   const dir = freshDir();
   const service = createSettingsService({ dataDir: dir });
   const read = service.read();
-  assert.deepEqual(read.display, { density: "compact", units: "zh", currency: "usd", colorScheme: "auto" });
+  assert.deepEqual(read.display, { density: "compact", units: "zh", currency: "cny", colorScheme: "auto" });
   assert.equal(read.scanInterval, 60);
   assert.equal(read.highUsageThreshold, 30000);
 });
@@ -25,7 +25,7 @@ test("写入后读回来一致，换个实例读同一份盘也一致", () => {
   const dir = freshDir();
   const service = createSettingsService({ dataDir: dir });
   const saved = service.write({ display: { density: "comfortable", units: "en" } });
-  assert.deepEqual(saved.display, { density: "comfortable", units: "en", currency: "usd", colorScheme: "auto" });
+  assert.deepEqual(saved.display, { density: "comfortable", units: "en", currency: "cny", colorScheme: "auto" });
   const fresh = createSettingsService({ dataDir: dir }).read();
   assert.equal(fresh.display.units, "en");
   assert.equal(fresh.display.density, "comfortable");
@@ -50,13 +50,13 @@ test("只发一项时另一项保持不动（菜单里只换单位，设置页�
 test("从没存过 display 时，只发单位也存得下来（密度按默认兜）", () => {
   const service = createSettingsService({ dataDir: freshDir() });
   const saved = service.write({ display: { units: "en" } });
-  assert.deepEqual(saved.display, { density: "compact", units: "en", currency: "usd", colorScheme: "auto" });
+  assert.deepEqual(saved.display, { density: "compact", units: "en", currency: "cny", colorScheme: "auto" });
   assert.equal(service.read().display.units, "en", "读回来也得是英文");
 });
 
 test("空补丁拿到的是默认值，与 read() 同一个答案", () => {
   const service = createSettingsService({ dataDir: freshDir() });
-  assert.deepEqual(service.write({ display: {} }).display, { density: "compact", units: "zh", currency: "usd", colorScheme: "auto" });
+  assert.deepEqual(service.write({ display: {} }).display, { density: "compact", units: "zh", currency: "cny", colorScheme: "auto" });
 });
 
 test("坏值拦下来，且不落盘", () => {
@@ -80,30 +80,30 @@ test("设置文件被手改坏了：读出来回默认，不倒灌回盘", () =>
   const dir = freshDir();
   fs.writeFileSync(settingsPath(dir), JSON.stringify({ display: { density: "weird", units: "pt" } }));
   const read = createSettingsService({ dataDir: dir }).read();
-  assert.deepEqual(read.display, { density: "compact", units: "zh", currency: "usd", colorScheme: "auto" });
+  assert.deepEqual(read.display, { density: "compact", units: "zh", currency: "cny", colorScheme: "auto" });
   assert.equal(JSON.parse(fs.readFileSync(settingsPath(dir), "utf8")).display.units, "pt", "读的时候不改盘");
 });
 
 // 货币与数字单位是两个独立的开关，但不能互相把对方抹掉：
 // 显示设置菜单只发一项，设置页三项一起发，服务端按份合并。
-test("货币单位：默认美元，写入后能读回，只换货币不带走另外两项", () => {
+test("货币单位：默认人民币，写入后能读回，只换货币不带走另外两项", () => {
   const dir = freshDir();
   const service = createSettingsService({ dataDir: dir });
-  assert.equal(service.read().display.currency, "usd", "没写过就是美元");
+  assert.equal(service.read().display.currency, "cny", "没写过就是人民币");
 
-  const saved = service.write({ display: { currency: "cny" } });
-  assert.equal(saved.display.currency, "cny");
+  const saved = service.write({ display: { currency: "usd" } });
+  assert.equal(saved.display.currency, "usd");
   assert.equal(saved.display.units, "zh", "只换货币不能把数字单位带走");
   assert.equal(saved.display.density, "compact");
-  assert.equal(createSettingsService({ dataDir: dir }).read().display.currency, "cny", "落盘了");
+  assert.equal(createSettingsService({ dataDir: dir }).read().display.currency, "usd", "落盘了");
 });
 
 test("货币单位：坏值拦下来，别的两项照样能写", () => {
   const service = createSettingsService({ dataDir: freshDir() });
-  service.write({ display: { currency: "cny" } });
+  service.write({ display: { currency: "usd" } });
   assert.throws(() => service.write({ display: { currency: "jpy" } }), /货币单位/);
-  assert.equal(service.read().display.currency, "cny", "被拒的写入不能改动盘上那份");
+  assert.equal(service.read().display.currency, "usd", "被拒的写入不能改动盘上那份");
 
   const byUnits = service.write({ display: { units: "en" } });
-  assert.equal(byUnits.display.currency, "cny", "换数字单位不会把货币打回默认");
+  assert.equal(byUnits.display.currency, "usd", "换数字单位不会把货币打回默认");
 });

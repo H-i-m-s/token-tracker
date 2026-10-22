@@ -65,8 +65,13 @@ export const PRICE_FILE_COMMENT = [
 const PRICE_KEYS = ["input", "cacheRead", "cacheWrite", "output"];
 
 // 一个价格对象是否是「四价」形态（新格式）。
+// 一个价格对象是否「四价」形态（新格式）。
+// 空对象也算：它表示「这个模型已经立了键，但四个价都还没填」——
+// 用户自己添加模型时就是这个状态（见 price-catalog 的 declare）。
+// 不把空对象算进来的话，新加的模型会在下一次刷新时凭空消失。
 export function isFlatPrice(v) {
   if (!v || typeof v !== "object" || Array.isArray(v)) return false;
+  if (Object.keys(v).length === 0) return true;
   return PRICE_KEYS.some((k) => v[k] !== undefined) || Array.isArray(v.contextTiers);
 }
 

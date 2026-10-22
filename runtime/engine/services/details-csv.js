@@ -5,7 +5,7 @@
 // 引擎直接查库拼好文本（约 1.5 MB）更省事。命中率口径仍与界面同一处（hitRate）。
 import { hitRate } from "../../../ui/details-view.mjs";
 
-export function buildDetailsCSV(rows, { currency = "usd", fxRate = null } = {}) {
+export function buildDetailsCSV(rows, { currency = "cny", fxRate = null } = {}) {
   const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "缓存命中率", "调用次数", "总Token", "成本"];
   // 成本列跟界面上的币种走：表里与屏幕上两份数字必须是同一种钱，
   // 否则导出后一比对就发现对不上（而两边其实都没错）。

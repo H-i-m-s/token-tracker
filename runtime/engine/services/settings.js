@@ -13,14 +13,15 @@ const PROVIDERS = {
 const SECRETS = new Set(['token', 'password', 'ak', 'sk', 'cookie']);
 const invalid = (message) => Object.assign(new Error(message), { code: 'INVALID_SETTINGS' });
 
-// display 读出来给前端的形状：表格密度 + 数字单位（中文万/亿 ↔ 英文 K/M/B）+ 货币单位（美元/人民币）。
+// display 读出来给前端的形状：表格密度 + 数字单位（中文万/亿 ↔ 英文 K/M/B）+ 货币单位（人民币/美元）。
 // colorScheme 一直是 auto 占位。坏值一律回到默认：设置文件里一个手改的字符串不该把整页数字搞变形。
+// 货币缺省是人民币：这个 App 的用户就是国内按人民币记账的人。
 function normalizeDisplay(value) {
   const d = value && typeof value === 'object' ? value : {};
   return {
     density: d.density === 'comfortable' ? 'comfortable' : 'compact',
     units: d.units === 'en' ? 'en' : 'zh',
-    currency: d.currency === 'cny' ? 'cny' : 'usd',
+    currency: d.currency === 'usd' ? 'usd' : 'cny',
     colorScheme: 'auto',
   };
 }

@@ -175,6 +175,14 @@ export function applyPricePatches(dataDir, patches, log) {
       if (table[key]) { delete table[key]; changed += 1; }
       continue;
     }
+    // declare: true —— 「立一个键，但还没填数」。
+    // 这是「用户自己加一个清单里没有的模型」用的：它得先出现在列表里才能填，
+    // 而此刻四价都是空。不能拒绝它（那就没法往里填），也不能把它当恢复默认（那会把键删掉）。
+    if (patch.declare === true) {
+      table[key] = table[key] || {};
+      changed += 1;
+      continue;
+    }
     const norm = normalizePrice(patch.price);
     // 归一化后一个字段都不剩 = 提交的价格里没有一个是有效数字。
     // 不能当「空价格」写进去：那会把这一项的所有价抹成空，与「恢复默认」混成同一件事，

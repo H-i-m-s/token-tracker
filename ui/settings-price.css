@@ -59,6 +59,40 @@
   overscroll-behavior: contain;
 }
 .tts-price__body[hidden] { display: none !important; }
+
+/* ── 自己加一个模型 ──
+   并集只能盖住「用过的」与「catalog 里配过的」，第三个来源得给个口。
+   输入就是价格表自己的键形状（供应商/模型），不做供应商下拉 ——
+   供应商名与模型名本来就没有权威清单，下拉会把用户关死。 */
+.tts-price__add {
+  margin: 2px 0 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--tt-b1);
+}
+.tts-price__add-row { display: flex; align-items: center; gap: 8px; }
+.tts-price__add-title { flex: 0 0 auto; color: var(--tt-t3); font-size: 12px; white-space: nowrap; }
+.tts-price__add-key {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 4px 8px;
+  box-sizing: border-box;
+  border: 1px solid var(--tt-b1);
+  border-radius: 6px;
+  background: var(--tt-bg);
+  color: var(--tt-t1);
+  font: 400 12px var(--font-mono);
+}
+.tts-price__add-key::placeholder { color: var(--tt-t4); }
+.tts-price__add-key:hover { border-color: var(--tt-b2); }
+.tts-price__add-key:focus-visible {
+  outline: none;
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+.tts-price__add-note { display: block; margin-top: 5px; color: var(--tt-t3); font-size: 11.5px; }
+.tts-price__add-note:empty { display: none; }
+.tts-price__add-note[data-kind="err"] { color: var(--tt-red); }
+
 .tts-price__batch {
   position: sticky;
   top: 0;

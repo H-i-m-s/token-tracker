@@ -8,12 +8,16 @@
 //   量级单位决定「数怎么写」（1.2 亿 / 1.2 B），货币决定「这个数是什么钱」（$ / ¥）。
 //   两者可以各自独立地换，混在一起会让「美元 + 中文单位」这种组合没有地方表达。
 
+// 顺序不是装饰：设置页下拉、以及任何「认不出来就用 CURRENCIES[0]」的地方都读这个数组。
+// 人民币排第一，因为它是缺省项。
 export const CURRENCIES = [
-  { key: "usd", label: "美元（$）", code: "USD", symbol: "$" },
   { key: "cny", label: "人民币（¥）", code: "CNY", symbol: "¥" },
+  { key: "usd", label: "美元（$）", code: "USD", symbol: "$" },
 ];
 
-export const DEFAULT_CURRENCY = "usd";
+// 缺省是人民币：这个 App 的用户就是国内按人民币记账的人，
+// 每次先看到美元再手动切一次，是把默认值定反了。
+export const DEFAULT_CURRENCY = "cny";
 
 // 认不出来的值一律回到默认：设置是磁盘上的字符串，坏值不该让整页金额变成 NaN。
 export function normalizeCurrency(value) {
@@ -35,8 +39,13 @@ export function getCurrency() {
   return current;
 }
 
+// 认不出来的键不抛错、也不返回 undefined：直接给缺省项。
+// 注意别写成 `find(c => c.key === normalizeCurrency(key))` —— normalizeCurrency 会把坏值
+// 换成缺省值 "cny"，而 "cny" 在词表里是找得到的，逻辑上没错；但一旦将来缺省值不在词表里，
+// 这条路就变成「找一个不存在的键」。直接用键本身匹配，找不到再回缺省，更直。
 export function currencyInfo(key = current) {
-  return CURRENCIES.find((c) => c.key === normalizeCurrency(key)) || CURRENCIES[0];
+  const k = CURRENCIES.some((c) => c.key === key) ? key : DEFAULT_CURRENCY;
+  return CURRENCIES.find((c) => c.key === k) || CURRENCIES[0];
 }
 
 // 页面拿到看板数据时调一次。传 null / 非正数就当没拿到（不让它把已有的汇率抹成 0）。
@@ -95,7 +104,10 @@ export function formatMoney(usd, options = {}) {
   if (!Number.isFinite(raw)) return "—";
 
   const convertible = key === "usd" || (Number.isFinite(Number(rate)) && Number(rate) > 0);
-  const unit = convertible ? currencyInfo(key) : CURRENCIES[0];
+  // 换算不了时退回**美元**，不是退回「词表第一项」。
+  // 这里踩过一次：CURRENCIES[0] 原本恰好是美元，把缺省改成人民币之后，
+  // 这句就变成了「退回人民币」——直接拿 ¥ 去标一个美元数值，比不换算更糟。
+  const unit = convertible ? currencyInfo(key) : currencyInfo("usd");
   const value = convertible && unit.key === "cny" ? raw * Number(rate) : raw;
 
   if (value === 0) return unit.symbol + "0";

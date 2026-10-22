@@ -303,3 +303,50 @@ test("并集清单里每个供应商块都带自己的统计（界面上块头�
   // 块内按用量降序
   assert.deepEqual(group.items.map((i) => i.model), ["m1", "m2"]);
 });
+
+// ── 用户自己添加清单里没有的模型 ──
+// 并集只能盖住「用过的」与「catalog 里配过的」。用户手里总有第三个来源：
+// 刚签的供应商、手动算的套餐。这条路径必须通，否则整张表只能改不能加。
+test("用户自己加一个模型：立键 → 出现在清单 → 填价 → 能删", () => {
+  const dir = tmp();
+  const home = fakeHome({});
+  const store = fakeStore([]);
+
+  // 1. 立键（还没有任何价格）
+  assert.equal(applyPricePatches(dir, [{ key: "v/m", price: {}, declare: true }]).ok, true);
+  let cat = buildPriceCatalog({ dataDir: dir, store, home });
+  assert.equal(cat.count, 1, "空价也要出现在清单里，否则用户没法接着填");
+  const item = cat.groups[0].items[0];
+  assert.equal(item.key, "v/m");
+  assert.equal(item.source, "user");
+  assert.equal(item.priced, false, "四个价都没填 = 未定价");
+
+  // 2. 填价
+  assert.equal(applyPricePatches(dir, [{ key: "v/m", price: { input: 1, output: 2 } }]).ok, true);
+  cat = buildPriceCatalog({ dataDir: dir, store, home });
+  assert.equal(cat.pricedCount, 1);
+  assert.equal(cat.groups[0].items[0].price.input, 1);
+
+  // 3. 删掉
+  assert.equal(applyPricePatches(dir, [{ key: "v/m", price: null }]).ok, true);
+  cat = buildPriceCatalog({ dataDir: dir, store, home });
+  assert.equal(cat.count, 0);
+});
+
+test("空价格对象不能被当成垃圾数据丢掉（否则新加的模型下次刷新就消失）", () => {
+  assert.equal(isFlatPrice({}), true);
+  assert.deepEqual(normalizePrice({}), {});
+  const dir = tmp();
+  writeJson(dir, "price-table.json", { "v/m": {} });
+  assert.deepEqual(Object.keys(readUserPriceTable(dir)), ["v/m"]);
+});
+
+test("自己加的模型放在哪个供应商块：按斜杠前半段归块，模型名里的斜杠不拆", () => {
+  const dir = tmp();
+  const home = fakeHome({});
+  applyPricePatches(dir, [{ key: "magpie-gateway/workbuddy/space-bunny", price: { input: 3 }, declare: true }]);
+  const cat = buildPriceCatalog({ dataDir: dir, store: fakeStore([]), home });
+  const item = cat.groups[0].items[0];
+  assert.equal(item.provider, "magpie-gateway");
+  assert.equal(item.model, "workbuddy/space-bunny");
+});

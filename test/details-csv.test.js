@@ -10,7 +10,7 @@ import { hitRate } from "../ui/details-view.mjs";
 // 搬迁前的实现：原样留在这里当基线。引擎那份必须与它逐字节相同 ——
 // 同一批行，前后端给出不同的 CSV 或换行/转义不一样，导出的文件就对不上账。
 // ─────────────────────────────────────────────────────────────────────────────
-function baselineBuildDetailsCSV(rows, { currency = "usd", fxRate = null } = {}) {
+function baselineBuildDetailsCSV(rows, { currency = "cny", fxRate = null } = {}) {
   const header = ["时间", "Agent", "Provider", "模型", "输入Token", "输出Token", "缓存命中率", "调用次数", "总Token", "成本"];
   const cny = currency === "cny" && Number(fxRate) > 0;
   const toMoney = (usd) => {
@@ -32,14 +32,14 @@ function baselineBuildDetailsCSV(rows, { currency = "usd", fxRate = null } = {})
   return "\uFEFF" + [header, ...lines].map(line => line.map(cell => `"${String(cell).replace(/"/g, '""')}"`).join(",")).join("\r\n");
 }
 
-test("明细 CSV：表头含缓存命中率与调用次数两列，末列自报币种", () => {
-  const csv = buildDetailsCSV([]).replace("\uFEFF", "");
-  assert.equal(csv, '"时间","Agent","Provider","模型","输入Token","输出Token","缓存命中率","调用次数","总Token","成本(USD)"');
+test("明细 CSV：表头含缓存命中率与调用次数两列，末列自报币种（缺省人民币）", () => {
+  const csv = buildDetailsCSV([], { fxRate: 7.1 }).replace("\uFEFF", "");
+  assert.equal(csv, '"时间","Agent","Provider","模型","输入Token","输出Token","缓存命中率","调用次数","总Token","成本(CNY)"');
 });
 
 test("明细 CSV：人民币口径下成本列按汇率换算，表头同步改成 CNY", () => {
   const rows = [{ time: "2026-09-30T01:00:00.000Z", model: "m", inputTokens: 1000, outputTokens: 10, totalTokens: 1010, cost: 1 }];
-  const usd = buildDetailsCSV(rows).replace("\uFEFF", "").split("\r\n");
+  const usd = buildDetailsCSV(rows, { currency: "usd" }).replace("\uFEFF", "").split("\r\n");
   const cny = buildDetailsCSV(rows, { currency: "cny", fxRate: 7.1 }).replace("\uFEFF", "").split("\r\n");
   assert.match(usd[0], /"成本\(USD\)"$/);
   assert.match(usd[1], /"1010","1"$/, "美元口径原样写");
@@ -160,7 +160,7 @@ test("RPC token-tracker.details.csv：全量重扫后表立刻可用，导出等
     const expectedRows = sess.conversations
       .map((c) => rowOf(sess, c, engine.ctx._tokenCache.data.agentNames))
       .sort((a, b) => (String(a.time) < String(b.time) ? 1 : -1)); // 默认时间倒序
-    assert.equal(csv, buildDetailsCSV(expectedRows), "导出必须等于「从 conversations 直接拼」");
+    assert.equal(csv, buildDetailsCSV(expectedRows, { currency: "cny", fxRate: 7.1 }), "导出必须等于「从 conversations 直接拼」");
 
     const lines = csv.replace("\uFEFF", "").split("\r\n");
     assert.equal(lines.length, 3, "表头 + 两轮");
