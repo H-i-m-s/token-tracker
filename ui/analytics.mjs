@@ -121,13 +121,25 @@ const axisX = (i, count, width) => (count <= 1 ? width / 2 : (i * width) / (coun
 
 // 叠加：每条曲线各自从基线画起，互相重叠。
 // 这是「0–24 时分布」那张图的形状：填充很淡，重叠层数越多颜色越深，描边始终清楚。
+//
+// 每层返回两个 d，不是两个几何：
+//   area —— 曲线 + 落到基线 + 沿基线拉回 + 闭合。只用来填色。
+//   line —— 光秃曲的那段曲线，不闭合。只用来描边。
+//
+// 为什么非要拆：面积图的填充路径必须闭合，闭合就会在末点竖直落到底，
+// 那条竖边是画法上的收尾边，不是数据。以前 fill 与 stroke 挂同一条 path，
+// 描边自然会把它一起描亮，而填充只有 .15 不透明度；最右那一列又正好压在右边框上，
+// 于是远处看就成了「用量掉到 0」。拆开后竖边还在（不填色就没这层了），
+// 但它不再被描一道亮线，眼睛读的是「图到这里为止」。
 function overlayPaths(layers, count, width, height, max) {
   const Y = (v) => height - (v / max) * (height - 6);
   return layers.map((layer) => {
-    if (!count) return '';
+    if (!count) return { area: '', line: '' };
     const pts = layer.values.map((v, i) => [axisX(i, count, width), Y(v)]);
-    return `M${pts[0][0]},${pts[0][1]}` + splineCurve(pts)
+    const curve = `M${pts[0][0]},${pts[0][1]}` + splineCurve(pts);
+    const area = curve
       + ` L${axisX(count - 1, count, width)},${height} L${axisX(0, count, width)},${height} Z`;
+    return { area, line: curve };
   });
 }
 
@@ -288,8 +300,13 @@ function createFlowPanel() {
   const cellLabel = (c) => (useHour ? `${c.date} ${String(c.hour).padStart(2, '0')}:00` : c.date);
 
   // 把「旧形状按新列数重采样」钉成当前形态：两串 d 段数一样，浏览器才能插值。
+  // 收的是「一条形状的两半」（area / line），两半必须一起钉：
+  // 只钉一半，另一半会当着你的面突然跳到新形状上去。
+  const pinShape = (shape, d) => {
+    for (const el of [shape.areaEl, shape.lineEl]) pin(el, d && (el === shape.areaEl ? d.area : d.line));
+  };
   const pin = (el, d) => {
-    if (!d) return;
+    if (!el || !d) return;
     el.style.transition = 'none';
     el.setAttribute('d', d);
     void el.getBoundingClientRect();
@@ -299,15 +316,34 @@ function createFlowPanel() {
     const from = Math.max(1, rec.values.length - 1);
     return new Array(count).fill(0).map((_, k) => splineValueAt(rec.values, (k / Math.max(1, count - 1)) * from));
   };
-  const buildOne = (values, count, m) => overlayPaths([{ values }], count, cw, ch, m)[0] || '';
-  const makePath = (layer, d) => node('path', {
-    class: 'tt-flow-line tt-flow-line-vis',
-    d,
-    fill: COLORS[layer.colorIndex % COLORS.length],
-    stroke: COLORS[layer.colorIndex % COLORS.length],
-    'fill-opacity': .15,
-    'stroke-width': 1.4,
-  }, [title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]);
+  // 一条零形状（涨起来 / 降下去用的两端），同样返回两半。
+  // 上限用调用处当前的 max：零值在哪个上限下都落基线，形状一样，
+  // 但传同一个 max 可以保证段数与别的形状一致（与原来那句补零的语义对齐）。
+  const zeroShape = (count, m) => overlayPaths([{ values: new Array(count).fill(0) }], count, cw, ch, m)[0];
+  const buildOne = (values, count, m) => overlayPaths([{ values }], count, cw, ch, m)[0] || { area: '', line: '' };
+  // 一层 = 一组（填充 + 描边）。两条子 path 共用同一个 d 来源，
+  // 但给不同的 paint 属性：一条只管填、一条只管描。
+  const makePath = (layer, d) => {
+    const color = COLORS[layer.colorIndex % COLORS.length];
+    const areaEl = node('path', {
+      class: 'tt-flow-line',
+      d: d ? d.area : '',
+      fill: color,
+      stroke: 'none',
+      'fill-opacity': .15,
+    });
+    const lineEl = node('path', {
+      class: 'tt-flow-line',
+      d: d ? d.line : '',
+      fill: 'none',
+      stroke: color,
+      'stroke-width': 1.4,
+    });
+    // 悬停说明挂在组上：挂在子元素上时，指到填充那半才出提示，描边那半没有。
+    const g = node('g', { class: 'tt-flow-shape' }, [areaEl, lineEl, title(`${nameOf(layer.id)} · ${compact(layer.total)} Token`)]);
+    // 淡出 / 透明度一律作用于整组：只改子元素的话，填充淡完了描边还亮着。
+    return { el: g, areaEl, lineEl };
+  };
 
   // 悬停用的一套值每次都换，但监听器只挂一次（元素现在是常驻的，重挂会越堆越多）。
   const clearHover = () => {
@@ -411,10 +447,12 @@ function createFlowPanel() {
       // ① 真的不再画的层：先缓降到 0（保持自己的颜色），降完再淡掉、移除
       for (const { rec, adopted } of idle) {
         if (adopted) continue;                                  // 这具元素已被认领，别送走
-        if (rec.columns !== cells.length) pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
-        rec.el.setAttribute('d', buildOne(new Array(cells.length).fill(0), cells.length, max));
+        if (rec.columns !== cells.length) pinShape(rec, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
+        const flat = zeroShape(cells.length, max);
+        rec.areaEl.setAttribute('d', flat.area);
+        rec.lineEl.setAttribute('d', flat.line);
         rec.timer = setTimeout(() => {
-          rec.el.setAttribute('opacity', '0');   // 淡出交给样式表，不写内联
+          rec.el.setAttribute('opacity', '0');   // 淡出交给样式表，不写内联；整组一起淡
           rec.timer2 = setTimeout(() => {
             rec.el.remove();
             for (const [k2, v2] of pathEls) if (v2 === rec) pathEls.delete(k2);   // 被认领过的元素换了 key
@@ -428,15 +466,17 @@ function createFlowPanel() {
         let rec = slots[i].rec;
         const fresh = !rec;
         if (fresh) {
-          rec = { el: makePath(layer, ''), columns: cells.length, values: [], max: 1 };
+          // makePath 返回的是那个组本身（已带子节点），这里把手柄一起记在 rec 上。
+          const made = makePath(layer, null);
+          rec = { ...made, columns: cells.length, values: [], max: 1 };
         } else {
           // 刚从占比切回来：这具节点是被寄存的。先接回文档，再把旧形状钉住，
           // 顺序不能反——元素不在文档里时逼布局是没用的。
           if (!rec.el.isConnected) {
             pathsLayer.append(rec.el);
-            pin(rec.el, rec.held || buildOne(new Array(cells.length).fill(0), cells.length, max));
+            pinShape(rec, rec.held || zeroShape(cells.length, max));
           }
-          if (rec.columns !== cells.length) pin(rec.el, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
+          if (rec.columns !== cells.length) pinShape(rec, rec.values.length ? buildOne(resample(rec, cells.length), cells.length, rec.max) : null);
         }
         // 次序：不动。同一帧里把节点摘下来重插（不管 append 还是 insertBefore），
         // 浏览器就把它当成新插入的元素，d 的过渡不会建立。而且叠放先后本来就不该每帧变。
@@ -452,14 +492,16 @@ function createFlowPanel() {
         // 新出现的层先从 0 起：这一帧必须在它挂进文档之后写，并逼一次布局，
         // 否则浏览器没有“之前的样子”，下面那行新 d 会直接落地 = 突然出现。
         if (fresh) {
-          rec.el.setAttribute('d', buildOne(new Array(cells.length).fill(0), cells.length, max));
+          const flat = zeroShape(cells.length, max);
+          rec.areaEl.setAttribute('d', flat.area);
+          rec.lineEl.setAttribute('d', flat.line);
           void rec.el.getBoundingClientRect();
         }
-        rec.el.setAttribute('d', paths[i]);
-        rec.el.setAttribute('fill', color);
-        rec.el.setAttribute('stroke', color);
-        rec.el.setAttribute('fill-opacity', '.15');
-        rec.el.setAttribute('stroke-width', '1.4');
+        rec.areaEl.setAttribute('d', paths[i].area);
+        rec.lineEl.setAttribute('d', paths[i].line);
+        // 颜色画在子元素上（makePath 里已设），这里只在换层身份时跟着换。
+        rec.areaEl.setAttribute('fill', color);
+        rec.lineEl.setAttribute('stroke', color);
         rec.el.setAttribute('opacity', '1');
         const tip = rec.el.querySelector('title');
         if (tip) tip.textContent = `${nameOf(layer.id)} · ${compact(layer.total)} Token`;   // 换了身份的要改名

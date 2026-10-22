@@ -1327,7 +1327,9 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
 .tt-flow-panel .tt-legend-totals button > b { text-align: center; font-size: 12px; }
 /* 河图曲线：形状、颜色、透明度都走过渡，缓动是 S 形（先增速后减速）——
    换范围/聚焦/换维度时是“流”过去，不是跳过去。列数变了没法直接插值，
-   脚本会先把旧形状按新列数重采样钉住，再换成新的 d（见 ui/analytics.mjs）。 */
+   脚本会先把旧形状按新列数重采样钉住，再换成新的 d（见 ui/analytics.mjs）。
+   每条河流现在是一个 <g>，里面两条 path 共用这份过渡：
+   一条只填（闭合）、一条只描（不闭合），两半同步变形。 */
 .tt-flow-panel .tt-flow-plot .tt-flow-line {
   transition: d 260ms cubic-bezier(.4, 0, .2, 1),
               fill 260ms cubic-bezier(.4, 0, .2, 1),
@@ -1337,6 +1339,12 @@ em 相对卡片继承的字号（来自全局，不来自宽度），不自引�
 }
 /* 淡出也必须走这条规则，不能在脚本里写内联 transition：
    内联会把整条 transition 列表顶掉，那条曲线的 d 从此只能跳变。 */
+/* 组本身只负责透明度（整层淡入淡出），变形交给两条子 path。
+   淡出写在子元素上不行：填充淡完了描边还亮着。 */
+.tt-flow-panel .tt-flow-plot .tt-flow-shape {
+  transition: opacity 160ms ease;
+  fill: none;
+}
 /* 横向网格线（HTML 层，不在 SVG 里）：与纵轴刻度共用同一个 top 和同一条过渡，
    纵轴重算时一起滑，不会出现“网格已经跳到新刻度、刻度还在半路”的突变。 */
 .tt-flow-panel .tt-flow-plot .tt-flow-gridline {
