@@ -45,8 +45,9 @@ async function request(method, payload = {}) {
   // 上一轮扫描的结果（启动时已从 SQLite 播下）是完整的，先用它顶住首屏。
   const hasCached = !!(cached && cached.sessions && Object.keys(cached.sessions).length);
   const handlersReady = handlers.has('token-tracker.snapshot');
-  // 与扫描无关的方法（余额打外网、官网用量读自己的库）不该被“扫描中”拦住。
-  const scanIndependent = method === 'balance' || method === 'ds-usage';
+  // 与扫描无关的方法（余额打外网、官网用量读自己的库、价格清单读两份静态数据与 turns 表）
+  // 不该被“扫描中”拦住 —— 价格表要在任何时候都打得开。
+  const scanIndependent = method === 'balance' || method === 'ds-usage' || method === 'used-models';
   if (!handlersReady || (!cache?.ready && !(scanIndependent || hasCached))) {
     if (method === 'snapshot') return { ready: false, realtime: null, balances: [], agentNames: {}, revision };
     throw Object.assign(new Error('数据扫描中，请稍后刷新'), { code: 'NOT_READY' });
@@ -85,9 +86,26 @@ async function request(method, payload = {}) {
     return await fn(p.sessionKey, p.seq);
   }
   // details/csv：明细 CSV 导出（引擎拼好文本，约 1.5 MB）。gate 与 dashboard 同源（都要缓存就绪）。
-  const name = { snapshot: 'snapshot', balance: 'balance', refresh: 'refresh', speed: 'speed', 'ds-usage': 'ds-usage', 'details/csv': 'details.csv', 'settings/read': 'settings.read', 'settings/write': 'settings.write' }[method];
-  if (!name) throw Object.assign(new Error('Unknown method'), { status: 404 });
-  const value = await handlers.get('token-tracker.' + name)(payload);
+  // 白名单：RPC 方法名 → bus handler 名。
+  //
+  // 「新增一个 RPC 必须同时改两处」是一个已经被踩过的坑：注册了 handler 却忘了写进这张表，
+  // 表现是 Unknown method —— 而且**重启也没用**，因为两处都在引擎里，一起重启。
+  // 于是能看出来「不是新旧进程问题」的时刻很少，很容易误判。
+  //
+  // 现在改成：表里只写「方法名 → handler 名」的**例外**（名字不一样的那几个），
+  // 其余直接从已注册的 handler 推导。即 `token-tracker.foo` 对应 RPC 方法 `foo`，
+  // 无需再登记。这样新加一个 handler 就自动可调，不会再出现「注册了但调不到」。
+  const RPC_ALIASES = {
+    'details/csv': 'details.csv',
+    'settings/read': 'settings.read',
+    'settings/write': 'settings.write',
+  };
+  const handlerName = RPC_ALIASES[method] || method;
+  const handlerKey = 'token-tracker.' + handlerName;
+  if (!handlers.has(handlerKey)) {
+    throw Object.assign(new Error('Unknown method'), { status: 404 });
+  }
+  const value = await handlers.get(handlerKey)(payload);
   if (method === 'snapshot') { value.revision = revision; if (value.realtime) delete value.realtime.sessionPath; }
   if (value?.error) throw new Error(value.error);
   return value;
