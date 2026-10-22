@@ -158,11 +158,25 @@ export class PriceCard {
     // 只锁 overflow：高度动画期间内容不能溢出。
     body.style.overflow = "hidden";
     body.style.height = `${from}px`;
-    this.anim = body.animate(
+    const anim = body.animate(
       [{ height: `${from}px` }, { height: `${to}px` }],
       { duration: collapseDuration(Math.abs(to - from)), easing: COLLAPSE_EASE, fill: "forwards" },
     );
-    this.anim.onfinish = () => { this.anim = null; this.paintCollapse(next); };
+    this.anim = anim;
+    // 收尾必须拿**局部变量 anim** 去 cancel，不能靠 paintCollapse 里那个 `if (this.anim)`。
+    //
+    // 踩过的坑（本轮的 bug）：
+    //   this.anim = null; this.paintCollapse(next);
+    // 先把字段置空再交给 paintCollapse，而 paintCollapse 能不能 cancel 全看这个字段
+    // —— 条件永远不成立，动画就从来没被取消过。
+    // fill:"forwards" 于是永久铉住高度：
+    //   展开之后不论内容怎么长（勾选弹出批量栏、搜索后清空），
+    //   body 的高度都停在动画结束那一瞬的值上，内容直接从卡片下缘滲出去。
+    // 表现就是「批量选中时部分模型被顶出卡片」，且刷新后一切正常（新卡没跑过动画）。
+    anim.onfinish = () => {
+      if (this.anim === anim) this.anim = null;
+      this.paintCollapse(next, anim);
+    };
   }
 
   /** 量展开后的高度：先把 hidden 揭开量，量完盖回去，避免闪一下。
@@ -180,18 +194,46 @@ export class PriceCard {
     return raw;
   }
 
-  /** 过渡落地：把动画留下的内联高度清掉，交回布局自己算。 */
-  paintCollapse(collapsed) {
+  /** 过渡落地：把动画留下的内联高度清掉，交回布局自己算。
+   *
+   *  `extra` 是刚播完、还没来得及取消的那一个动画。
+   *  必须在这里显式 cancel 掉它 —— 否则 `fill: "forwards"` 会继续铉住高度，
+   *  而内联 height 已经被清空，看上去一切正常，只有内容长高时才会露出来。
+   */
+  paintCollapse(collapsed, extra = null) {
     const body = this.bodyEl;
-    if (this.anim) { try { this.anim.cancel(); } catch {} this.anim = null; }
+    for (const a of [this.anim, extra]) {
+      if (!a) continue;
+      try { a.cancel(); } catch {}
+    }
+    this.anim = null;
     body.hidden = collapsed;
     body.style.height = "";
     body.style.overflow = "";
   }
 
+  /**
+   * 内容要变了，先确保没有遗留的高度动画在铉住 body。
+   *
+   * paint() 会 replaceChildren 重建整块内容，高度会变；
+   * 但一个 fill:"forwards" 的旧动画会把 body 高度铉在旧值上，而 body 自己不滚，
+   * 于是多出来的内容直接漫出卡片。这一个备份间避免以后再踩同一个坑。
+   */
+  releaseHeightLock() {
+    const body = this.bodyEl;
+    if (!body) return;
+    const live = typeof body.getAnimations === "function" ? body.getAnimations() : [];
+    for (const a of live) { try { a.cancel(); } catch {} }
+    if (this.anim) { try { this.anim.cancel(); } catch {} this.anim = null; }
+    // 只清掉动画留下的那两个内联属性；用户主动展开时它们本来就不该存在。
+    if (body.style.height) body.style.height = "";
+    if (body.style.overflow === "hidden") body.style.overflow = "";
+  }
+
   // 数据到了：重画整块。价格表重画是廉价的，不值得为增量更新写一套 diff。
   paint() {
     if (!this.data) return;
+    this.releaseHeightLock();
     const { count } = this.data;
     this.bodyEl.replaceChildren();
     // 添加模型与搜索永远在最上面，哪怕清单是空的 ——
@@ -483,6 +525,10 @@ export class PriceCard {
     const anyFilled = PRICE_FIELDS.some((f) => String(this.batch[f.key] ?? "").trim() !== "");
     this.applyBtn.disabled = n === 0 || !anyFilled;
     this.clearBtn.disabled = n === 0;
+    // 批量栏的显隐会改内容高度。若此刻 body 上还挂着一个 forwards 动画，
+    // 高度会停在旧值而内容继续长（就是「被顶出卡片」那个 bug）。
+    // 先把锁拆了再改显隐，顺序不能反。
+    this.releaseHeightLock();
     if (this.batchEl) this.batchEl.hidden = n === 0;
   }
 
