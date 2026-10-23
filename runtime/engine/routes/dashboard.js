@@ -1327,18 +1327,28 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
           const hours = s.hourlyBreakdown?.[day];
           if (hours) {
             const weekday = new Date(day + "T00:00:00").getDay();
+            let sliceSum = 0;
+            let matched = 0;
             for (const [hh, bucket] of Object.entries(hours)) {
               const hm = bucket?.models?.[mn];
               if (!hm) continue;
               const hourNum = Number(hh);
               if (!Number.isFinite(hourNum)) continue;
-              estimatedCost += calcCost(price, hm, { minutes: hourNum * 60, weekday });
+              sliceSum += calcCost(price, hm, { minutes: hourNum * 60, weekday });
+              matched += 1;
             }
-            // 拿到小时表就不再用日合计，否则会重复计一笔。
-            continue;
+            // 匹配到桶才算结算完成。一个都没匹配上就往下走日合计：
+            //   · 升级前的缓存，hourlyBreakdown 里还没有 models 字段
+            //   · 账本按天聚出来的行
+            // 这两种情况下如果直接 continue，这一天的钱会静默变成 0 ——
+            // 看板上显示成「便宜了」，比算高更难发现。
+            if (matched > 0) {
+              estimatedCost += sliceSum;
+              continue;
+            }
           }
-          // 没有小时表（老缓存、账本按天聚出来的行）：退回基础四价。
-          // 会偏高或偏低，但不会算成 0，也不会把分时价错当成全时段价。
+          // 没有小时表、或者有表但一个桶都对不上：退回基础四价。
+          // 会偏高或偏低，但不会算成 0。
         }
         estimatedCost += calcCost(price, mv);
       }
