@@ -23,6 +23,7 @@ import { h } from "./components.mjs";
 import { filterPriceGroups, splitHighlight } from "./price-filter.mjs";
 import { displayPrice, toStoredPrice, priceUnitLabel } from "./price-money.mjs";
 import { openPriceDetail } from "./price-detail.mjs";
+import { attachHoverTip, upgradeTitles, closeHoverTip } from "./hover-tip.mjs";
 import { expandFromZero, collapseToZero, prefersReducedMotion } from "./collapse-anim.mjs";
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
 // 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
@@ -278,6 +279,9 @@ export class PriceCard {
   // 数据到了：重画整块。价格表重画是廉价的，不值得为增量更新写一套 diff。
   paint() {
     if (!this.data) return;
+    // 重画会整块换掉节点，正悬停的那个元素被移除时不发 mouseleave，
+    // 浮层会停在原来的位置。重画前先收掉。
+    closeHoverTip();
     this.releaseHeightLock();
     const { count } = this.data;
     this.bodyEl.replaceChildren();
@@ -309,6 +313,9 @@ export class PriceCard {
     this._paintedOnce = true;
 
     this.repaintList();
+    // 把这一批节点的原生 title 换成自绘浮层。
+    // 放在最后统一扫：列头、价格框、批量栏、搜索按钮都是这之后才挂成形的。
+    upgradeTitles(this.bodyEl);
   }
 
   /**
@@ -725,8 +732,12 @@ export class PriceCard {
     // 双击永远接不住。现在 label 只包勾选框，名字独立。
     // 不用 title：原生提示框是系统配色，深色卡片上突然浮出一块深底白字，
     // 跟旁边自绘的下拉、时间弹层完全不是一套东西。
-    // “可以双击”改用光标和下划线交代，完整键（供应商/模型）进详情页就能看到（头部那行）。
+    // 改用自绘浮层（ui/hover-tip.mjs）：上面一行是完整键，下面一行说双击能干什么。
     const modelName = h("span", { className: "tts-price__model" }, this.markText(item.model));
+    attachHoverTip(modelName, () => [
+      h("div", { className: "tts-hovertip__key" }, item.key),
+      h("div", { className: "tts-hovertip__hint" }, "双击编辑分时、长上下文分档、按次计价"),
+    ]);
     modelName.addEventListener("dblclick", (e) => {
       e.preventDefault();
       this.openDetail(item);

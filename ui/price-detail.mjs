@@ -15,6 +15,7 @@
 import { h } from "./components.mjs";
 import { PRICE_FIELDS } from "./price-card.mjs";
 import { createTimeField, closeOpenTime } from "./time-field.mjs";
+import { upgradeTitles } from "./hover-tip.mjs";
 
 // 注意：这里不能把 PRICE_FIELDS 提到模块顶层存成常量。
 // price-card 也会 import 本模块（双击入口），两边形成环，
@@ -295,6 +296,8 @@ export function openPriceDetail({ item, save, onSaved }) {
   dlg.addEventListener("cancel", (e) => { e.preventDefault(); close(); });
 
   document.body.append(dlg);
+  // 原生 title 全部升级成自绘浮层（字段说明、删除按钮、关闭按钮）。
+  upgradeTitles(dlg);
   // 内容区一滚，触发区就跟着动了，而弹层是 fixed、不会跟 —— 直接关掉，
   // 总比让它停在错位的地方好。
   dlg.querySelector(".tts-pdetail__body")?.addEventListener("scroll", () => closeOpenTime(), { passive: true });

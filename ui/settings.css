@@ -344,3 +344,39 @@ html:not([data-tt-appearance]) .tts-body {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
 }
 .tts-about__numwrap em { font-style: normal; font-size: 11px; color: var(--tt-t3); }
+
+/* ── 悬停提示 ──────────────────────────────────────────────────────────────
+   替代浏览器原生 title 的小浮层。节点由 ui/hover-tip.mjs 挂到 body，
+   所以这里用 fixed 定位，不受任何祖先容器的 overflow 影响。
+   形制向旁边的弹层看齐：卡片底色、一道细边框、不发辉、不加箭头。 */
+.tts-hovertip {
+  position: fixed;
+  z-index: 2147483000;
+  max-width: 300px;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--tt-b2);
+  border-radius: 7px;
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+  font-size: 11.5px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.tts-hovertip.is-in { opacity: 1; }
+.tts-hovertip__key {
+  font: 400 11px var(--font-mono);
+  color: var(--tt-t3);
+  overflow-wrap: anywhere;
+}
+.tts-hovertip__hint { color: var(--tt-t2); }
+.tts-hovertip__key + .tts-hovertip__hint { margin-top: 2px; }
+.tts-hovertip__line { color: var(--tt-t2); }
+.tts-hovertip__line + .tts-hovertip__line { margin-top: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tts-hovertip { transition: none; }
+}
