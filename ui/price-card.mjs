@@ -94,6 +94,72 @@ function priceToValues(price) {
   return out;
 }
 
+// ── 「装不进四格」的那些配置 ──
+//
+// 分时定价、长上下文分档、按次计价都放不进一行里的四个格子（行高就是 30px），
+// 它们配在详情页。但主卡上得把「这个模型不走四格」表现出来 ——
+// 否则那四个框看起来和没配过的完全一样，用户永远不知道哪些模型已经自己配过了。
+
+/** 从价格对象里读出三种复杂配置的存在与数量。 */
+function extraKinds(price) {
+  const p = price || {};
+  const time = Array.isArray(p.timeTiers) ? p.timeTiers.length : 0;
+  const ctx = Array.isArray(p.contextTiers) ? p.contextTiers.length : 0;
+  const perCall = Number(p.perCall) > 0;
+  return { time, ctx, perCall, any: time > 0 || ctx > 0 || perCall };
+}
+
+/** 摘要文字：只报类型和数量，不报价格。
+ *
+ *  为什么不带数字：四个价（输入/缓存读/输出/缓存写）能差到几十倍，
+ *  一行塞不下四个，只写一个就等于替用户做了他没同意的取舍；
+ *  而分时和分档叠加时价格是二维的，报区间反而更假。价格全放悬停浮层里。
+ */
+function summaryText(extra) {
+  const parts = [];
+  if (extra.time) parts.push(`分时 ${extra.time} 段`);
+  if (extra.ctx) parts.push(`分档 ${extra.ctx} 档`);
+  if (extra.perCall) parts.push("按次");
+  return parts.join(" · ");
+}
+
+/** 基础四价一格都没填。
+ *
+ *  配了分时/分档但基础价空着最容易出问题：段里没写的字段会兜底到基础价，
+ *  而基础价是空，于是那几个字段实按 0 算 —— 摘要上看着正常，钱却少了一大截。
+ */
+function basePriceMissing(price) {
+  const shown = displayPrice(price);
+  if (!shown) return true;
+  return PRICE_FIELDS.every((f) => !Number.isFinite(shown[f.key]));
+}
+
+const DAY_NAMES = "日一二三四五六";
+
+/** 星期数组 → 「工作日」「周末」或「一二三」。空/全周返回空串。 */
+function fmtDays(days) {
+  if (!Array.isArray(days) || !days.length) return "";
+  const uniq = [...new Set(days.filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort((a, b) => a - b);
+  if (uniq.length === 0 || uniq.length === 7) return "";
+  if (uniq.join(",") === "1,2,3,4,5") return "工作日";
+  if (uniq.join(",") === "0,6") return "周末";
+  return uniq.map((d) => DAY_NAMES[d]).join("");
+}
+
+/** 把一段（或一档）的四价压成「进 2.00 出 5.00」；段里没写的用基础价，两边都没写就不写这一项。 */
+function priceBits(tier, base) {
+  const shown = displayPrice(base) || {};
+  const parts = [];
+  for (const f of PRICE_FIELDS) {
+    const own = Number(tier?.[f.key]);
+    const v = Number.isFinite(own) ? own : (Number.isFinite(shown[f.key]) ? shown[f.key] : null);
+    if (v == null) continue;
+    const label = f.key === "input" ? "进" : f.key === "output" ? "出" : f.label;
+    parts.push(`${label} ${v}`);
+  }
+  return parts.join("  ");
+}
+
 export class PriceCard {
   constructor({ api, mock, log = () => {} }) {
     this.api = api;
@@ -576,10 +642,22 @@ export class PriceCard {
       for (const g of this.filteredGroups()) for (const i of g.items) shownKeys.add(i.key);
       for (const k of this.selected) if (!shownKeys.has(k)) hidden++;
     }
+    // 选了配过复杂价的模型时要说一句：它们的四格已经在主卡上收起来了，
+    // 而批量套用只写基础四价，不碰分时/分档/按次。不说的话，用户会以为
+    // 批量把整个模型的价都换掉了，实际只改了兜底那一层。
+    let custom = 0;
+    if (n) {
+      for (const k of this.selected) {
+        if (extraKinds(this.itemByKey(k)?.price).any) custom++;
+      }
+    }
     if (!n) {
       this.batchNote.textContent = "先勾选模型，或勾上某个供应商的名字整块选中";
     } else if (hidden) {
       this.batchNote.textContent = `已选 ${n} 个，其中 ${hidden} 个不在当前搜索结果里（套用会一起写入）`;
+      this.batchNote.dataset.kind = "warn";
+    } else if (custom) {
+      this.batchNote.textContent = `已选 ${n} 个，其中 ${custom} 个已自定义（只改它们的基础兜底价）`;
       this.batchNote.dataset.kind = "warn";
     } else {
       this.batchNote.textContent = `已选 ${n} 个模型`;
@@ -699,22 +777,27 @@ export class PriceCard {
     // 两者都是人民币值，displayPrice 现在是恒等映身（保留挂点）。
     const shown = displayPrice(item.price) || null;
     const placeholder = displayPrice(item.defaultPrice) || null;
+    // 配过分时/分档/按次的模型，四格收起换摘要（见下面的 extra）。
+    // 判定放在建框之前：对它们来说那四个框没有意义，建了也不挂进 DOM。
+    const extra = extraKinds(item.price);
     const cells = {};
-    for (const spec of PRICE_FIELDS) {
-      const input = h("input", {
-        type: "text",
-        inputmode: "decimal",
-        className: "tts-price__cell",
-        value: shown?.[spec.key] ?? "",
-        placeholder: placeholder?.[spec.key] != null ? String(placeholder[spec.key]) : "0",
-        title: `${spec.label}${spec.hint ? `（${spec.hint}）` : ""}`,
-      });
-      input.dataset.key = item.key;
-      input.dataset.field = spec.key;
-      input.addEventListener("input", () => this.staleValues.set(item.key, this.readRow(cells)));
-      input.addEventListener("blur", () => void this.commitRow(item, cells));
-      input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
-      cells[spec.key] = input;
+    if (!extra.any) {
+      for (const spec of PRICE_FIELDS) {
+        const input = h("input", {
+          type: "text",
+          inputmode: "decimal",
+          className: "tts-price__cell",
+          value: shown?.[spec.key] ?? "",
+          placeholder: placeholder?.[spec.key] != null ? String(placeholder[spec.key]) : "0",
+          title: `${spec.label}${spec.hint ? `（${spec.hint}）` : ""}`,
+        });
+        input.dataset.key = item.key;
+        input.dataset.field = spec.key;
+        input.addEventListener("input", () => this.staleValues.set(item.key, this.readRow(cells)));
+        input.addEventListener("blur", () => void this.commitRow(item, cells));
+        input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+        cells[spec.key] = input;
+      }
     }
 
     // 只留模型名与四个价格框。
@@ -736,7 +819,9 @@ export class PriceCard {
     const modelName = h("span", { className: "tts-price__model" }, this.markText(item.model));
     attachHoverTip(modelName, () => [
       h("div", { className: "tts-hovertip__key" }, item.key),
-      h("div", { className: "tts-hovertip__hint" }, "双击编辑分时、长上下文分档、按次计价"),
+      h("div", { className: "tts-hovertip__hint" }, extra.any
+        ? `已配置：${summaryText(extra)} · 双击编辑`
+        : "双击编辑分时、长上下文分档、按次计价"),
     ]);
     modelName.addEventListener("dblclick", (e) => {
       e.preventDefault();
@@ -760,8 +845,81 @@ export class PriceCard {
 
     return h("div", { className: "tts-price__row" },
       nameCell,
-      PRICE_FIELDS.map((f) => cells[f.key]),
+      extra.any
+        ? this.renderSummary(item, extra)
+        : PRICE_FIELDS.map((f) => cells[f.key]),
     );
+  }
+
+  /** 复杂价模型在主卡上的替身：一条摘要，横跨原来四格的位置。
+   *
+   *  只写类型和数量（分时 3 段 · 分档 2 档 · 按次），不写价格。
+   *  四个价能差到几十倍，一行只装得下一个，写哪个都是替用户做取舍；
+   *  完整四价与每一段的具体数字都在悬停浮层里。
+   */
+  renderSummary(item, extra) {
+    const text = summaryText(extra);
+    // 只在有分时/分档时查基础价：纯按次计价的模型本来就不走四价，
+    // 四格空着是正常的，给它挂警示点等于误报。
+    const warn = (extra.time > 0 || extra.ctx > 0) && basePriceMissing(item.price);
+    // 类名不叫 summary：那个名字已经被卡片头的计数标签占了（“检测中…”）。
+    const summary = h("div", {
+      className: "tts-price__rules",
+      role: "button",
+      tabindex: "0",
+      "aria-label": warn ? `${text}，基础价未填，单击编辑` : `${text}，单击编辑`,
+    },
+      h("span", { className: "tts-price__rules-text" }, text),
+      warn ? h("span", { className: "tts-price__rules-warn" }) : null,
+    );
+    summary.addEventListener("click", () => this.openDetail(item));
+    summary.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") { e.preventDefault(); this.openDetail(item); }
+    });
+    attachHoverTip(summary, () => this.summaryTip(item));
+    return summary;
+  }
+
+  /** 摘要条的悬停浮层：把四格藏起来之后，这里是唯一能看到完整四价的地方。 */
+  summaryTip(item) {
+    const p = item.price || {};
+    const extra = extraKinds(p);
+    const rows = [h("div", { className: "tts-hovertip__key" }, item.key)];
+
+    if (extra.time) {
+      rows.push(h("div", { className: "tts-hovertip__line" }, `分时 ${extra.time} 段`));
+      for (const t of p.timeTiers) {
+        if (!t || typeof t !== "object") continue;
+        const from = t.from || "00:00";
+        const to = t.to || "24:00";
+        const crossDay = String(to) < String(from) ? "次日 " : "";
+        const days = fmtDays(t.days);
+        const when = `${from}–${crossDay}${to}${days ? `  ${days}` : ""}`;
+        const bits = priceBits(t, p);
+        rows.push(h("div", { className: "tts-hovertip__line" }, bits ? `${when}  ${bits}` : when));
+      }
+    }
+
+    if (extra.ctx) {
+      rows.push(h("div", { className: "tts-hovertip__line" }, `分档 ${extra.ctx} 档`));
+      for (const t of p.contextTiers) {
+        if (!t || typeof t !== "object") continue;
+        const cap = Number(t.maxContext);
+        const when = Number.isFinite(cap) ? `≤ ${cap / 1000}K` : "兜底档";
+        const bits = priceBits(t, p);
+        rows.push(h("div", { className: "tts-hovertip__line" }, bits ? `${when}  ${bits}` : when));
+      }
+    }
+
+    if (extra.perCall) {
+      rows.push(h("div", { className: "tts-hovertip__line" }, `按次  ¥${Number(p.perCall)} / 次`));
+    }
+
+    // 四格藏了，但基础四价还在起作用：分时段里没写的字段就兜底到这里。
+    const base = priceBits(p, null);
+    rows.push(h("div", { className: "tts-hovertip__line" }, base ? `兜底  ${base}` : "兜底  未填（缺少的字段按 0 计）"));
+    rows.push(h("div", { className: "tts-hovertip__hint" }, "单击编辑"));
+    return rows;
   }
 
   /** 双击进来的详细设置：改完它自己落盘，主卡由 patch 里的 load+paint 刷新。 */

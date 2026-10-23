@@ -343,6 +343,48 @@
 .tts-price__row > .tts-price__cell:nth-child(4) { grid-column: 4; }
 .tts-price__row > .tts-price__cell:nth-child(5) { grid-column: 5; }
 
+/* ── 复杂价模型在主卡上的替身 ──
+   配过分时/分档/按次的模型，四格换成一条摘要，横跨第 2~5 列（原来四格的位置）。
+   为什么要占满四列而不只占一格：右边其实是四格的格子，只占一格会让下面的行
+   与它在视觉上对不齐，看着像漏了一行。占满之后它读作「这一行的四个格子合并了」。
+
+   文字只写类型和数量，不写价格：四个价能差到几十倍，一行只装得下一个，
+   写哪个都是替用户做取舍。价格全在悬停浮层里。 */
+.tts-price__row > .tts-price__rules {
+  grid-column: 2 / 6;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  padding: 4px 5px;
+  box-sizing: border-box;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  color: var(--tt-t2);
+  font-size: 12px;
+  line-height: 1.34;
+  cursor: pointer;
+  user-select: none;
+}
+.tts-price__rules:hover { border-color: var(--tt-b1); color: var(--tt-t1); }
+.tts-price__rules:focus-visible {
+  outline: none;
+  border-color: var(--tt-select-b);
+}
+.tts-price__rules-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+/* 配了分时/分档，但基础四价一格没填：段里没写的字段会兜底到 0，钱会少算。 */
+.tts-price__rules-warn {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--tt-red);
+}
+
 /* 列头。
    必要性：四个数字框长得一模一样，没列头就不知道哪格是输入、哪格是输出。
    与行共用 --price-cols 与 --price-gap，否则列头会与下面的框错开。 */
