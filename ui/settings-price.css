@@ -318,9 +318,18 @@
   white-space: nowrap;
   font: 500 12.5px var(--font-mono);
   color: var(--tt-t1);
-  /* 名字是双击入口：别让它被双击选中半个词，也明确表明这是个可点的东西。 */
+  /* 名字是双击入口：别让它被双击选中半个词，也明确表明这是个可点的东西。
+     不用 title 交代“双击能进详情”：原生提示框是系统配色，
+     深色卡片上会浮出一块完全不属于这套界面的东西。
+     可交互的线索只给两样：光标变手型，悬停添一条极淡的下划线。 */
   user-select: none;
   cursor: pointer;
+}
+.tts-price__model:hover {
+  text-decoration: underline;
+  text-decoration-color: var(--tt-b2);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
 }
 /* 第 1 列：勾选框 + 模型名。第 2~5 列：四个价格框。
    用 nth-child 不用 nth-of-type：nth-of-type 按标签种类数，

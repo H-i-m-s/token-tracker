@@ -173,8 +173,8 @@ export class PriceCard {
         // 上一版这里写的是「单位是美元，换币种只是显示时换算」——
         // 那是把「存美元」当成了事实写进说明，与用户要的人民币基准正好相反。
         `按用量给每个模型算钱。单位是「${priceUnitLabel()} / 每百万 token」。填了才会计入预估费用；`,
-        "没填的模型在消费明细里显示「未完整定价」。价格存在 price-table.json，可以用编辑器直接改，",
-        "填多少就是多少，不做币种换算。"),
+        "没填的模型在消费明细里显示「未完整定价」。双击模型名可以配分时、长上下文分档、按次计价；",
+        "价格存在 price-table.json，可以用编辑器直接改，填多少就是多少，不做币种换算。"),
       this.bodyEl,
     );
     return this.el;
@@ -723,10 +723,10 @@ export class PriceCard {
     //（包括名字）都会切换勾选框。于是双击名字时第一下已经勾上了，
     // 批量填价栏立刻开始滑出（340ms），行被往下推，第二下就落在了别处 ——
     // 双击永远接不住。现在 label 只包勾选框，名字独立。
-    const modelName = h("span", {
-      className: "tts-price__model",
-      title: `${item.key}\n双击编辑分时 / 分档 / 按次计价`,
-    }, this.markText(item.model));
+    // 不用 title：原生提示框是系统配色，深色卡片上突然浮出一块深底白字，
+    // 跟旁边自绘的下拉、时间弹层完全不是一套东西。
+    // “可以双击”改用光标和下划线交代，完整键（供应商/模型）进详情页就能看到（头部那行）。
+    const modelName = h("span", { className: "tts-price__model" }, this.markText(item.model));
     modelName.addEventListener("dblclick", (e) => {
       e.preventDefault();
       this.openDetail(item);
