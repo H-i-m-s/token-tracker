@@ -5,6 +5,10 @@
 //      就没法做 —— 而那恰恰是最常见的用法之一（比如要给 deepseek 全部模型填一个价）。
 //   ② 过滤后的分组必须携带原来的 total。界面靠它区分「这块只剩三个」
 //      与「这块里命中了三个」，后者要写成 3 / 共 12。
+//   ③ 除了键，还认 item.searchText（「分时」「按次」「自定义」这些）。
+//      它们不在键里，但确实是用户会用来找模型的说法：想批量改所有配过分时的模型，
+//      总不能一个个从 58 行里找。searchText 由调用方算好（见 ui/price-card.mjs），
+//      这个模块只管匹配，不碰价格结构。
 
 /**
  * 按搜索词过滤分组。
@@ -30,7 +34,11 @@ export function filterPriceGroups(groups, query) {
   const hit = [];
   let matched = 0;
   for (const g of list) {
-    const items = (g.items || []).filter((i) => String(i?.key ?? "").toLowerCase().includes(q));
+    const items = (g.items || []).filter((i) => {
+      if (String(i?.key ?? "").toLowerCase().includes(q)) return true;
+      // 第二处匹配范围：这个模型「怎么计价」。
+      return String(i?.searchText ?? "").toLowerCase().includes(q);
+    });
     if (!items.length) continue;
     matched += items.length;
     // total 保留原值（过滤前该供应商的总数），界面用它写「3 个模型 / 共 12」。

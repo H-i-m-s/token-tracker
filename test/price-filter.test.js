@@ -115,6 +115,47 @@ test("分组里 items 缺失时跳过该组而不是崩", () => {
   assert.equal(r.matched, 1);
 });
 
+// ── searchText：按「怎么计价」找模型 ──
+// 这些词不在供应商/模型键里，用户搜它们是想筛出配过分时/按次的那批。
+function taggedGroups() {
+  return [{
+    provider: "p1",
+    total: 3,
+    items: [
+      { key: "p1/timed", model: "timed", searchText: "分时 时段 自定义" },
+      { key: "p1/plain", model: "plain", searchText: "" },
+      { key: "p1/call", model: "call", searchText: "按次 自定义" },
+    ],
+  }];
+}
+
+test("searchText 参与匹配：搜「分时」只留配过分时的", () => {
+  const r = filterPriceGroups(taggedGroups(), "分时");
+  assert.equal(r.matched, 1);
+  assert.equal(r.groups[0].items[0].model, "timed");
+});
+
+test("searchText 的同义词也能命中，且不误伤", () => {
+  assert.equal(filterPriceGroups(taggedGroups(), "按次").matched, 1);
+  assert.equal(filterPriceGroups(taggedGroups(), "时段").matched, 1);
+  // 「自定义」两类都带，应当都命中
+  assert.equal(filterPriceGroups(taggedGroups(), "自定义").matched, 2);
+  // 没有这个分组的词不应该命中
+  assert.equal(filterPriceGroups(taggedGroups(), "分档").matched, 0);
+});
+
+test("searchText 不影响原本的键匹配", () => {
+  const r = filterPriceGroups(taggedGroups(), "plain");
+  assert.equal(r.matched, 1);
+  assert.equal(r.groups[0].items[0].model, "plain");
+});
+
+test("没有 searchText 字段时行为不变", () => {
+  const src = [{ provider: "p1", total: 1, items: [{ key: "p1/a", model: "a" }] }];
+  assert.equal(filterPriceGroups(src, "a").matched, 1);
+  assert.equal(filterPriceGroups(src, "分时").matched, 0);
+});
+
 // ── 高亮分段 ──
 // 高亮只影响显示，绝不能改动用户看到的字。所以每个用例都要验「拼回去等于原文」。
 const rejoin = (parts) => parts.map((p) => p.text).join("");

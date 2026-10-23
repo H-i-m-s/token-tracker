@@ -136,6 +136,22 @@ function basePriceMissing(price) {
 
 const DAY_NAMES = "日一二三四五六";
 
+/** 搜索时额外认的词：这个模型「怎么计价」。没配过复杂价就返回空串。
+ *
+ *  这些词不进模型名，也不进键，但用户想批量改「所有配过分时的」时只会这么输入。
+ *  多个同义词都收：分时/时段、分档/长上下文/上下文、按次/按次计费。
+ */
+function extraSearchText(price) {
+  const e = extraKinds(price);
+  if (!e.any) return "";
+  const out = [];
+  if (e.time) out.push("分时", "时段");
+  if (e.ctx) out.push("分档", "长上下文", "上下文");
+  if (e.perCall) out.push("按次");
+  out.push("自定义");
+  return out.join(" ");
+}
+
 /** 星期数组 → 「工作日」「周末」或「一二三」。空/全周返回空串。 */
 function fmtDays(days) {
   if (!Array.isArray(days) || !days.length) return "";
@@ -386,10 +402,21 @@ export class PriceCard {
 
   /**
    * 按搜索词过滤后的分组。逻辑在 price-filter.mjs（纯函数，有单测）。
-   * 这里只把 this.query 递过去。
+   *
+   *  传之前给每一项补一个 searchText：分时、分档、按次这些词不在「供应商/模型」
+   *  键里，但它们确实是用户会拿来找模型的说法。想批量改所有配过分时的模型，
+   *  总不能一个个从几十行里找。这层在客户端算，因为价格结构本来就在客户端。
+   *
+   *  每次过滤重建一批 item 对象（几十个），代价远小于一次重画；
+   *  this.data 本身不动，itemByKey、选中集、批量套用读的仍是原对象。
    */
   filteredGroups() {
-    return filterPriceGroups(this.data?.groups || [], this.query).groups;
+    const src = this.data?.groups || [];
+    const tagged = src.map((g) => ({
+      ...g,
+      items: (g.items || []).map((it) => ({ ...it, searchText: extraSearchText(it.price) })),
+    }));
+    return filterPriceGroups(tagged, this.query).groups;
   }
 
   /** 卡片头那句：命中数 / 总数。搜索时两句都要有，否则不知道是没搜到还是本来就没有。 */
