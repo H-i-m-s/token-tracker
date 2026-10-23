@@ -106,10 +106,12 @@ test("价格表只读一遍，但算出来的钱是对的", async () => {
   // m1 输入 4000 tokens × 1.5/1e6 = 0.006
   // m1 输出  200 tokens × 6/1e6   = 0.0012
   // 合计 0.0072（没有 cacheRead，cacheWrite 为 0）
-  const mc = (dash._modelCosts || []).find((x) => x.provider === "p1" && x.model === "m1");
-  assert.ok(mc, "应当算出 p1/m1 的成本行");
-  assert.ok(Math.abs(mc.cost - 0.0072) < 1e-9, `成本应为 0.0072，实际 ${mc.cost}`);
-  assert.equal(mc.priced, true, "填了价就该标为已定价");
+  //
+  // 以前这里查的是 _modelCosts 里那条模型行，那份数组已删（没任何界面读它）。
+  // 改为直接断总计：它就是页面上那一个金额，验的就是同一件事。
+  const total = dash.summary?.estimatedCost;
+  assert.ok(Number.isFinite(total), "应当算出总估算成本");
+  assert.ok(Math.abs(total - 0.0072) < 1e-9, `成本应为 0.0072，实际 ${total}`);
 });
 
 test("价格表里的供应商会补进 providers 列表", async () => {

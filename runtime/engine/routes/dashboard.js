@@ -26,7 +26,7 @@ import {
 import { fetchFxRate, setFxRateForTests } from "../services/fx-rate.js";
 
 // 价格算术在 lib/price-core.mjs，两个进程共用；引擎这边只负责读价与算钱。
-import { calcCost, loadPriceTable, pickPrice, isPriced } from "../services/price-table.js";
+import { calcCost, loadPriceTable } from "../services/price-table.js";
 
 
 const HOME = resolveHanaHome();
@@ -522,71 +522,15 @@ export default function (app, ctx) {
           if (b) result._balances.push({ provider: prov.id, label: prov.id, ...b });
           else result._balances.push({ provider: prov.id, label: prov.id, type: "error", display: "查询失败", url: apiConf.url });
         }
-        const pt = priceTable;
-        const modelCosts = [];
-        const mgMap = {};
-        for (const mg of result.mediaGen || []) { mgMap[mg.provider + "/" + mg.model] = mg; }
-        const ogEntryForCosts = (result._subscriptionQuotas || []).find(q => q && q.provider === "opencode-go" && q.officialModelCosts);
-        const officialOgCosts = ogEntryForCosts ? ogEntryForCosts.officialModelCosts : null;
-        const officialOgRows = ogEntryForCosts ? (ogEntryForCosts.modelSummary || []) : [];
-        const officialOgRowMap = Object.fromEntries(officialOgRows.map(r => [r.model, r]));
-        // 官方成本没有 Agent/类型维度；只有全局视图才覆盖本地 token 估算，筛选到 Agent/类型时保留本地口径。
-        // 注意：此处作用域是 data 路由，filter* 变量定义在 build() 内部，直接引用会 ReferenceError；
-        // 用路由内的 agent/type/provider，并限定官方成本非空对象才启用官方口径。
-        const useOfficialOgCosts = !!officialOgCosts && Object.keys(officialOgCosts).length > 0 && !agent && !type && (!provider || provider === "opencode-go");
-        for (const m of result.models || []) {
-          let prov = "";
-          for (const pc of providers) { if (pc.models.includes(m.id)) { prov = pc.id; break; } }
-          let key = prov + "/" + m.id;
-          let price = pt[key];
-          // 如果 key 匹配不到，尝试从 priceTable 的 key 中匹配（用户手动配置的模型）
-          if (!price && pt) {
-            for (const pk of Object.keys(pt)) {
-              if (pk.endsWith("/" + m.id)) { price = pt[pk]; key = pk; prov = pk.split("/")[0]; break; }
-            }
-          }
-          const mgEntry = mgMap[key];
-          const mv = m;
-          // 价格已经是扁平四价（input/cacheRead/cacheWrite/output），分档由 pickPrice 处理，
-          // 这里只负责把三项费用拆开（明细里要能看出「这笔钱贵在输入还是输出」）。
-          var inputCost=0,outputCost=0,cacheCost=0;
-          if (price) {
-            // 统一用完整用量判定分档（pickPrice 内部按平均输入 token 选档），三项同档计费，
-            // 避免明细与顶部估算口径不一致
-            const mvc = { input: m.input||0, output: m.output||0, cacheRead: m.cacheRead||0, cacheWrite: m.cacheWrite||0, assistantCount: m.assistantCount||0, callCount: m.assistantCount||0 };
-            const tp = pickPrice(price, mvc);
-            inputCost = mvc.input * (tp.input||0) / 1e6;
-            outputCost = mvc.output * (tp.output||0) / 1e6;
-            cacheCost = mvc.cacheRead * (tp.cacheRead||0) / 1e6 + mvc.cacheWrite * (tp.cacheWrite||0) / 1e6;
-          }
-          const estimatedCost = price ? inputCost+outputCost+cacheCost : 0;
-          const unit = "token";
-          const priced = isPriced(price);
-          const hasOfficialCost = prov === "opencode-go" && useOfficialOgCosts && Object.prototype.hasOwnProperty.call(officialOgCosts, m.id);
-          const cost = hasOfficialCost ? officialOgCosts[m.id] : estimatedCost;
-          const officialRow = officialOgRowMap[m.id];
-          const officialHasTokens = !!officialRow && (officialRow.count > 0 || officialRow.inputTokens > 0 || officialRow.outputTokens > 0);
-          modelCosts.push({ model: m.id, provider: prov, cost, estimatedCost, costSource: hasOfficialCost ? "official" : "local-estimate", officialInputTokens: officialHasTokens ? officialRow.inputTokens : null, officialOutputTokens: officialHasTokens ? officialRow.outputTokens : null, unit, inputCost, outputCost, cacheCost, callCount: mgEntry?.callCount || 0, successCount: mgEntry?.successCount || 0, currency: "USD", priced });
-        }
-        // KEY2 可能只调用了 Kimi 等模型，本地 Hana 日志没有对应行；补入官方费用行，保证消费明细合计可对账。
-        if (useOfficialOgCosts && officialOgCosts && (!provider || provider === "opencode-go")) {
-          for (const [officialModel, cost] of Object.entries(officialOgCosts)) {
-            if (model && model !== officialModel) continue;
-            if (modelCosts.some(mc => mc.provider === "opencode-go" && mc.model === officialModel)) continue;
-            const officialRow = officialOgRowMap[officialModel];
-            const officialHasTokens = !!officialRow && (officialRow.count > 0 || officialRow.inputTokens > 0 || officialRow.outputTokens > 0);
-            modelCosts.push({ model: officialModel, provider: "opencode-go", cost, estimatedCost: 0, costSource: "official", officialInputTokens: officialHasTokens ? officialRow.inputTokens : null, officialOutputTokens: officialHasTokens ? officialRow.outputTokens : null, unit: "token", inputCost: 0, outputCost: 0, cacheCost: 0, callCount: officialRow?.count || 0, successCount: 0, currency: "USD" });
-          }
-        }
-        // 媒体生成（生图/生视频）：计价单位是「次」，不属于 token 四价。
-        // 本轮价格表不做这类模型（见设置页说明），这里保留原逻辑：没有 per_call 价就不计费。
-        for (const mg of result.mediaGen || []) {
-          const key = mg.provider + "/" + mg.model;
-          if (modelCosts.find(mc => mc.provider + "/" + mc.model === key)) continue;
-          const cost = calcCost(pt[key], mg);
-          modelCosts.push({ model: mg.model, provider: mg.provider, cost, unit: "per_call", callCount: mg.callCount, successCount: mg.successCount });
-        }
-        result._modelCosts = modelCosts;
+        // 这里曾经有一段 _modelCosts：按模型拆开的成本清单（含官方账单优先、
+        // 媒体生成按次、token 三类条目）。它从初版就在，但界面从未读过它 ——
+        // 全仓搜过，唯一的消费方是一个测试。一份没人读的数据每年还要跟着
+        // 官方成本、媒体生成、分时计价各改一遍，到头来只会把维护的人（和 AI）
+        // 领进“这东西有人在用”的错觉里。已整段删除。
+        //
+        // 真正给用户看的金额只有 build() 里的 summary.estimatedCost 一处，
+        // 分时与按次都作用在它身上。将来真要做“每个模型花了多少钱”，
+        // 数据源（sessions 的日桶/时桶 + 价格表）都还在，重写一份干净的更可靠。
       } catch(e) { result._balanceError = e.message; }
       // 这里曾经写 result._priceTable = loadPriceTable(...)，每次请求多读一遍盘。
       // 全仓查过：这个字段只在 dashboard.js 内部被读过一次，而那次已经改用局部变量了，
