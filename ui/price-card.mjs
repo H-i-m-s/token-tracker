@@ -256,7 +256,8 @@ export class PriceCard {
         // 上一版这里写的是「单位是美元，换币种只是显示时换算」——
         // 那是把「存美元」当成了事实写进说明，与用户要的人民币基准正好相反。
         `按用量给每个模型算钱。单位是「${priceUnitLabel()} / 每百万 token」。填了才会计入预估费用；`,
-        "没填的模型在消费明细里显示「未完整定价」。双击模型名可以配分时、长上下文分档、按次计价；",
+        "没填的模型在消费明细里显示「未完整定价」。双击模型名可以配分时、长上下文分档、按次计价，",
+        "配过之后四格会收起换成一条摘要；搜索框除了模型名，也认「分时」「按次」「自定义」；",
         "价格存在 price-table.json，可以用编辑器直接改，填多少就是多少，不做币种换算。"),
       this.bodyEl,
     );
@@ -436,7 +437,7 @@ export class PriceCard {
     const input = h("input", {
       type: "search",
       className: "tts-price__search-input",
-      placeholder: "搜模型或供应商，例：flash / deepseek",
+      placeholder: "搜模型、供应商，或「分时」「按次」",
       spellcheck: "false",
       value: this.query,
       autocomplete: "off",
