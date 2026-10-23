@@ -274,12 +274,27 @@ function currentTx(el) {
 // 旧宽度只能从外面那张表里取 —— 所以这个函数必须跑在「字号已经算完」之后。
 const WIDTH_MS = 340;
 
+// 字号动画窗口。
+//
+// 宽度补间会让列宽每帧变一点，而 installKpiFit 的 ResizeObserver 正盯着每张卡：
+// 于是动画的每一帧都会叫一次 fitKpiCards，重新反解字号。
+// 而字号的反解里有一条“两列加起来超了就按比例收”（shrinkPrimaryToFit），
+// 它量的是列的当前宽 —— 补间中间那几帧比终态窄，收得少（字号偏大）；
+// 补间一结束又收回去。数字就在“偏大”和“正常”之间反复切，看起来就是上下微抽。
+//
+// 所以动画期间不重算：这 340ms 里的尺寸变化是补间自己造出来的中间态，不是新输入。
+// 等它跑完再算一次，那时宽度已经是终态，算出来与动画前一致，不会再跳。
+let animUntil = 0;
+
 function glideWidth(el, fromW, toW) {
+  animUntil = performance.now() + WIDTH_MS + 60;
   const anim = el.animate(
     [{ width: `${fromW}px` }, { width: `${toW}px` }],
     { duration: WIDTH_MS, easing: STRIP_EASING, fill: 'both' },
   );
   // 结束时 cancel 回到自然宽（与 toW 相等，不会跳一下）。
+  // 不写内联宽：`.tt-num` / `.tt-unit` 的宽必须跟内容走，
+  // 一旦钉成固定值，下次换档（或位数变）就会被这个旧值压住。
   const done = () => anim.cancel();
   anim.addEventListener('finish', done);
   setTimeout(done, WIDTH_MS + 90);   // 后台页签下 finish 不一定发
@@ -331,6 +346,18 @@ function settleStripShift(scope) {
       if (reduced || !before) { store.set(key, now); continue; }
 
       // ① 先看宽度：有宽度变化的，交给宽度补间，整组位置由布局连续推动。
+      //
+      // 例外：单位不补宽度。
+      //
+      // 单位的宽度不是“排版尺寸”，而是它能不能装下自己那句话。
+      // 而 `18.80 M` 里的 `" M"` 是带前导空格的，B 档 `" B"` 宽 32.44、M 档 `" M"` 宽 43.83。
+      // 窗口一旦窄于自己的文字，`.tt-unit` 上那句 `overflow-y: clip`
+      // 会把 `overflow-x: visible` 一起变成裁切（CSS 规范如此），右边的字就被切掉。
+      // 补 340ms 就是“前 340ms 里 M 只有半个、看着贴住数字”，补完才完整 ——
+      // 用户看到的就是「换完单位，M 先贴着数字，过一下才向右跳开」。
+      //
+      // 宽度这件事没有中间过程：字有多宽就该多宽，当帧到位。横向的推移
+      // （整组居中，单位一变宽数字就被推着走）交给下面的第②步补位置。
       let glided = false;
       for (const [name, el] of picks) {
         const prevW = before[name]?.width;
@@ -338,9 +365,19 @@ function settleStripShift(scope) {
         const w = now[name].width;
         if (Math.abs(prevW - w) < 0.5) continue;
         if (el.hidden && !w) continue;                 // 从隐藏到隐藏：没东西可补
+        // 单位一律不补宽度。
+        //
+        // 换档（B→M）：补间期间窗口窄于文字，`.tt-unit` 的 overflow-y: clip
+        //   会让横向也裁，前导空格被吃掉 —— “M 先贴着数字，过一下才向右跳开”。
+        // 收没（M→空）：补间到 0 再 cancel，宽度会退回自然值（空单位还剩 padding 的 3px），
+        //   而 400ms 后 display:none 又把它归零 —— 60ms 内的一个往返，
+        //   看起来就是“跳一下再弹回去”。当帧到自然值就没有这道往返。
+        if (name === 'unit') continue;
         glideWidth(el, prevW, w);
         glided = true;
       }
+      // 数字补了宽度时，单位的位置由布局推着走（数字窗口每帧在变宽，布局每帧重排），
+      // 这条路径本来就是连续的，不能再叠一层位置补间。
       if (glided) { store.set(key, now); continue; }
 
       // ② 宽度没变、位置变了（字号微调、或别处撑了一下）：那就补位置。
@@ -351,10 +388,12 @@ function settleStripShift(scope) {
         if (el.hidden) continue;
         const dx = prevL - now[name].left;
         if (Math.abs(dx) < 0.5) continue;
-        el.animate(
+        const shift = el.animate(
           [{ transform: `translateX(${dx.toFixed(2)}px)` }, { transform: 'translateX(0px)' }],
           { duration: STRIP_MS, easing: STRIP_EASING, fill: 'none' },
-        ).id = 'ttStripShift';
+        );
+        shift.id = 'ttStripShift';
+        animUntil = Math.max(animUntil, performance.now() + STRIP_MS + 60);
       }
       store.set(key, now);
     }
@@ -539,8 +578,24 @@ export function fitKpiCards(root) {
 // 宽度对字号是线性的，所以一轮就该收敛；给两轮是防子像素舍入导致差 0.5px 反复。
 function shrinkPrimaryToFit(card) {
   if (!card) return;
-  const cols = [...card.children].filter((c) =>
-    c.classList.contains('tt-kpi-main') || c.classList.contains('tt-kpi-today'));
+  // 正在退场的今日列不参与。
+  //
+  // 「从全部历史切走」是唯一会走这里的场景：
+  //   · 全部历史是唯一显示今日列的时段（analytics.mjs 里 range==='all'）
+  //   · 切走时今日列先跑一段 leave 动画再 display:none
+  //   · 但字号是在建 DOM 那一刻就算的，那时今日列还在，cols.length === 2
+  //     → 按两列收字号；动画结束后只剩一列 → cols.length < 2 直接 return
+  //     → 字号弹回基准。实测 490 宽：14.25px → 16.24px，差 14%。
+  //   · 单位从 B 变 M（宽 11px）会把两列总宽推过界，收缩量变大，弹回才明显；
+  //     切到同样以 B 为单位的时段，总宽没变，弹回几乎为零，所以不跳。
+  // 把这列从“要不要收字号”的计算里先拿掉，第一次就得单列的字号，前后一致。
+  const cols = [...card.children].filter((c) => {
+    const isMain = c.classList.contains('tt-kpi-main');
+    const isToday = c.classList.contains('tt-kpi-today');
+    if (!isMain && !isToday) return false;
+    if (isToday && card.hasAttribute('data-tt-leave')) return false;
+    return true;
+  });
   if (cols.length < 2) return;
   const cs = getComputedStyle(card);
   const innerW = card.clientWidth - num(cs, 'padding-left') - num(cs, 'padding-right');
@@ -657,6 +712,17 @@ function settleTodayTransition(scope) {
 
     col.dataset.ttAnim = '1';
     const anim = col.animate(frames, { duration: TODAY_MS, easing: TODAY_EASING, fill: 'both' });
+    // 这 340ms 算进“动画窗口”，期间不重算字号。
+    //
+    // 为什么必须：这列在动画期间还在 DOM 里（宽度从满到 0 或反过来），
+    // 于是 cols.length === 2，shrinkPrimaryToFit 会正常跑。
+    // 而这 340ms 里数值已经换成新的了 —— 从「全部」切走时，
+    // 单位往往从 B 变成更宽的 M，两列总宽更大，字号被收到更小。
+    // 动画一结束，「今日」列被 display:none，只剩一列，
+    // cols.length < 2 直接 return，字号又弹回基准 —— 屏幕上就是
+    // “切换完了，字突然放大一下”。
+    // 实测（探针，490 宽，全部→近30天）：14.25px → 16.24px，差 14%。
+    animUntil = Math.max(animUntil, performance.now() + TODAY_MS + 80);
 
     const done = () => {
       if (!col.isConnected) { anim.cancel(); return; }
@@ -689,6 +755,13 @@ export function installKpiFit(root) {
   let pending = 0;
   const run = () => {
     pending = 0;
+    // 补间还在跑：这一帧的尺寸变化是动画造的中间态，不是新输入。
+    // 拿它重算字号，就是数字每帧改一次大小。等动画结束再来一次。
+    const wait = animUntil - performance.now();
+    if (wait > 0) {
+      setTimeout(schedule, wait + 30);
+      return;
+    }
     fitKpiCards(block);
   };
   const schedule = () => {
