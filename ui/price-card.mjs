@@ -22,6 +22,7 @@
 import { h } from "./components.mjs";
 import { filterPriceGroups, splitHighlight } from "./price-filter.mjs";
 import { displayPrice, toStoredPrice, priceUnitLabel } from "./price-money.mjs";
+import { openPriceDetail } from "./price-detail.mjs";
 import { expandFromZero, collapseToZero, prefersReducedMotion } from "./collapse-anim.mjs";
 // 折叠动画的节奏。跟 doc-intake 的「环境依赖管理」取同一套参数：
 // 时长随位移缩放（收起一个空块不该等 400ms），缓动同一条曲线，
@@ -709,19 +710,55 @@ export class PriceCard {
       cells[spec.key] = input;
     }
 
-    // 只有模型名与四个价格框。
+    // 只留模型名与四个价格框。
     // 四个输入框直接拼进行里、自己占一列（grid），不再包一层容器 ——
     // 包一层就得多给那层写 display:contents，而 contents 会连带
     // 影响无障碍树里这一层的语义，不值当。
     // title 给完整键（供应商/模型），因为模型名可能重名；显示上只留模型名，
     // 供应商已经在块头写着了。
+    //
+    // 双击模型名进详情：分时、分档、按次这些装不进一行的东西都在那边。
+    //
+    // 勾选区与名字区必须分开：以前第一列是 <label>，点里面任何位置
+    //（包括名字）都会切换勾选框。于是双击名字时第一下已经勾上了，
+    // 批量填价栏立刻开始滑出（340ms），行被往下推，第二下就落在了别处 ——
+    // 双击永远接不住。现在 label 只包勾选框，名字独立。
+    const modelName = h("span", {
+      className: "tts-price__model",
+      title: `${item.key}\n双击编辑分时 / 分档 / 按次计价`,
+    }, this.markText(item.model));
+    modelName.addEventListener("dblclick", (e) => {
+      e.preventDefault();
+      this.openDetail(item);
+    });
+
+    const boxHit = h("label", { className: "tts-price__boxhit" }, box);
+    const nameCell = h("div", { className: "tts-price__row-name" }, boxHit, modelName);
+    // 第一列里名字以外的那片空白仍然可点勾选 —— name 列是 1fr，
+    // 名字往往只占三分之一，后面空着大半。只排除名字和勾选框本身。
+    // 范围只限这一列：价格框之间的间隙不接这个手势，
+    // 否则点输入框边缘时手指稍偏就把整行勾上了。
+    nameCell.addEventListener("click", (e) => {
+      if (e.target.closest(".tts-price__model")) return;
+      if (e.target.closest(".tts-price__boxhit")) return;
+      box.checked = !box.checked;
+      // 必须手动派发：整组全选框与批量栏的显隐都挂在 change 上，
+      // 只改 checked 不会触发它们。
+      box.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+
     return h("div", { className: "tts-price__row" },
-      h("label", { className: "tts-price__row-name" },
-        box,
-        h("span", { className: "tts-price__model", title: item.key }, this.markText(item.model)),
-      ),
+      nameCell,
       PRICE_FIELDS.map((f) => cells[f.key]),
     );
+  }
+
+  /** 双击进来的详细设置：改完它自己落盘，主卡由 patch 里的 load+paint 刷新。 */
+  openDetail(item) {
+    openPriceDetail({
+      item,
+      save: (price) => this.patch([{ key: item.key, price }], item.key),
+    });
   }
 
   /**
@@ -744,6 +781,14 @@ export class PriceCard {
     return out;
   }
 
+  /** 按完整键找清单里那一项（批量套用要拿它的扩展字段）。 */
+  itemByKey(key) {
+    for (const g of this.data?.groups || []) {
+      for (const it of g.items) if (it.key === key) return it;
+    }
+    return null;
+  }
+
   // 一个输入框失焦：把这一行四格一起提交。
   // 为什么整行提交而不是只提交那一格：用户经常连着填「输入」「输出」两格，
   // 一格一次 PATCH 会打出两三个请求；整行一次既有原子性（这一行的价要么全旧要么全新），
@@ -752,9 +797,17 @@ export class PriceCard {
     const values = this.readRow(cells);
     const current = item.price ? priceToValues(item.price) : { input: "", cacheRead: "", output: "", cacheWrite: "" };
     if (PRICE_FIELDS.every((f) => values[f.key] === current[f.key])) return; // 没改
+    // 这一项身上除了四价还有没有别的东西（分时、分档、按次）。
+    // 有的话，「四格全空」不代表要删掉整项 —— 详情页配的时段价还在那儿。
+    const base = item.price || null;
+    const hasExtras = !!(base && (
+      (Array.isArray(base.timeTiers) && base.timeTiers.length)
+      || (Array.isArray(base.contextTiers) && base.contextTiers.length)
+      || base.perCall != null
+    ));
     // 全空 = 用户把这一行清空了 = 恢复默认（从文件里删掉），不是「四个 0」。
-    const empty = PRICE_FIELDS.every((f) => values[f.key] === "");
-    await this.patch([{ key: item.key, price: empty ? null : this.toPatch(values) }], item.key);
+    const empty = PRICE_FIELDS.every((f) => values[f.key] === "") && !hasExtras;
+    await this.patch([{ key: item.key, price: empty ? null : this.toPatch(values, base) }], item.key);
     this.staleValues.delete(item.key);
   }
 
@@ -763,8 +816,10 @@ export class PriceCard {
   // 这里的口径是：**填多少就存多少**。人民币基准，没有币种换算。
   // toStoredPrice 只负责把数字收成 10 位有效数字（避免 1.7999999999999998）。
   //
-  // 空串不写字段：没填 ≠ 0。
-  toPatch(values) {
+  // base 是这一项原有的价格（可能带 timeTiers / contextTiers / perCall）。
+  // 必须原样带上：后端是按项**替换**的（table[key] = norm），
+  // 这里漏掉一个字段，详情页配好的分时价就在主卡改一格时被默默抹平。
+  toPatch(values, base = null) {
     const displayed = {};
     for (const spec of PRICE_FIELDS) {
       const raw = values[spec.key];
@@ -774,6 +829,11 @@ export class PriceCard {
       displayed[spec.key] = n;
     }
     if (!Object.keys(displayed).length) return null;
+    if (base) {
+      if (Array.isArray(base.timeTiers) && base.timeTiers.length) displayed.timeTiers = base.timeTiers;
+      if (Array.isArray(base.contextTiers) && base.contextTiers.length) displayed.contextTiers = base.contextTiers;
+      if (base.perCall != null) displayed.perCall = base.perCall;
+    }
     const stored = toStoredPrice(displayed);
     return stored && Object.keys(stored).length ? stored : null;
   }
@@ -795,7 +855,19 @@ export class PriceCard {
     if (!keys.length) { this.note("还没选模型", true); return; }
     this.applyBtn.disabled = true;
     this.note(`正在写入 ${keys.length} 个模型…`);
-    const ok = await this.patch(keys.map((key) => ({ key, price })), keys.join(","));
+    // 批量套用改的是「四价」，不该顺手把详情页配的分时/分档/按次抹掉。
+    // 后端按项替换，所以每一项都要把自带的扩展字段带回去。
+    const patches = keys.map((key) => {
+      const prev = this.itemByKey(key)?.price;
+      const merged = { ...price };
+      if (prev) {
+        if (Array.isArray(prev.timeTiers) && prev.timeTiers.length) merged.timeTiers = prev.timeTiers;
+        if (Array.isArray(prev.contextTiers) && prev.contextTiers.length) merged.contextTiers = prev.contextTiers;
+        if (prev.perCall != null) merged.perCall = prev.perCall;
+      }
+      return { key, price: merged };
+    });
+    const ok = await this.patch(patches, keys.join(","));
     if (ok) {
       // 套用成功后清空四格并取消选择：这样下一批可以直接开始，不用手动清。
       this.batch = { input: "", cacheRead: "", output: "", cacheWrite: "" };

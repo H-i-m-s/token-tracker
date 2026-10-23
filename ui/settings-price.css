@@ -72,7 +72,14 @@
    输入就是价格表自己的键形状（供应商/模型），不做供应商下拉 ——
    供应商名与模型名本来就没有权威清单，下拉会把用户关死。 */
 .tts-price__add {
-  margin: 2px 0 8px;
+  /* 上边距必须是 0，不要再加回来。
+     父级 .tts-price__body 只有 margin-top: 10px，没有 padding、也没有 border，
+     所以这一行的 margin-top 会和父级的 10px 折叠 —— 平时它等于不存在。
+     但展开动画那 300ms 里，body 上挂着 overflow: hidden（要裁住内容），
+     这就成了一个 BFC，父子不再折叠，那 2px 会真的多出来：
+     整块内容被压低 2px，动画一结束 overflow 清空又抬回去。
+     用户看到的是「已经到位了，却还要动一下」。探针实测正好 2px。 */
+  margin: 0 0 8px;
   padding-bottom: 10px;
   border-bottom: 1px solid var(--tt-b1);
 }
@@ -248,7 +255,9 @@
 /* 组头不吸顶。吸顶会让它盖住列头，于是「模型 / 输入 / 缓存读 …」
    时隐时现，看起来就是表头位置在变。改成普通流式排版，列头永远在最上面一行。 */
 .tts-price__group-head {
-  padding: 5px 0;
+  /* 左右 8px 跟 .tts-price__row 同步：组头的勾选框和行里的勾选框
+     共用一条左基准线，不同步就会差 8px。 */
+  padding: 5px 8px;
 }
 .tts-price__group-label { display: flex; align-items: center; gap: 8px; cursor: pointer; }
 .tts-price__group-name { font-weight: 600; font-size: 12.5px; }
@@ -292,16 +301,26 @@
   align-items: center;
   gap: var(--price-gap);
   min-height: 30px;
-  padding: 1px 0;
+  /* 左右 8px 是给悬停底的。
+     底色画在 padding box 上，左右 padding 为 0 时，
+     高亮块就直接贴着勾选框和最后一个价格框，看着比内容还紧。
+     这一处必须和 .tts-price__colhead 同步改：两者共用 --price-cols 对齐，
+     只给行加 padding 会让四个价格框相对列头左移 8px。 */
+  padding: 1px 8px;
 }
 .tts-price__row:hover { background: var(--tt-row-hover); border-radius: 4px; }
 .tts-price__row-name { display: flex; align-items: center; gap: 8px; min-width: 0; cursor: pointer; }
+/* 只包勾选框的那一小块：点击切换由原生 label 行为负责。 */
+.tts-price__boxhit { display: grid; place-items: center; flex: 0 0 auto; cursor: pointer; }
 .tts-price__model {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font: 500 12.5px var(--font-mono);
   color: var(--tt-t1);
+  /* 名字是双击入口：别让它被双击选中半个词，也明确表明这是个可点的东西。 */
+  user-select: none;
+  cursor: pointer;
 }
 /* 第 1 列：勾选框 + 模型名。第 2~5 列：四个价格框。
    用 nth-child 不用 nth-of-type：nth-of-type 按标签种类数，
@@ -323,7 +342,7 @@
   grid-template-columns: var(--price-cols);
   align-items: center;
   gap: var(--price-gap);
-  padding: 2px 0 4px;
+  padding: 2px 8px 4px;
   margin-bottom: 2px;
   border-bottom: 1px solid var(--tt-b1);
 }
@@ -354,3 +373,153 @@
   .tts-price__cell,
   .tts-price__batch-input { transition: none; }
 }
+
+/* ── 模型价格详情弹窗 ──────────────────────────────────────────────────────
+   双击主卡里的模型名进来。分时、分档、按次这三块都装不进一行，全退到这里。
+   外壳跟更新说明弹窗同一套：native <dialog>.showModal 挡死底下界面，
+   ::backdrop 负责压暗与模糊。关给 ui/price-detail.mjs，这里只管长相。 */
+.tts-pdetail {
+  /* 尺寸对齐更新说明弹窗：同一个设置区里两个模态应该是一家人，
+     一大一小摆在一起只是「新功能长得不一样」而已。 */
+  width: min(560px, calc(100vw - 32px));
+  max-height: min(86vh, 640px);
+  box-sizing: border-box;
+  border: 1px solid var(--tt-b2);
+  border-radius: 10px;
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  padding: 16px;
+  font-size: 13px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, .45);
+}
+.tts-pdetail:focus,
+.tts-pdetail:focus-visible,
+.tts-pdetail :focus,
+.tts-pdetail :focus-visible { outline: none; }
+/* 全局 `* { margin: 0 }` 把 dialog 自带的居中 margin 一并抹掉了，这里写回来。 */
+.tts-pdetail[open] { position: fixed; inset: 0; margin: auto; display: flex; flex-direction: column; }
+.tts-pdetail::backdrop {
+  background: rgba(4, 6, 10, .52);
+  backdrop-filter: blur(6px) saturate(115%);
+  -webkit-backdrop-filter: blur(6px) saturate(115%);
+  border-radius: 14px;
+}
+@keyframes tts-pdetail-in { from { opacity: 0; transform: translateY(6px) scale(.985); } to { opacity: 1; transform: none; } }
+@keyframes tts-pdetail-out { from { opacity: 1; transform: none; } to { opacity: 0; transform: translateY(3px) scale(.995); } }
+@media (prefers-reduced-motion: no-preference) {
+  .tts-pdetail[open] { animation: tts-pdetail-in 180ms cubic-bezier(.2, .8, .3, 1) both; }
+  .tts-pdetail.is-closing { animation: tts-pdetail-out 120ms cubic-bezier(.4, 0, .7, 1) both; pointer-events: none; }
+}
+
+.tts-pdetail__hd { display: flex; align-items: flex-start; gap: 10px; }
+.tts-pdetail__title { margin: 0; font-size: 16px; font-weight: 600; letter-spacing: -.01em; }
+.tts-pdetail__key { margin: 3px 0 0; font: 400 11.5px var(--font-mono); color: var(--tt-t3); }
+.tts-pdetail__x {
+  margin-left: auto; flex: 0 0 auto; width: 24px; height: 24px; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 6px; background: none; color: var(--tt-t3);
+  font: 15px/1 var(--font-sans); cursor: pointer;
+}
+.tts-pdetail__x:hover { color: var(--tt-t1); border-color: var(--tt-b2); background: var(--tt-row-hover); }
+
+/* 内容区长的时候自己滚，弹窗不跟着长。 */
+.tts-pdetail__body {
+  margin-top: 12px; flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent;
+  padding-right: 4px;
+}
+.tts-pdetail__sec { padding: 12px 0; border-top: 1px solid var(--tt-b1); }
+.tts-pdetail__sec:first-child { border-top: 0; padding-top: 2px; }
+.tts-pdetail__h3 { margin: 0 0 2px; font-size: 13px; font-weight: 600; }
+.tts-pdetail__hint { margin: 0 0 9px; font-size: 11.5px; line-height: 1.55; color: var(--tt-t3); }
+
+/* 基础四价：等宽四列。 */
+.tts-pdetail__grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+.tts-pdetail__field { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tts-pdetail__field--short { max-width: 160px; }
+.tts-pdetail__flabel { font-size: 11px; color: var(--tt-t3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.tts-pdetail__num, .tts-pdetail__clock {
+  box-sizing: border-box; width: 100%; min-width: 0;
+  padding: 4px 7px;
+  border: 1px solid var(--tt-b1); border-radius: 6px;
+  background: var(--tt-bg); color: var(--tt-t1);
+  font: 400 12px var(--font-mono);
+}
+.tts-pdetail__num:hover, .tts-pdetail__clock:hover { border-color: var(--tt-b2); }
+.tts-pdetail__num:focus-visible, .tts-pdetail__clock:focus-visible {
+  border-color: var(--tt-select-b);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--tt-select-b) 22%, transparent);
+}
+.tts-pdetail__clock { padding: 3px 5px; }
+
+/* 分档 / 分时的一张行。列宽：时间窗 | 四个价 | 删除。 */
+.tts-pdetail__rows { display: flex; flex-direction: column; gap: 6px; }
+.tts-pdetail__row {
+  display: grid;
+  /* 首列 168：两个自绘时间字段 + 中间的箭头。.tt-date-field 自带 min-width: 104px，
+     在下面用 flex 拉平，不覆盖它就会把四格价格全挤没。 */
+  grid-template-columns: 168px repeat(4, minmax(0, 1fr)) 22px;
+  align-items: end;
+  gap: 6px;
+}
+.tts-pdetail__clockcell { display: flex; align-items: center; gap: 4px; }
+.tts-pdetail__clockcell .tt-time-field { flex: 1 1 0; min-width: 0; }
+.tts-pdetail__dash { flex: 0 0 auto; font-size: 11px; color: var(--tt-t3); }
+.tts-pdetail__cell { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tts-pdetail__del {
+  width: 22px; height: 26px; display: grid; place-items: center;
+  border: 1px solid transparent; border-radius: 6px; background: none;
+  color: var(--tt-t4); font: 14px/1 var(--font-sans); cursor: pointer;
+}
+.tts-pdetail__del:hover { color: var(--tt-red); border-color: var(--tt-b2); background: var(--tt-row-hover); }
+.tts-pdetail__add { margin-top: 8px; }
+
+.tts-pdetail__note { margin: 10px 0 0; min-height: 1em; font-size: 11.5px; color: var(--tt-t3); }
+.tts-pdetail__note[data-kind="err"] { color: var(--tt-red); }
+
+.tts-pdetail__ft { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--tt-b1); }
+.tts-pdetail__spacer { flex: 1 1 auto; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tts-pdetail__num, .tts-pdetail__clock { transition: none; }
+}
+
+/* ── 时间字段：复用日期字段的外形，只换图标 ─────────────────────────────────
+   全部尺寸、边框、hover、焦点圈都跟着 .tt-date-field 走，
+   否则设置页里会出现两种形状的同类控件。 */
+.tt-time-field::after {
+  content: "";
+  flex: 0 0 12px;
+  width: 12px;
+  height: 12px;
+  background: currentColor;
+  opacity: .5;
+  -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M8 4.5V8l2.4 1.6'/%3E%3C/svg%3E") center/contain no-repeat;
+  mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M8 4.5V8l2.4 1.6'/%3E%3C/svg%3E") center/contain no-repeat;
+}
+/* 弹层：两列数字，各自滚。宽度只够放两个两位数，不占屏。 */
+.tt-time-popup { width: 158px; padding: 8px; }
+.tt-time-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.tt-time-colwrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+.tt-time-hd { font: 10px var(--font-sans); color: var(--tt-t3); text-align: center; }
+.tt-time-col {
+  display: flex; flex-direction: column; gap: 1px;
+  max-height: 168px; overflow-y: auto; overscroll-behavior: contain;
+  scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent;
+}
+.tt-time-item {
+  display: block; flex: 0 0 auto; width: 100%; height: 24px; padding: 0;
+  border: 1px solid transparent; border-radius: var(--tt-radius-inner);
+  background: transparent; color: var(--tt-t1);
+  font: 11px var(--font-sans); font-variant-numeric: tabular-nums;
+  text-align: center; cursor: pointer;
+  transition: background .12s ease, border-color .12s ease;
+}
+.tt-time-item:hover { background: var(--tt-row-hover); }
+.tt-time-item.selected {
+  background: var(--tt-select-bg);
+  border-color: var(--tt-select-b);
+  color: var(--tt-select-fg);
+  font-weight: 600;
+}
+.tt-time-popup button:focus-visible { outline: 2px solid var(--tt-blue); outline-offset: 1px; }

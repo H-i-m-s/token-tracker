@@ -63,6 +63,31 @@ export function toStoredPrice(displayedPrice) {
       return tier;
     });
   }
+  // 分时价与按次价必须原样带过去。
+  // 这一层是界面到文件的唯一通道，漏一个字段 = 详情页辛苦配的时段价
+  // 在主卡某次保存时被默默抹掉，而且不会报错。
+  if (Array.isArray(src.timeTiers)) {
+    const tiers = src.timeTiers.map((t) => {
+      if (!t || typeof t !== "object") return null;
+      const tier = {};
+      if (t.from) tier.from = String(t.from);
+      if (t.to) tier.to = String(t.to);
+      if (Array.isArray(t.days) && t.days.length) tier.days = t.days.map(Number).filter(Number.isInteger);
+      let has = false;
+      for (const k of PRICE_KEYS) {
+        const n = Number(t[k]);
+        if (t[k] === "" || t[k] == null || !Number.isFinite(n) || n < 0) continue;
+        tier[k] = tidy(n);
+        has = true;
+      }
+      return has ? tier : null;
+    }).filter(Boolean);
+    if (tiers.length) out.timeTiers = tiers;
+  }
+  const perCall = Number(src.perCall);
+  if (src.perCall !== "" && src.perCall != null && Number.isFinite(perCall) && perCall >= 0) {
+    out.perCall = tidy(perCall);
+  }
   return out;
 }
 

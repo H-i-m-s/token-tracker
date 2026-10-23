@@ -1317,6 +1317,29 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
         if (!prov) continue;
         const price = prices[prov + "/" + mn];
         // 价格表本身就是人民币，直接乘除即可，不需要按币种再换算。
+        //
+        // 分时定价的模型必须按小时结算：dailyBreakdown 只有当天合计，
+        // 拿它乘一个时段价等于「把一天的量全算成忙时」或「全算成闲时」，
+        // 两头都是错的。hourlyBreakdown 里已经按「日 × 时 × 模型」存着量
+        //（runtime/engine/index.js 扫描时落的），这里只需要把小时换算成
+        // 当日分钟数与星期几，交给 calcCost 选段。
+        if (Array.isArray(price?.timeTiers) && price.timeTiers.length) {
+          const hours = s.hourlyBreakdown?.[day];
+          if (hours) {
+            const weekday = new Date(day + "T00:00:00").getDay();
+            for (const [hh, bucket] of Object.entries(hours)) {
+              const hm = bucket?.models?.[mn];
+              if (!hm) continue;
+              const hourNum = Number(hh);
+              if (!Number.isFinite(hourNum)) continue;
+              estimatedCost += calcCost(price, hm, { minutes: hourNum * 60, weekday });
+            }
+            // 拿到小时表就不再用日合计，否则会重复计一笔。
+            continue;
+          }
+          // 没有小时表（老缓存、账本按天聚出来的行）：退回基础四价。
+          // 会偏高或偏低，但不会算成 0，也不会把分时价错当成全时段价。
+        }
         estimatedCost += calcCost(price, mv);
       }
       if (d.mediaGen) {
