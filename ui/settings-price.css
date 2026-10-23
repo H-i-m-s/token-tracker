@@ -497,18 +497,26 @@
   -webkit-mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M8 4.5V8l2.4 1.6'/%3E%3C/svg%3E") center/contain no-repeat;
   mask: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16' fill='none' stroke='%23000' stroke-width='1.3' stroke-linecap='round'%3E%3Ccircle cx='8' cy='8' r='6'/%3E%3Cpath d='M8 4.5V8l2.4 1.6'/%3E%3C/svg%3E") center/contain no-repeat;
 }
-/* 弹层：两列数字，各自滚。宽度只够放两个两位数，不占屏。 */
-.tt-time-popup { width: 158px; padding: 8px; }
+/* 弹层：两列数字，各自滚。 */
+.tt-time-popup { width: 152px; padding: 8px; }
 .tt-time-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .tt-time-colwrap { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
 .tt-time-hd { font: 10px var(--font-sans); color: var(--tt-t3); text-align: center; }
 .tt-time-col {
   display: flex; flex-direction: column; gap: 1px;
+  /* 条目居中而不是拉满列宽：数字就两位，高亮底铺满整列会把右边的
+     滚动条挤成一条贴着数字的细棍。
+     右侧 6px 内边距是给滚动条让的：滚动条从内容区右缘往外扣，
+     有了这段白，它就不再紧贴高亮框的边。 */
+  align-items: center;
+  padding-right: 4px;
   max-height: 168px; overflow-y: auto; overscroll-behavior: contain;
   scrollbar-width: thin; scrollbar-color: var(--tt-b2) transparent;
 }
 .tt-time-item {
-  display: block; flex: 0 0 auto; width: 100%; height: 24px; padding: 0;
+  display: block; flex: 0 0 auto;
+  width: 100%; max-width: 46px;
+  height: 24px; padding: 0;
   border: 1px solid transparent; border-radius: var(--tt-radius-inner);
   background: transparent; color: var(--tt-t1);
   font: 11px var(--font-sans); font-variant-numeric: tabular-nums;
