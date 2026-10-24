@@ -1086,9 +1086,27 @@ export class PriceCard {
     try {
       await this.api.savePrices(patches, { mock: this.mock });
       await this.load();
+      // 重画会把所有输入框换成新节点，焦点会掉回 body。
+      //
+      // 用户在格子里打完字按 Tab 时这就是致命的：Tab 的默认行为已经聚焦了下一格，
+      // 紧接着 paint() 把那格销毁，于是「输入数字后就切不到下一格」。
+      // 所以在画之前记住焦点落在哪一格，画完按 data-key + data-field 找回来。
+      //
+      // 只认带 data-field 的元素：行首勾选框、摘要条、按钮没有这个属性，
+      // 它们失焦后不应该被脚本抢回焦点。
+      const active = document.activeElement;
+      const focusKey = active?.dataset?.key || "";
+      const focusField = active?.dataset?.field || "";
       // 保留用户正在编辑、还没提交的其他行，别让重画把它们冲掉
       const editing = new Map(this.staleValues);
       this.paint();
+      if (focusKey && focusField) {
+        const back = this.bodyEl.querySelector(
+          `.tts-price__row [data-key="${CSS.escape(focusKey)}"][data-field="${CSS.escape(focusField)}"]`,
+        );
+        // preventScroll：重画已经保持住滚动位置，强制 focus 再滚一次会让整页跳。
+        if (back) back.focus({ preventScroll: true });
+      }
       for (const [key, values] of editing) {
         const row = this.bodyEl.querySelector(`.tts-price__row [data-key="${CSS.escape(key)}"]`)?.closest(".tts-price__row");
         if (!row) continue;
