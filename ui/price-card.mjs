@@ -493,6 +493,9 @@ export class PriceCard {
     const visible = this.filteredGroups();
     const visibleCount = visible.reduce((s, g) => s + g.items.length, 0);
     this.syncSummary(count, visibleCount, visible.length);
+    // 清单区要整块换掉（搜索时就走这条，不进 paint）：先收掉正悬停在这里的浮层，
+    // 否则它挂着的行被挤掉之后，那个 fixed 的框会留在原地。
+    closeHoverTip(this.listEl);
 
     // 清单区是一个固定位置的容器，只换它里面的内容。
     //
@@ -526,6 +529,9 @@ export class PriceCard {
     for (const group of visible) nodes.push(this.renderGroup(group));
     listEl.replaceChildren(...nodes);
     this.syncBatchBar();
+    // 搜索输入走的是这条路（不进 paint），列头与每行的 title 都是刚造的，
+    // 不在这里扫一遍，打字时那些原生提示会重新冒出来。
+    upgradeTitles(listEl);
   }
 
   /**

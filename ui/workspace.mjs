@@ -16,6 +16,7 @@ import { DETAIL_SORTS, DETAIL_THRESHOLDS, viewRows, sumTokens, pageSlice, hitRat
 import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { createViewGestures } from "./view-track.mjs";
 import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
+import { upgradeTitles, closeHoverTip } from "./hover-tip.mjs";
 
 const PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 5000;
@@ -255,6 +256,8 @@ export class WorkspaceApp {
   // ---------- shell ----------
 
   renderShell() {
+    // 整页换节点：正悬停的那个元素被移除时不发 mouseleave，浮层会停在原地。重画前先收掉。
+    closeHoverTip();
     this.container.innerHTML = "";
     this.container.className = "tt-app tt-dashboard-app";
     this.statusEl = h("div", { className: "tt-status-bar" });
@@ -314,6 +317,8 @@ export class WorkspaceApp {
       onClaim: () => { closeOpenSelect(); closeOpenDate(); },
     });
     this.selectView(this.view);
+    // 顶部那排（刷新按钮）是这次新造的节点，摘掉 title 换成自绘浮层。
+    upgradeTitles(this.container);
   }
 
   selectView(view, { persist = true, animate = true, duration = 0, easing = "" } = {}) {
@@ -763,6 +768,9 @@ export class WorkspaceApp {
     // 只关这一块里的：筛选条那三颗下拉不在里面，不该被牵连关掉。
     closeOpenSelect(this.boardControls);
     closeOpenDate();
+    // 同上，自绘浮层也得先收：马上要换掉的就是它挂着的那个节点。
+    closeHoverTip(this.boardControls);
+    closeHoverTip(this.appearanceControls);
     if (!this.boardControls) return;
     const state = this.state.get();
     const appearance = applyAppearance(state.appearance);
@@ -821,6 +829,10 @@ export class WorkspaceApp {
     );
     // 挪完再让它就位：整排刚被重新挂进容器，这一步放在重挂之后，过渡才不会被“挪动”打断。
     this.rangePills?.update(state.range, { animate: true });
+    // 菜单里新造的节点（summary、主题三档、单位行…）的 title 都换成自绘浮层。
+    // 必须在 enhanceSelects 之后：自绘下拉的触发器是那一步才插进来的。
+    upgradeTitles(this.boardControls);
+    upgradeTitles(this.appearanceControls);
     this.renderFilterStatus();
   }
 
@@ -891,10 +903,16 @@ export class WorkspaceApp {
   renderOverview({ preserveScroll = false } = {}) {
     const el = this.container.querySelector("#overview-module");
     if (!el) return;
+    // 概览整块由 analytics 重建：正悬停的元素反正要被换掉，先收掉它的浮层。
+    closeHoverTip(el);
     const keepScroll = preserveScroll ? el.scrollTop : 0;
     renderAnalytics(el, this.dashboard, this.state.get(), patch => this.state.patch(patch));
     // KPI 卡的字号不写死：每次重画后按各卡实测内框重算一遍（看板与卡片共用一份）。
     installKpiFit(el);
+    // 图表里那几十上百处口径说明（KPI 格、色带图图例、热力格、时段柱…）都是原生 title，
+    // 统一换成自绘浮层。扫在这里而不是留给 analytics：那边一帧里会重画很多次，
+    // 而且它不仅被看板调、也被卡片调，只在一个地方扫就不会漏。
+    upgradeTitles(el);
     if (preserveScroll) el.scrollTop = keepScroll;
   }
 
@@ -916,6 +934,8 @@ export class WorkspaceApp {
       el = h("section", { id: "balance-module", className: "tt-module" });
       this.mainEl.appendChild(el);
     }
+    // 这块 rebind 时整块重建（下面 el.innerHTML = ""），先收掉正悬停在这里的浮层。
+    closeHoverTip(el);
 
     const rows = this.balances || [];
     const body = h("div", { className: "tt-module-bd dense", "data-tt-select": "" });
@@ -1023,6 +1043,9 @@ export class WorkspaceApp {
       dsPanel.appendChild(h("div", { className: "tt-ds-note" }, "上次刷新失败：" + this.dsError));
     }
     body.appendChild(dsPanel);
+    // 整块（余额行 + 账单面板）到此才全部成形，所以扫在这一行的位置。
+    // 余额行里的供应商名是长名字要截断、全文挂在 title 上的那一处。
+    upgradeTitles(el);
   }
 
   // ---------- details module ----------
@@ -1041,7 +1064,8 @@ export class WorkspaceApp {
       el.setAttribute("aria-hidden", String(this.view !== "details"));
     }
     closeOpenSelect(el);
-
+    // 这块整块重建：先收掉正悬停在这里的浮层（fixed，不收拾就会停在原地）。
+    closeHoverTip(el);
     // 两条路：引擎给了 details 就用它（排序/门槛/分页都在数据层做完了，这里只渲染这一页），
     // 拿不到 details（mock 预览、或引擎没拿到 SQLite 驱动）才退回本地这套，语义相同。
     const server = this.dashboard?.details || null;
@@ -1107,6 +1131,8 @@ export class WorkspaceApp {
     });
     this.container.querySelector("#details-export")?.addEventListener("click", () => this.exportCSV());
     this.bindDetailsPagination();
+    // 这一页的行、提示文案（差额那一条、行悬停、分页按钮）都是新造的，统一换掉。
+    upgradeTitles(el);
   }
 
   renderDetailsTable(pageRows, maxTokens, emptyText = "该时间范围内无消费记录") {
@@ -1265,6 +1291,8 @@ export class WorkspaceApp {
       mod.appendChild(el);
     }
     const keepScroll = mod.scrollTop;
+    // 这块要整体重建：先只收掉挂在这里的那一个浮层（实时监控那一块也在这页上，不连带收掉）。
+    closeHoverTip(el);
     el.innerHTML = "";
     el.append(
       h("div", { className: "tt-diag-head" },
@@ -1275,6 +1303,8 @@ export class WorkspaceApp {
       this.buildDiagnostics(),
     );
     mod.scrollTop = keepScroll;
+    // 载荷条的每一条都是被截断的键名，全文只能在 title 里看。
+    upgradeTitles(el);
   }
 
   // bytes=true 时后端会把整份看板重算一遍再拆字节，所以那一下就单独点，不跟着这一页一起做。
@@ -1440,7 +1470,11 @@ export class WorkspaceApp {
   // 抽屉内容的构建兼一层兜底：它出意外只坏这一块，不连累整张明细表。
   renderTurnPanel(state) {
     try {
-      return this.buildTurnPanel(state);
+      const panel = this.buildTurnPanel(state);
+      // 抽屉里模型名 / 会话路径 / 文件体量 / 每次调用那两格都是原生 title，
+      // 而它是展开、重读时才造的，主列表那次扫描碰不到它。
+      upgradeTitles(panel);
+      return panel;
     } catch (err) {
       return h("div", { className: "tt-turn-body" }, h("div", { className: "tt-turn-note" }, `展开失败：${err?.message || err}`));
     }
@@ -1571,6 +1605,8 @@ export class WorkspaceApp {
 
     const keepScroll = el.scrollTop;   // 这一页底部还挂着体检块，重建别把人拽回顶部
     const diag = el.querySelector("#realtime-diag");   // 体检不是实时数据：重建时把它排到最后就好
+    // 这块每 5 秒重画一次，里面正悬停的元素马上要被换掉：先收掉浮层。
+    closeHoverTip(el);
     el.innerHTML = "";
     el.append(
       h("div", { className: "tt-module-hd", "data-tt-select": "" },
@@ -1627,6 +1663,9 @@ export class WorkspaceApp {
     if (sparkContainer && this.sparkHistory.length > 1) {
       drawSparkline(sparkContainer, this.sparkHistory, { stroke: "var(--tt-blue)", fill: "var(--tt-blue)", fillOpacity: 0.10, dot: false, height: 40 });
     }
+    // 体检块是搬过来的、不重建（上面 appendChild），它自己的 title 早已摘过；
+    // 这一块重画一次只产生这一块的新节点，所以扫 el 就够了。
+    upgradeTitles(el);
   }
 }
 

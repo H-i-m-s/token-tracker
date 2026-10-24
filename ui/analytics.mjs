@@ -5,6 +5,7 @@ import { setValue, setLabel, rollDirection, labelStops } from './digit-roll.mjs'
 import { scaleText } from './units.mjs';
 import { asList, pickValues, modsOf } from './selection.mjs';
 import { splineCurve, splineValueAt } from './curve.mjs';
+import { upgradeTitles } from './hover-tip.mjs';
 
 const COLORS = ['#d1b477', '#7ea3cf', '#81b4a1', '#c68487', '#aa97c8', '#a7b779', '#bd987b', '#8897aa'];
 
@@ -377,6 +378,11 @@ function createFlowPanel() {
         btn.title = btn.disabled ? '只有总量一层时，占比恒为 100%' : '';
       }
     }
+    // 这四颗按钮的 title 是上面逐帧重算的（可点时是空串）。赋值在扫描之后，
+    // 而列表那一层不会再扫它，所以在这里补一次：赋值与升级必须相邻，
+    // 顺序反了就只能挂上上一帧的空文案，原生提示会重新冒出来。
+    // 空串那条 upgradeTitles 自己会跳过（不给空提示，也不留 aria-label）。
+    upgradeTitles(sw);
     // 只清网格与悬停层。曲线层千万不能在这里清：一清，节点就被摘下来了，
     // 之后即使把同一批 path 塞回去，浏览器也当它是新插入的元素——“之前的样子”没了，
     // d 的过渡根本不会建立，看上去就是突然跳变。
@@ -657,17 +663,23 @@ function createFlowPanel() {
     foot.textContent = useHour
       ? `按小时 · ${cells[0].date}${lastCell.date === cells[0].date ? '' : ' → ' + lastCell.date} · 共 ${cells.length} 小时 · ${scaleNote}`
       : `${cells[0].date} → ${lastCell.date} · 共 ${cells.length} 天 · ${scaleNote}`;
+    // 图例是这一帧才重建的（每项都带一个 title），而 draw() 不只被整体重画调：
+    // 点图例、切维度、切绝对量/占比也直接调它，那些路上没有外层扫描。
+    // 所以这里补一次 —— 幂等，外层再扫也不会重挂。
+    upgradeTitles(el);
   }
 
   function buildSwitch() {
     sw.replaceChildren();
     for (const [dim, label] of DIMS) {
-      sw.append(h('button', { type: 'button', dataset: { dim }, 'aria-pressed': String(flowDimension === dim),
+      // 自带 aria-label：下面 draw() 会给不可点的按钮挂一段「为什么点不了」的说明，
+      // 升级成浮层时那段说明会变成可及名；先把真名钉住，读屏才不是只听到理由。
+      sw.append(h('button', { type: 'button', dataset: { dim }, 'aria-label': label, 'aria-pressed': String(flowDimension === dim),
         onClick: () => { flowDimension = dim; flowFocus = ''; draw(); } }, label));
     }
     sw.append(h('span', { className: 'tt-flow-sep' }));
     for (const [sc, label] of [['abs', '绝对量'], ['pct', '占比']]) {
-      sw.append(h('button', { type: 'button', dataset: { scale: sc }, 'aria-pressed': String(flowScale === sc),
+      sw.append(h('button', { type: 'button', dataset: { scale: sc }, 'aria-label': label, 'aria-pressed': String(flowScale === sc),
         onClick: () => { flowScale = sc; draw(); } }, label));
     }
   }

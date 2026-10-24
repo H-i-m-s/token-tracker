@@ -12,7 +12,6 @@ import { h } from "./components.mjs";
 
 let tipEl = null;
 let showTimer = null;
-let hideTimer = null;
 let owner = null;
 // 正等着浮现的那一个。计时器是全局共用的，解绑时得先确认「等的是不是自己」，
 // 否则清掉的是别人的计时（B 还在等浮现，A 被回收顺手把 B 的 timer 抹了）。
@@ -36,7 +35,6 @@ let sweepTimer = null;
 
 function clearTimers() {
   if (showTimer) { clearTimeout(showTimer); showTimer = null; }
-  if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
 }
 
 function ensureTip() {
@@ -78,7 +76,9 @@ function hide() {
   tipEl = null;
   node.classList.remove("is-in");
   // 等淡出再摘，避免「啪」地消失。
-  hideTimer = setTimeout(() => { node.remove(); hideTimer = null; }, 120);
+  // 这个计时器不归 clearTimers 管：淡出中的节点已经在退场，下一次悬停若把计时
+  // 一并取消，它就永远留在 DOM 里了（原来那段代码有这一手，只是提示少不明显）。
+  setTimeout(() => node.remove(), 120);
 }
 
 /**
@@ -95,10 +95,11 @@ function hide() {
 function sweep() {
   for (const record of instances) {
     if (record.target.isConnected) { record.seen = true; record.misses = 0; continue; }
-    // 从没进过文档的不算「掉出文档」：调用方可能先建好、再挂上去（详情抽屉就是这样）。
-    // 没这一条，刚建好还没插进去的那一批会被当场解绑，浮层永远不出来。
-    // 但也不能永远留着：连扫几轮都没进过文档的，就当它不会再来了（上限两轮）。
-    if (record.seen || ++record.misses > 2) record.cleanup();
+    // 曾经在树上、现在不在了 = 确实被换掉了，就地解绑。
+    if (record.seen) { record.cleanup(); continue; }
+    // 从没进过文档的不当废弃：调用方可能先建好、下一拍才挂上去（筛选条、价格卡的整块）。
+    // 但不能无限留着，扫过 20 轮还没进过树，就当它确实不会来了。
+    if (++record.misses > 20) record.cleanup();
   }
 }
 
@@ -154,11 +155,13 @@ export function attachHoverTip(target, render, { delay = 420 } = {}) {
       pendingTarget = null;
       if (!target.isConnected) return;
       hide();               // 换人时先收上一个，同一时刻只留一个
-      const tip = ensureTip();
-      tip.replaceChildren();
       const content = typeof render === "function" ? render() : render;
-      if (Array.isArray(content)) tip.append(...content);
-      else if (content != null) tip.append(content);
+      const parts = Array.isArray(content) ? content.filter((x) => x != null) : (content == null ? [] : [content]);
+      // 没话可说就不弹（analytics 里那两个按钮“可点”时文案是空串）：
+      // 否则会在触发元素旁边跳出一个空的小方块。
+      if (!parts.length) return;
+      const tip = ensureTip();
+      tip.replaceChildren(...parts);
       place(target, tip);
       // 下一帧再上类，否则元素刚插入就带 opacity 终值，过渡不成立。
       requestAnimationFrame(() => tip.classList.add("is-in"));
@@ -193,8 +196,14 @@ export function attachHoverTip(target, render, { delay = 420 } = {}) {
   return cleanup;
 }
 
-/** 页面整体收掉（比如设置页整块重建前）。 */
-export function closeHoverTip() {
+/** 页面整体收掉（比如设置页整块重建前）。
+ *
+ * 传了 root 就只收「正悬停在那块子树里」的那一个：看板里实时监控每 5 秒重画、
+ * 体检块也会单独重画，不该把读者正在别处看的那一条一起抹掉。 */
+export function closeHoverTip(root = null) {
+  if (!root || typeof root.contains !== "function") { hide(); return; }
+  const live = owner || pendingTarget;
+  if (live && !root.contains(live)) return;
   hide();
 }
 
@@ -214,7 +223,12 @@ export function upgradeTitles(root) {
   for (const el of root.querySelectorAll("[title]")) {
     const text = String(el.getAttribute("title") || "").trim();
     el.removeAttribute("title");
-    if (!text) continue;
+    if (!text) {
+      // 空串 = 这个元素不需要提示了（色带图那四颗开关可点时会把文案清空）。
+      // 得把上一条绑定撤掉：不撤的话，悬停还会弹出上一帧那句“为什么点不了”。
+      if (typeof el[BINDING] === "function") el[BINDING]();
+      continue;
+    }
     // 摘掉 title 会把读屏用户的可及名一起摘掉（输入框尤甚：四格长得一模一样，
     // 没有名字就分不出谁是「输入」谁是「输出」）。这里补一个 aria-label ——
     // 只补没有的，不覆盖调用方已经写好的。

@@ -1,0 +1,42 @@
+/* ── 悬停提示 ──────────────────────────────────────────────────────────────
+   替代浏览器原生 title 的小浮层。节点由 ui/hover-tip.mjs 挂到 body，
+   所以这里用 fixed 定位，不受任何祖先容器的 overflow 影响。
+   形制向旁边的弹层看齐：卡片底色、一道细边框、不发辉、不加箭头。
+
+   为什么单独一个文件：看板、卡片、导航面板都只加载 token-tracker.css，
+   这套样式原先写在 settings.css 里（只有设置页加载），于是那三处的浮层
+   是个没有样式的裸 div。样式跟着 hover-tip.mjs 走，谁用谁就有。
+
+   依赖 token-tracker.css 里的 --tt-card / --tt-b2 / --tt-t1 ~ --tt-t3 /
+   --font-mono，所以要在它之后加载。 */
+.tts-hovertip {
+  position: fixed;
+  z-index: 2147483000;
+  max-width: 300px;
+  box-sizing: border-box;
+  padding: 7px 10px;
+  border: 1px solid var(--tt-b2);
+  border-radius: 7px;
+  background: var(--tt-card);
+  color: var(--tt-t1);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, .38);
+  font-size: 11.5px;
+  line-height: 1.5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .12s ease;
+}
+.tts-hovertip.is-in { opacity: 1; }
+.tts-hovertip__key {
+  font: 400 11px var(--font-mono);
+  color: var(--tt-t3);
+  overflow-wrap: anywhere;
+}
+.tts-hovertip__hint { color: var(--tt-t2); }
+.tts-hovertip__key + .tts-hovertip__hint { margin-top: 2px; }
+.tts-hovertip__line { color: var(--tt-t2); }
+.tts-hovertip__line + .tts-hovertip__line { margin-top: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .tts-hovertip { transition: none; }
+}

@@ -4,6 +4,7 @@ import { closeOpenSelect, enhanceSelects } from "./custom-select.mjs";
 import { UNIT_SYSTEMS, normalizeUnitSystem, scaleText } from "./units.mjs";
 import { CURRENCIES, DEFAULT_CURRENCY, normalizeCurrency, formatMoney, getFxRate, setFxRate } from "./currency.mjs";
 import { PriceCard } from "./price-card.mjs";
+import { upgradeTitles, closeHoverTip } from "./hover-tip.mjs";
 
 // 供应商表。id 必须与服务端 runtime/engine/services/settings.js 的 PROVIDERS 逐字一致：
 // 不认识的名字、或者某个 id 下多写一个键，写回时整条会被拒收。
@@ -179,6 +180,8 @@ export class SettingsApp {
     const s = this.settings || this.defaultSettings();
     // 自绘下拉的浮层挂在 body 上：重建容器前先收掉，免得留下孤儿面板。
     closeOpenSelect(this.cardsEl);
+    // 自绘悬停浮层同理：它挂着的元素马上要被换掉。
+    closeHoverTip(this.cardsEl);
     this.cardsEl.innerHTML = "";
     this.cards.clear();
     this.provRows = [];
@@ -188,6 +191,9 @@ export class SettingsApp {
     for (const row of this.provRows) row.sync();
     this.syncBalanceCount();
     this.syncAbout();
+    // 「恢复上次的值」与「有新版本」这两颗按钮自带 title。它们都是每张卡重建时新造的节点，
+    // 所以扫在这一步（卡片已经挂进来了）。价格卡内部自己也会扫一遍，幂等，不冲突。
+    upgradeTitles(this.cardsEl);
     // 基线＝这次打开设置页时每张卡是什么值。「恢复上次的值」就是回到这里。
     for (const card of this.cards.values()) this.markClean(card);
   }

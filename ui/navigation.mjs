@@ -6,6 +6,7 @@ import { h, RANGES, fmt, fmtPct, renderPills, rankAgents } from "./components.mj
 import { getCurrency, moneyCode, moneyHint, formatMoney, setFxRate, getFxRate, currencyFromSnapshot } from "./currency.mjs";
 import { selectionKey } from "./selection.mjs";
 import { getUnitSystem, setUnitSystem, unitsFromSnapshot } from "./units.mjs";
+import { upgradeTitles, closeHoverTip } from "./hover-tip.mjs";
 
 export class NavigationApp {
   constructor({ hana, api, state, container, mock = false }) {
@@ -38,6 +39,8 @@ export class NavigationApp {
   }
 
   renderShell() {
+    // 整页换节点：先收掉悬停浮层，否则它会悬在半空（fixed，不跟 DOM 一起走）。
+    closeHoverTip();
     this.container.innerHTML = "";
     this.container.className = "tt-nav";
 
@@ -110,6 +113,8 @@ export class NavigationApp {
 
   renderSummary() {  if (!this.dashboard) { this.summarySection.textContent = "所选范围加载失败，请刷新重试"; return; }
     const summary = this.dashboard.summary;
+    // 这一块重建：先收掉正悬停在里面的那一个。
+    closeHoverTip(this.summarySection);
     this.summarySection.innerHTML = "";
     this.summarySection.append(
       h("div", { className: "tt-nav-title" }, (RANGES.find(r => r.key === this.state.get().range)?.label || "所选范围") + "摘要"),
@@ -121,6 +126,8 @@ export class NavigationApp {
           : formatMoney(summary.estimatedCost, { rate: summary.fxRate })))),
       h("div", { className: "tt-nav-row" }, h("span", { className: "k" }, "活跃 Agent"), h("span", { className: "v" }, String(summary.agentCount || 0))),
     );
+    // 成本那一行的 title 是这一块唯一的悬停说明（口径写在里面），换成自绘浮层。
+    upgradeTitles(this.summarySection);
   }
 
   renderBalance() {

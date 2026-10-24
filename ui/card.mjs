@@ -9,6 +9,7 @@ import { enhanceSelects } from './custom-select.mjs';
 import { closeAllPickers } from './custom-pickers.mjs';
 import { cardIcon } from './card-icons.mjs';
 import { CARD_VIEWS, cardSelection, toggleCardTab } from './card-tabs.mjs';
+import { upgradeTitles, closeHoverTip } from './hover-tip.mjs';
 
 const CHART_SELECTORS = {
   agents: '.tt-agent-panel', heat: '.tt-heat-panel', distribution: '.tt-dist-panel',
@@ -24,6 +25,8 @@ function revealTab(bar, button) {
 }
 export class CardApp extends WorkspaceApp {
   renderShell() {
+    // 整页换节点：正悬停的那个元素被移除时不发 mouseleave，浮层会停在原处。
+    closeHoverTip();
     this.container.replaceChildren();
     this.container.className = 'tt-app tt-switch-card';
     this.tabBar = h('div', { className: 'tt-card-tabs', role: 'tablist', 'aria-label': '卡片功能' });
@@ -77,6 +80,10 @@ export class CardApp extends WorkspaceApp {
   renderBoardControls() {
     // 本函数会重建筛选条与显示设置菜单：自绘下拉随之被替换，先把已打开的浮层摘干净。
     closeAllPickers();
+    // 同上，自绘悬停浮层也得先收 —— 它挂着的就是马上要被换掉的那个节点。
+    closeHoverTip(this.tabBar);
+    closeHoverTip(this.menu);
+    closeHoverTip(this.filterBar);
     if (!this.tabBar) return;
     const state = this.state.get(), { tabs, active } = cardSelection(state);
     const appearance = applyAppearance(state.appearance || 'system');
@@ -147,6 +154,9 @@ export class CardApp extends WorkspaceApp {
     ].filter(Boolean));
     // 时间范围下拉换成自绘控件（原生 select 仍是状态源）。
     enhanceSelects(this.container);
+    // 页签、配色三档、每组开关、筛选标示、刷新/展开两颗图标按钮全是新节点，统一升级。
+    // 排在这里、renderOverview 之前：下面那次重画会换掉概览块，概览自己会再扫一次。
+    upgradeTitles(this.container);
     this.renderOverview();
   }
 
@@ -155,6 +165,8 @@ export class CardApp extends WorkspaceApp {
     if (!el) return;
     const state = this.state.get(), { active } = cardSelection(state);
     if (['balance', 'details', 'realtime'].includes(active)) return;
+    // 这块要整块换掉：先收掉正悬停在这里的浮层（fixed，不收拾就会停在原地）。
+    closeHoverTip(el);
     el.replaceChildren();
     if (!this.dashboard) { el.append(h('div', { className: 'tt-board-empty' }, '正在读取所选范围…')); return; }
     // 每次渲染都新建一个 board（下面把 KPI 块摘出来再挂进常驻容器），
@@ -174,6 +186,9 @@ export class CardApp extends WorkspaceApp {
       if (chart) el.append(chart);
       else el.append(h('div', { className: 'tt-board-empty' }, '该范围暂无图表数据'));
     }
+    // 图表里那几十处口径说明（KPI 格、色带图图例、热力格、时段柱…）都是原生 title。
+    // 扫在挂进 el 之后：renderAnalytics 造图时它们还在游离的 board 里。
+    upgradeTitles(el);
   }
 }
 

@@ -20,6 +20,7 @@
 import { h, selectOptions } from "./components.mjs";
 import { mountSelect } from "./custom-select.mjs";
 import { asList, pickValues, modsOf } from "./selection.mjs";
+import { upgradeTitles } from "./hover-tip.mjs";
 
 // Shift 整段加选的锚点：只关系到本次会话的点选手感，不是筛选状态，所以不进 state、不落盘。
 const chipAnchors = { agent: null, provider: null, model: null };
@@ -132,6 +133,10 @@ export function createFilterStatus({ state, agentOptions, providerOptions, model
     const activeCount = asList(s.agent).length + asList(s.provider).length + asList(s.model).length + asList(s.type).length;
     summaryEl.textContent = activeCount ? `已筛选 · ${activeCount} 项` : "当前范围";
     clearBtn.hidden = activeCount === 0;
+    // 三颗下拉的完整选中清单是上面 update 里每轮重写的 title（chip 上放不下），
+    // 类型 chip 也是这一轮才追加的。所以升级必须排在最后 ——
+    // 排在前头只能挂上旧文案，刚写上去的新 title 反而没人接，原生提示就又冒出来了。
+    upgradeTitles(root);
   }
 
   if (state) update({ state, agentOptions, providerOptions, modelOptions });
