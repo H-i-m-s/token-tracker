@@ -334,14 +334,32 @@ test("模型级默认价：供应商级内置价优先于模型级", () => {
 });
 
 test("模型级别名各有一条价，不做自动归一化", () => {
-  for (const m of ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "DeepSeek-V4-Flash"]) {
+  for (const m of [
+    "deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "deepseek-v4-flash-vision-exp",
+    "deepseek-v4.1-flash", "DeepSeek-V4-Flash", "DeepSeek-V4.1-Flash", "DeepSeek-V4.1-Flash-1017",
+    "x-deepseek-flash", "sn-deepseek-v4-1-flash-1017",
+  ]) {
     assert.ok(DEFAULT_PRICE_TABLE[m], `${m} 应当有价`);
-    assert.equal(DEFAULT_PRICE_TABLE[m].input, 1);
+    assert.equal(DEFAULT_PRICE_TABLE[m].input, 1, `${m} 应当与 deepseek-flash 同价`);
   }
-  for (const m of ["glm-5.3-flash", "glm-5-3-flash", "glm-5-3-flash-260828", "GLM-5.3-Flash"]) {
+  for (const m of [
+    "glm-5.3-flash", "glm-5-3-flash", "glm-5-3-flash-260828", "GLM-5.3-Flash", "sn-glm-5-3-flash",
+  ]) {
     assert.ok(DEFAULT_PRICE_TABLE[m], `${m} 应当有价`);
     assert.equal(DEFAULT_PRICE_TABLE[m].output, 2.8);
   }
+});
+
+test("raccoon 中转的 sn-* 名能按模型级查到价", () => {
+  const cat = buildPriceCatalog({
+    usedPairs: [
+      { provider: "raccoon", model: "sn-deepseek-v4-1-flash-1017", tokens: 2, turns: 1 },
+      { provider: "raccoon", model: "sn-glm-5-3-flash", tokens: 1, turns: 1 },
+    ],
+  });
+  const byKey = new Map(cat.groups.flatMap((g) => g.items).map((i) => [i.key, i]));
+  assert.equal(byKey.get("raccoon/sn-deepseek-v4-1-flash-1017").priced, true);
+  assert.equal(byKey.get("raccoon/sn-glm-5-3-flash").priced, true);
 });
 
 test("DeepSeek 分时：工作日高峰双倍，其余时段与周末按平峰", () => {
