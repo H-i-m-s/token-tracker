@@ -350,7 +350,7 @@ test("模型级别名各有一条价，不做自动归一化", () => {
   }
 });
 
-test("小米 MiMo 已下线但保留历史价，同档型号价一致", () => {
+test("小米 MiMo 已下线型号保留历史价，现役 V2.6 三档齐全", () => {
   assert.deepEqual(
     DEFAULT_PRICE_TABLE["mimo-v2.5"],
     { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 2 },
@@ -358,6 +358,13 @@ test("小米 MiMo 已下线但保留历史价，同档型号价一致", () => {
   assert.deepEqual(
     DEFAULT_PRICE_TABLE["mimo-v2.5-pro"],
     { input: 3, cacheRead: 0.025, cacheWrite: 0, output: 6 },
+  );
+  // 继任型号同档同价：v2.6-flash = v2.5，v2.6-pro = v2.5-pro
+  assert.deepEqual(DEFAULT_PRICE_TABLE["mimo-v2.6-flash"], DEFAULT_PRICE_TABLE["mimo-v2.5"]);
+  assert.deepEqual(DEFAULT_PRICE_TABLE["mimo-v2.6-pro"], DEFAULT_PRICE_TABLE["mimo-v2.5-pro"]);
+  assert.deepEqual(
+    DEFAULT_PRICE_TABLE["mimo-v2.6-pro-ultraspeed"],
+    { input: 30, cacheRead: 0.25, cacheWrite: 0, output: 60 },
   );
 });
 
