@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 
 import {
-  DEFAULT_PRICE_TABLE, PRICE_KEYS, normalizePrice, isFlatPrice, isPriced,
+  DEFAULT_PRICE_TABLE, DEFAULT_PRICE_RATE, PRICE_KEYS, normalizePrice, isFlatPrice, isPriced,
   mergePriceTables, pickPrice, calcCost, splitKey,
 } from "../lib/price-core.mjs";
 import {
@@ -293,4 +293,71 @@ test("同一个键在 used 与 shown 都出现时只算一次，不重复出行"
     usedPairs: [{ provider: "x", model: "y", tokens: 1, turns: 1 }],
   });
   assert.equal(cat.count, 1);
+});
+
+// ── 模型级默认价：按模型名回退 ──
+// 同一条价常被多个供应商共用（官方、自建中转、聚合网关），
+// 内置表里因此有一份只按模型名登记的价，作为 provider/model 查不到时的回退。
+
+test("模型级默认价：供应商级没登记时按模型名回退", () => {
+  const cat = buildPriceCatalog({
+    usedPairs: [{ provider: "some-proxy", model: "deepseek-flash", tokens: 100, turns: 1 }],
+  });
+  const item = cat.groups.flatMap((g) => g.items).find((i) => i.key === "some-proxy/deepseek-flash");
+  assert.equal(item.source, "default", "应当从模型级默认价取到");
+  assert.equal(item.defaultPrice.input, 1);
+  assert.equal(item.priced, true);
+});
+
+test("模型级默认价：用户填的 provider/model 仍然压过它", () => {
+  const cat = buildPriceCatalog({
+    userPrices: { "some-proxy/deepseek-flash": { input: 9 } },
+    usedPairs: [{ provider: "some-proxy", model: "deepseek-flash", tokens: 100, turns: 1 }],
+  });
+  const item = cat.groups.flatMap((g) => g.items).find((i) => i.key === "some-proxy/deepseek-flash");
+  assert.equal(item.source, "user");
+  assert.equal(item.effective.input, 9, "用户值不能被默认价盖回去");
+});
+
+test("模型级默认价：供应商级内置价优先于模型级", () => {
+  // opencode-go/deepseek-v4-flash 在旧表里有专门的供应商级价，不能被新增的
+  // 模型级 deepseek-v4-flash 顶掉。
+  const vendor = DEFAULT_PRICE_TABLE["opencode-go/deepseek-v4-flash"];
+  const modelLevel = DEFAULT_PRICE_TABLE["deepseek-v4-flash"];
+  assert.ok(vendor && modelLevel);
+  assert.notEqual(vendor.input, modelLevel.input, "两份价本来就不同，否则这条断言没意义");
+  const cat = buildPriceCatalog({
+    usedPairs: [{ provider: "opencode-go", model: "deepseek-v4-flash", tokens: 1, turns: 1 }],
+  });
+  const item = cat.groups.flatMap((g) => g.items).find((i) => i.key === "opencode-go/deepseek-v4-flash");
+  assert.equal(item.defaultPrice.input, vendor.input, "优先取供应商级");
+});
+
+test("模型级别名各有一条价，不做自动归一化", () => {
+  for (const m of ["deepseek-flash", "deepseek-v4-flash", "deepseek-v4.1-flash", "DeepSeek-V4-Flash"]) {
+    assert.ok(DEFAULT_PRICE_TABLE[m], `${m} 应当有价`);
+    assert.equal(DEFAULT_PRICE_TABLE[m].input, 1);
+  }
+  for (const m of ["glm-5.3-flash", "glm-5-3-flash", "glm-5-3-flash-260828", "GLM-5.3-Flash"]) {
+    assert.ok(DEFAULT_PRICE_TABLE[m], `${m} 应当有价`);
+    assert.equal(DEFAULT_PRICE_TABLE[m].output, 2.8);
+  }
+});
+
+test("DeepSeek 分时：工作日高峰双倍，其余时段与周末按平峰", () => {
+  const p = DEFAULT_PRICE_TABLE["deepseek-flash"];
+  const morning = { minutes: 10 * 60, weekday: 3 };   // 周三 10:00，高峰
+  const noon = { minutes: 13 * 60, weekday: 3 };      // 周三 13:00，午间平峰
+  const weekend = { minutes: 10 * 60, weekday: 6 };   // 周六 10:00，全天平峰
+  assert.equal(pickPrice(p, { input: 1_000_000 }, morning).input, 2, "工作日 9–12 是高峰");
+  assert.equal(pickPrice(p, { input: 1_000_000 }, noon).input, 1, "午间回落平峰");
+  assert.equal(pickPrice(p, { input: 1_000_000 }, weekend).input, 1, "周末全天平峰");
+  assert.equal(pickPrice(p, { input: 1_000_000 }, morning).output, 8);
+});
+
+test("美元来源的模型级价按基准汇率换算，人民币来源的保持原值", () => {
+  const gpt = DEFAULT_PRICE_TABLE["gpt-5.6-sol"];
+  assert.ok(Math.abs(gpt.input - 4 * DEFAULT_PRICE_RATE) < 0.01);
+  assert.ok(Math.abs(gpt.output - 20 * DEFAULT_PRICE_RATE) < 0.01);
+  assert.equal(DEFAULT_PRICE_TABLE["glm-5.3-flash"].input, 0.8, "人民币原价不该被乘汇率");
 });

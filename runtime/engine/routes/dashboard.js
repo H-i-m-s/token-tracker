@@ -1259,7 +1259,9 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
         if (filterProvider.length && !filterProvider.includes(provModels[mn])) continue;
         const prov = provModels[mn];
         if (!prov) continue;
-        const price = prices[prov + "/" + mn];
+        // 回退一级：供应商级没登记时按模型名查。同一条价常被多个供应商共用
+        // （自建中转、聚合网关、官方），见 lib/price-core.mjs 里模型级默认价那段说明。
+        const price = prices[prov + "/" + mn] || prices[mn];
         // 价格表本身就是人民币，直接乘除即可，不需要按币种再换算。
         //
         // 分时定价的模型必须按小时结算：dailyBreakdown 只有当天合计，
