@@ -54,6 +54,32 @@ function numInput(value, placeholder) {
 }
 
 /**
+ * 两组分时/分档是否等价。
+ *
+ * 用逐字段比较而不是 JSON.stringify：`_read()` 拼出来的对象字段顺序
+ * 与默认表里的不一致，stringify 会误判成「改过了」，于是每打开一次详情页再保存，
+ * 就把内置规则固化一次。
+ */
+function sameTiers(a, b) {
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  return a.every((x, i) => {
+    const y = b[i];
+    if (!x || !y) return x === y;
+    const keys = new Set([...Object.keys(x), ...Object.keys(y)]);
+    for (const k of keys) {
+      if (k === "days") {
+        const dx = Array.isArray(x[k]) ? x[k] : [];
+        const dy = Array.isArray(y[k]) ? y[k] : [];
+        if (dx.length !== dy.length || dx.some((d, j) => d !== dy[j])) return false;
+      } else if (x[k] !== y[k]) {
+        return false;
+      }
+    }
+    return true;
+  });
+}
+
+/**
  * 打开详情。返回一个 Promise，保存或关闭后 resolve。
  *
  * options:
@@ -118,11 +144,18 @@ export function openPriceDetail({ item, save, onSaved }) {
     };
     ctxRows.append(row);
   }
-  for (const tier of user?.contextTiers || []) addCtxRow(tier);
+  // 用户没配过时，把默认价里的分档铺出来。
+  // 不铺的后果很具体：详情页看着像「这个模型没有分档」，实际却在按默认价的档位算钱。
+  const initialCtx = user?.contextTiers?.length ? user.contextTiers : (def?.contextTiers || []);
+  for (const tier of initialCtx) addCtxRow(tier);
 
   // ── 分时定价 ──
   // 没有 from/to 的那一段是兜底：不属于任何时间窗的小时都走它。
+  // days 不在界面上编辑，但必须原样带回去。
+  // 内置的 DeepSeek 分时是「仅工作日 9–12、14–18」，用户在详情页点一下保存，
+  // 这里不带着 days 就会变成「每天高峰」，周末按双倍算钱。
   function addTimeRow(tier = {}) {
+    const keepDays = Array.isArray(tier.days) ? [...tier.days] : null;
     // 自绘时间字段（ui/time-field.mjs）。没用原生 <input type="time">：
     // 那套滚轮是系统配色，深色卡片上会突然浮出一块白底控件。
     // mount 必须指向 dialog：showModal 之后 body 下其他节点都是 inert，
@@ -155,6 +188,7 @@ export function openPriceDetail({ item, save, onSaved }) {
       const out = {};
       if (f && t) { out.from = f; out.to = t; }
       else if (f || t) return { bad: "时段要起止都填，或者都不填（都不填就是兜底段）" };
+      if (keepDays) out.days = [...keepDays];
       let has = false;
       for (const spec of PRICE_FIELDS) {
         const n = readNum(fields.get(spec.key));
@@ -166,7 +200,14 @@ export function openPriceDetail({ item, save, onSaved }) {
     };
     timeRows.append(row);
   }
-  for (const tier of user?.timeTiers || []) addTimeRow(tier);
+  const initialTime = user?.timeTiers?.length ? user.timeTiers : (def?.timeTiers || []);
+  for (const tier of initialTime) addTimeRow(tier);
+
+  // 打开时的快照。保存时拿它比对：没动过的分时/分档不写进用户表，
+  // 让它继续跟着默认价走 —— 否则「打开看一眼再保存」会把内置规则固化成用户价，
+  // 以后官方调价、或者内置表升级，这些模型就跟不上了。
+  const ctxSnapshot = initialCtx;
+  const timeSnapshot = initialTime;
 
   // ── 收集 ──
   function collect() {
@@ -186,7 +227,8 @@ export function openPriceDetail({ item, save, onSaved }) {
       if (r.bad) return r;
       if (r.tier) contextTiers.push(r.tier);
     }
-    if (contextTiers.length) price.contextTiers = contextTiers;
+    // 只在真的动过时写回。没动就整个字段不出现。
+    if (contextTiers.length && !sameTiers(contextTiers, ctxSnapshot)) price.contextTiers = contextTiers;
 
     const timeTiers = [];
     for (const row of timeRows.children) {
@@ -194,7 +236,7 @@ export function openPriceDetail({ item, save, onSaved }) {
       if (r.bad) return r;
       if (r.tier) timeTiers.push(r.tier);
     }
-    if (timeTiers.length) price.timeTiers = timeTiers;
+    if (timeTiers.length && !sameTiers(timeTiers, timeSnapshot)) price.timeTiers = timeTiers;
 
     return { price };
   }
