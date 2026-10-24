@@ -350,6 +350,17 @@ test("模型级别名各有一条价，不做自动归一化", () => {
   }
 });
 
+test("小米 MiMo 已下线但保留历史价，同档型号价一致", () => {
+  assert.deepEqual(
+    DEFAULT_PRICE_TABLE["mimo-v2.5"],
+    { input: 1, cacheRead: 0.02, cacheWrite: 0, output: 2 },
+  );
+  assert.deepEqual(
+    DEFAULT_PRICE_TABLE["mimo-v2.5-pro"],
+    { input: 3, cacheRead: 0.025, cacheWrite: 0, output: 6 },
+  );
+});
+
 test("raccoon 中转的 sn-* 名能按模型级查到价", () => {
   const cat = buildPriceCatalog({
     usedPairs: [
