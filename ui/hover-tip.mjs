@@ -7,13 +7,32 @@
 //   触发元素常常带 overflow: hidden（模型名要截断长名字），
 //   ::after 会被那个 overflow 一起裁掉。挂 body 才不会被任何祖先容器剪。
 //
-// 样式在 settings.css 的 .tts-hovertip 一节。同一时刻最多一个浮层。
+// 样式在 ui/hover-tip.css 的 .tts-hovertip 一节。同一时刻最多一个浮层。
 import { h } from "./components.mjs";
 
 let tipEl = null;
 let showTimer = null;
 let hideTimer = null;
 let owner = null;
+// 正等着浮现的那一个。计时器是全局共用的，解绑时得先确认「等的是不是自己」，
+// 否则清掉的是别人的计时（B 还在等浮现，A 被回收顺手把 B 的 timer 抹了）。
+let pendingTarget = null;
+
+// 绑在这个属性上的解绑函数，用来保证「一个元素只有一条绑定」。
+const BINDING = Symbol("ttHoverTip");
+
+// 所有还活着的绑定，每条是 { target, cleanup }。
+//
+// 为什么是一张表、一个 window 监听，而不是每个元素各挂一个：
+//   色带图一天 24 格、热力格一天 24 格，多天下来就是几百个元素，每个都往 window 上
+//   挂一个捕获阶段的 scroll 监听，滚动一次就要跑几百个回调，明显掉帧。
+//   现在整页只有下面 onScroll 这一个，滚动的代价与提示数量无关。
+const instances = new Set();
+let scrollBound = false;
+
+// 回收定时器：见 onScroll 里的说明。
+const SWEEP_DELAY = 240;
+let sweepTimer = null;
 
 function clearTimers() {
   if (showTimer) { clearTimeout(showTimer); showTimer = null; }
@@ -53,6 +72,7 @@ function place(target, tip) {
 function hide() {
   clearTimers();
   owner = null;
+  pendingTarget = null;
   if (!tipEl) return;
   const node = tipEl;
   tipEl = null;
@@ -62,16 +82,76 @@ function hide() {
 }
 
 /**
+ * 把触发元素已经掉出文档的那几条解绑。
+ *
+ * 为什么还要这一步：原先每个绑定自己带一个 window scroll 监听，元素被换掉之后
+ * 那个监听永远活着、闭包里又攥着废弃节点，滑过几屏就能积出一堆死监听 —— 所以当时
+ * 是「一发现元素掉出文档就地解绑」，顺手把浮层收掉。
+ *
+ * 监听已经收成一个共享的，越积越多的那条理由不存在了；剩下的只是这张表本身会把
+ * 废弃元素留在内存里（重画一次就换一批新节点）。所以回收保留，但降级成「成批扫一次」，
+ * 不再跟着每一次滚动跑。
+ */
+function sweep() {
+  for (const record of instances) {
+    if (record.target.isConnected) { record.seen = true; record.misses = 0; continue; }
+    // 从没进过文档的不算「掉出文档」：调用方可能先建好、再挂上去（详情抽屉就是这样）。
+    // 没这一条，刚建好还没插进去的那一批会被当场解绑，浮层永远不出来。
+    // 但也不能永远留着：连扫几轮都没进过文档的，就当它不会再来了（上限两轮）。
+    if (record.seen || ++record.misses > 2) record.cleanup();
+  }
+}
+
+function scheduleSweep() {
+  if (sweepTimer) return;
+  sweepTimer = setTimeout(() => { sweepTimer = null; sweep(); }, SWEEP_DELAY);
+}
+
+// 整个页面唯一的 scroll 监听。
+//
+// 滚动、按下鼠标都收起浮层：它是 fixed，跟着滚会脱位。
+// 这里只做一件事 —— 收掉当前显示的那个（O(1)），然后把回收排到滚动停稳之后。
+// 不在这一帧里扫全表：滚动一秒能触发上百次，每次扫几百条等于把「几百个监听」
+// 原样换个地方，等于没改。
+function onScroll() {
+  // 连「还差几十毫秒就浮现」的那个也一起撤：滚过之后触发元素已经挪了位置，
+  // 这时候再弹出来就贴在旧坐标上了。
+  if (owner || pendingTarget) hide();
+  if (instances.size) scheduleSweep();
+}
+
+function bindShared() {
+  if (scrollBound) return;
+  scrollBound = true;
+  window.addEventListener("scroll", onScroll, true);
+}
+
+// 一条绑定都不剩时把监听也摘掉：页面重建 / 整页关掉之后不留悬空回调。
+function unbindShared() {
+  if (!scrollBound) return;
+  scrollBound = false;
+  window.removeEventListener("scroll", onScroll, true);
+}
+
+/**
  * 给元素挂一个悬停提示。
  *
  * render() 返回节点或字符串，延迟 delay 毫秒后浮现。
- * 返回一个解绑函数；元素被移除时浮层也会自己收掉（每次显示前查一次 isConnected）。
+ * 返回一个解绑函数；元素被移除时浮层也会自己收掉（显示前查一次 isConnected）。
  */
 export function attachHoverTip(target, render, { delay = 420 } = {}) {
+  // 同一个元素只留一条绑定。upgradeTitles 本身是幂等的，但有的地方文案会被重画后
+  // 再赋一次 title（analytics 里那两颗「为什么点不了」的按钮），再扫一遍就会给同一
+  // 个元素挂上第二条，悬停时叠出两个浮层。旧绑定先解掉，新文案顶替它。
+  const prev = target[BINDING];
+  if (typeof prev === "function") prev();
+
   const onEnter = () => {
     clearTimers();
+    pendingTarget = target;
     showTimer = setTimeout(() => {
       showTimer = null;
+      pendingTarget = null;
       if (!target.isConnected) return;
       hide();               // 换人时先收上一个，同一时刻只留一个
       const tip = ensureTip();
@@ -85,31 +165,30 @@ export function attachHoverTip(target, render, { delay = 420 } = {}) {
       owner = target;
     }, delay);
   };
-  const onLeave = () => { if (owner === target || showTimer) hide(); };
-
-  // 滚动、按下鼠标都收起：浮层是 fixed，跟着滚会脱位。
-  //
-  // 这个监听器还兼任回收：卡片每次重画，触发元素是新节点，
-  // mouseleave 永远不会再发，而 window 上的 scroll 监听会一直活着，
-  // 闭包里又攥着已经废弃的节点。所以一旦发现元素掉出文档，
-  // 就地解绑并收掉浮层 —— 否则滑过几个价格卡就能积出一堆死监听。
-  function onScroll() {
-    if (!target.isConnected) { cleanup(); return; }
-    if (owner === target) hide();
-  }
+  const onLeave = () => { if (owner === target || pendingTarget === target) hide(); };
 
   function cleanup() {
-    if (owner === target) hide();
+    // 只收回属于自己的那一份：别人正在显示 / 正在等浮现，不该被这条解绑牵连。
+    if (owner === target || pendingTarget === target) hide();
     target.removeEventListener("mouseenter", onEnter);
     target.removeEventListener("mouseleave", onLeave);
     target.removeEventListener("mousedown", onLeave);
-    window.removeEventListener("scroll", onScroll, true);
+    instances.delete(record);
+    if (target[BINDING] === cleanup) target[BINDING] = null;
+    if (!instances.size) unbindShared();
   }
+
+  const record = { target, cleanup, seen: target.isConnected, misses: 0 };
 
   target.addEventListener("mouseenter", onEnter);
   target.addEventListener("mouseleave", onLeave);
   target.addEventListener("mousedown", onLeave);
-  window.addEventListener("scroll", onScroll, true);
+  bindShared();
+  instances.add(record);
+  target[BINDING] = cleanup;
+  // 这一批挂完顺手排一次回收：重画产生的是新节点，上一批已经掉出文档，
+  // 扫一次就把它们清掉，免得表跟着每次重画一直长。
+  scheduleSweep();
 
   return cleanup;
 }
