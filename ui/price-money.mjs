@@ -83,6 +83,9 @@ export function toStoredPrice(displayedPrice) {
       return has ? tier : null;
     }).filter(Boolean);
     if (tiers.length) out.timeTiers = tiers;
+    // 空数组是「明确不要分时」的标记，不能丢。丢了就等于「没配」，
+    // merge 时又会从模型级默认价继承回来 —— 主卡改一格就把详情页删掉的分时复活了。
+    else if (src.timeTiers.length === 0) out.timeTiers = [];
   }
   const perCall = Number(src.perCall);
   if (src.perCall !== "" && src.perCall != null && Number.isFinite(perCall) && perCall >= 0) {

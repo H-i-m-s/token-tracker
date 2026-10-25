@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import {
   parseClock, matchTimeTier, normalizeTimeTiers, pickPrice, calcCost,
-  normalizePrice, isFlatPrice, isPriced,
+  normalizePrice, isFlatPrice, isPriced, mergePriceTables,
 } from "../lib/price-core.mjs";
 import { toStoredPrice } from "../ui/price-money.mjs";
 
@@ -133,10 +133,31 @@ test("normalizePrice 保留 timeTiers 与 perCall", () => {
   assert.equal(out.timeTiers[0].from, "08:00");
 });
 
-test("空时段表当没配，不会留一个空数组", () => {
-  const out = normalizePrice({ input: 2, timeTiers: [] });
-  assert.equal(out.timeTiers, undefined);
-  assert.deepEqual(Object.keys(out), ["input"]);
+test("空时段表是「明确不要分时」，与「没配」区分开", () => {
+  // 两种输入必须走两条路：
+  //   不传 timeTiers        → 字段不出现，跟着默认价走
+  //   timeTiers: []         → 保留空数组，盖住默认价
+  // 丢掉空数组的后果是：用户在详情页把分时删光，存盘时被当成「没配」，
+  // 下次打开又从模型级默认价继承回来 —— 删了又出现。
+  const off = normalizePrice({ input: 2, timeTiers: [] });
+  assert.deepEqual(off.timeTiers, []);
+  assert.deepEqual(Object.keys(off).sort(), ["input", "timeTiers"]);
+
+  const absent = normalizePrice({ input: 2 });
+  assert.equal(absent.timeTiers, undefined);
+  assert.deepEqual(Object.keys(absent), ["input"]);
+});
+
+test("空数组能盖住模型级默认价的分时", () => {
+  const merged = mergePriceTables(
+    { "some/deepseek-flash": { input: 2, timeTiers: [] } },
+    { "deepseek-flash": { input: 1, output: 4, timeTiers: [{ from: "09:00", to: "12:00", input: 9 }] } },
+  );
+  const p = merged["some/deepseek-flash"];
+  assert.deepEqual(p.timeTiers, [], "用户删光的要盖住默认");
+  assert.equal(p.output, 4, "其他字段仍然从模型级继承");
+  // 真去选价时，空数组就是不命中任何时段，走基础四价
+  assert.equal(pickPrice(p, { input: 1_000_000 }, { minutes: 600, weekday: 3 }).input, 2);
 });
 
 test("坏段被丢掉：没价、时间写错", () => {

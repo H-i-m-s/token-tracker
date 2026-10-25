@@ -1033,8 +1033,10 @@ export class PriceCard {
     }
     if (!Object.keys(displayed).length) return null;
     if (base) {
-      if (Array.isArray(base.timeTiers) && base.timeTiers.length) displayed.timeTiers = base.timeTiers;
-      if (Array.isArray(base.contextTiers) && base.contextTiers.length) displayed.contextTiers = base.contextTiers;
+      // 空数组也要带回去。它不是「没配」，是「明确不要」：
+      // 不带就会从模型级默认价继承回来，用户在详情页删掉的分时又会冒出来。
+      if (Array.isArray(base.timeTiers)) displayed.timeTiers = base.timeTiers;
+      if (Array.isArray(base.contextTiers)) displayed.contextTiers = base.contextTiers;
       if (base.perCall != null) displayed.perCall = base.perCall;
     }
     const stored = toStoredPrice(displayed);
@@ -1064,9 +1066,10 @@ export class PriceCard {
       const prev = this.itemByKey(key)?.price;
       const merged = { ...price };
       if (prev) {
-        if (Array.isArray(prev.timeTiers) && prev.timeTiers.length) merged.timeTiers = prev.timeTiers;
-        if (Array.isArray(prev.contextTiers) && prev.contextTiers.length) merged.contextTiers = prev.contextTiers;
-        if (prev.perCall != null) merged.perCall = prev.perCall;
+      // 同上：空数组也是有效状态，不能被批量套用抹成「没配」。
+      if (Array.isArray(prev.timeTiers)) merged.timeTiers = prev.timeTiers;
+      if (Array.isArray(prev.contextTiers)) merged.contextTiers = prev.contextTiers;
+      if (prev.perCall != null) merged.perCall = prev.perCall;
       }
       return { key, price: merged };
     });

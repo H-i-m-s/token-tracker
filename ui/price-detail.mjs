@@ -146,7 +146,10 @@ export function openPriceDetail({ item, save, onSaved }) {
   }
   // 用户没配过时，把默认价里的分档铺出来。
   // 不铺的后果很具体：详情页看着像「这个模型没有分档」，实际却在按默认价的档位算钱。
-  const initialCtx = user?.contextTiers?.length ? user.contextTiers : (def?.contextTiers || []);
+  //
+  // 判断用 Array.isArray 而不是 .length：空数组是「用户把分档全删了」，
+  // 和「从未配过」必须区分 —— 前者要看到空表，后者才该铺默认值。
+  const initialCtx = Array.isArray(user?.contextTiers) ? user.contextTiers : (def?.contextTiers || []);
   for (const tier of initialCtx) addCtxRow(tier);
 
   // ── 分时定价 ──
@@ -200,7 +203,7 @@ export function openPriceDetail({ item, save, onSaved }) {
     };
     timeRows.append(row);
   }
-  const initialTime = user?.timeTiers?.length ? user.timeTiers : (def?.timeTiers || []);
+  const initialTime = Array.isArray(user?.timeTiers) ? user.timeTiers : (def?.timeTiers || []);
   for (const tier of initialTime) addTimeRow(tier);
 
   // 打开时的快照。保存时拿它比对：没动过的分时/分档不写进用户表，
@@ -228,7 +231,11 @@ export function openPriceDetail({ item, save, onSaved }) {
       if (r.tier) contextTiers.push(r.tier);
     }
     // 只在真的动过时写回。没动就整个字段不出现。
-    if (contextTiers.length && !sameTiers(contextTiers, ctxSnapshot)) price.contextTiers = contextTiers;
+    //
+    // 不写 `.length &&`：用户把分档/分时删光时，结果是空数组，而这本身就是一次变更，
+    // 必须写回一个空数组当「明确不要」的标记。写了才会盖住模型级默认价，
+    // 否则下次打开又会被默认值填回来 —— 就是「删了又出现」。
+    if (!sameTiers(contextTiers, ctxSnapshot)) price.contextTiers = contextTiers;
 
     const timeTiers = [];
     for (const row of timeRows.children) {
@@ -236,7 +243,7 @@ export function openPriceDetail({ item, save, onSaved }) {
       if (r.bad) return r;
       if (r.tier) timeTiers.push(r.tier);
     }
-    if (timeTiers.length && !sameTiers(timeTiers, timeSnapshot)) price.timeTiers = timeTiers;
+    if (!sameTiers(timeTiers, timeSnapshot)) price.timeTiers = timeTiers;
 
     return { price };
   }
