@@ -396,6 +396,18 @@
   padding: 2px 8px 4px;
   margin-bottom: 2px;
   border-bottom: 1px solid var(--tt-b1);
+  /* 吸顶。模型一多，往下滑就看不见列头，四个一模一样的数字框分不清哪格是输入、哪格是输出。
+
+     这一页是整页滚动（.tts-body 与 #app-root 都是 height: auto，没有内滚动区），
+     所以 top: 0 贴的是视口顶；活动范围受父级 .tts-price__list 限制，滚到底会自然让出，
+     不会飘到别的卡片上。
+
+     背景必须是不透明的卡片色：列头浮在行上面时，透明会把下面的数字透出来。
+     z-index 取 2，高于行、低于悬停浮层。 */
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--tt-card);
 }
 /* 列头第一列要和行里「勾选框 + 模型名」的左缘对齐：行里勾选框 13px + gap 8px。 */
 .tts-price__colhead-name {
