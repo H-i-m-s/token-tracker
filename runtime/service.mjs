@@ -124,8 +124,14 @@ function acceptUsage(entry) {
   const event = { type: 'token_usage', modelId: entry.model?.modelId, modelProvider: entry.model?.provider,
     usage: { input: total(u.input), output: total(u.output), totalTokens: u.totalTokens || total(u.input) + total(u.output), cacheRead: u.cache?.readTokens || 0, reasoningTokens: u.output?.reasoningTokens || 0, cost: u.costTotal ?? u.cost?.total ?? 0 } };
   for (const fn of subscribers) fn(event, path.join(config.homeDir, 'agents', id, 'sessions', session));
-  // Pick up the newly persisted usage promptly; scanner still deduplicates by mtime/requestId.
-  engine.ctx._tokenCache?.scan(false).catch(() => {});
+  // 只扫这一个会话：attribution.sessionId 不一定等于文件名，引擎会先从缓存里反查 filePath，
+  // 反查不到就自己退回增量全扫。不命中的情况宁可慢也不能漏。
+  const cache = engine.ctx._tokenCache;
+  const scanSession = cache?.scanSession;
+  const wait = typeof scanSession === 'function'
+    ? scanSession({ agentId: entry.attribution?.agentId || null, sessionId: entry.attribution?.sessionId || null })
+    : cache?.scan?.(false);
+  wait?.catch?.(() => {});
 }
 
 const server = http.createServer(async (req, res) => {
