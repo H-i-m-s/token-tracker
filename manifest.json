@@ -69,8 +69,7 @@
         "description": "与整页工作台同一套界面的普通卡片：可拖出、可拆窗、可关闭",
         "route": "/workspace.html",
         "realization": "card",
-        "cardForm": "flush",
-        "titlebar": "solid",
+        "cardForm": "edge-to-edge",
         "detached": {
           "route": "/standalone.html"
         },
