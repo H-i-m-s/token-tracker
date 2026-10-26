@@ -1089,7 +1089,9 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null, log = nu
  * filePath 对文件名做匹配。
  *
  * 会话不一定落在 <agentId>/sessions/ 下（bridge、phone、subagent-sessions、activity、
- * workflow-sessions 都有），所以匹配不限定目录。
+ * workflow-sessions 都有），所以匹配不限定目录。agentId 只用来优先缩小范围：
+ * 先在该 agent 里找，找不到再放全找。宁可多比几遍，也不要因为 attribution 的 agentId
+ * 不准（子代理会报父代理的 id 之类）就白退回全扫。
  *
  * @returns {{filePath: string, agentId: string, type: string, channelName: string|null}|null}
  *          命中不唯一时返回 null（宁可全扫也不能猜错一个去写错键）
@@ -1100,16 +1102,21 @@ function resolveSessionTarget(cache, query) {
   const sessions = cache?.sessions;
   if (!sessions) return null;
   const wantAgent = query.agentId || null;
-  let hit = null;
-  for (const rec of Object.values(sessions)) {
-    const fp = rec?.filePath;
-    if (!fp) continue;
-    // agentId 只用来缩小范围，不当作硬条件：反查不到就放全，宁可多比几个也別漏
-    if (wantAgent && rec.agent && rec.agent !== wantAgent) continue;
-    if (!path.basename(fp).includes(sessionId)) continue;
-    if (hit) return null; // 不唯一
-    hit = rec;
-  }
+
+  const pick = (onlyAgent) => {
+    let hit = null;
+    for (const rec of Object.values(sessions)) {
+      const fp = rec?.filePath;
+      if (!fp) continue;
+      if (onlyAgent && rec.agent !== onlyAgent) continue;
+      if (!path.basename(fp).includes(sessionId)) continue;
+      if (hit) return null; // 不唯一
+      hit = rec;
+    }
+    return hit;
+  };
+
+  const hit = (wantAgent ? pick(wantAgent) : null) || pick(null);
   if (!hit) return null;
   return { filePath: hit.filePath, agentId: hit.agent, type: hit.type, channelName: hit.channelName ?? null };
 }

@@ -168,6 +168,23 @@ test("并发不吞：第一个会话扫到一半时再来的请求，当前这�
   }
 });
 
+test("反查不把 agentId 当硬条件：agentId 对不上时放全找，不白退回全扫", async () => {
+  const { shared, disposers } = await boot();
+  try {
+    write(FILE_A, 606, 180);
+    write(FILE_B, 707, 190);
+    const beforeB = shared.data.sessions[KEY(FILE_B)].mtime;
+
+    // 事件报的 agentId 与实际目录不一致（子代理会报父代理的 id 之类）：
+    // 仍应只扫 A，不能因为 agentId 对不上就退成全扫把 B 也捞进来。
+    await shared.scanSession({ agentId: "someone-else", sessionId: UUID_A });
+    assert.equal(shared.data.sessions[KEY(FILE_A)].totalTokens, 616, "A 按文件名反查到了");
+    assert.equal(shared.data.sessions[KEY(FILE_B)].mtime, beforeB, "没退成全扫，B 不该被动");
+  } finally {
+    for (const fn of disposers.reverse()) { try { fn(); } catch {} }
+  }
+});
+
 test("并发不吞：全量扫描进行中进来的单会话请求也不会丢", async () => {
   const { shared, disposers } = await boot();
   try {
