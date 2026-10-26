@@ -64,6 +64,25 @@
         }
       },
       {
+        "id": "workspace-card",
+        "title": "Token 用量（卡片）",
+        "description": "与整页工作台同一套界面的普通卡片：可拖出、可拆窗、可关闭",
+        "route": "/workspace.html",
+        "realization": "card",
+        "cardForm": "flush",
+        "titlebar": "solid",
+        "detached": {
+          "route": "/standalone.html"
+        },
+        "detachedDefaultSize": {
+          "width": 960,
+          "height": 720
+        },
+        "face": {
+          "image": "assets/token-tracker-drag-cover.svg"
+        }
+      },
+      {
         "id": "multi",
         "title": "Token 多功能卡",
         "description": "一张卡切换用量、余额、明细、实时监控与五种分析图表；三点菜单勾选要显示哪些选项卡，页签多了可横向滚动。",

@@ -1,0 +1,21 @@
+<svg viewBox="0 0 320 480" xmlns="http://www.w3.org/2000/svg" role="img">
+  <title>Token 用量（可拖卡片）</title>
+  <desc>纸面风格的令牌用量趋势封面，右上角带拖动手柄标记</desc>
+  <rect width="320" height="480" fill="#fafaf9"/>
+  <rect x="18" y="18" width="284" height="444" rx="14" fill="none" stroke="#5f8cb6" stroke-width="2" opacity="0.35"/>
+  <polyline points="40,332 78,292 116,304 154,250 192,272 230,204 268,226 276,196" fill="none" stroke="#5f8cb6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" opacity="0.9"/>
+  <polyline points="40,368 78,346 116,358 154,322 192,336 230,288 268,300 276,274" fill="none" stroke="#5f8cb6" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" opacity="0.4"/>
+  <circle cx="230" cy="204" r="7" fill="#d64545"/>
+  <circle cx="154" cy="250" r="5" fill="#d64545" opacity="0.85"/>
+  <circle cx="78" cy="292" r="5" fill="#d64545" opacity="0.6"/>
+  <rect x="48" y="62" width="86" height="3" fill="#1f2328" opacity="0.5"/>
+  <rect x="48" y="74" width="52" height="2" fill="#1f2328" opacity="0.3"/>
+  <g fill="#5f8cb6" opacity="0.7">
+    <circle cx="232" cy="64" r="3"/>
+    <circle cx="246" cy="64" r="3"/>
+    <circle cx="232" cy="78" r="3"/>
+    <circle cx="246" cy="78" r="3"/>
+    <circle cx="232" cy="92" r="3"/>
+    <circle cx="246" cy="92" r="3"/>
+  </g>
+</svg>
