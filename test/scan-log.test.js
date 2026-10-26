@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
-  createSqliteScanLogStore, percentile,
+  createSqliteScanLogStore, percentile, summarizeTouched, isLedgerKey,
   SLOW_SCAN_MS, SCAN_LOG_RETAIN_DAYS, SCAN_LOG_FLUSH_ROWS,
 } from "../runtime/engine/services/scan-log-store.js";
 import { loadSqliteDriver } from "../runtime/engine/services/cache-store.js";
@@ -391,6 +391,71 @@ test("record：传 null / undefined 之类不抛，只是返回 false", { skip: 
   assert.equal(store.record(undefined), false);
   assert.equal(store.pendingCount(), 0);
   store.close();
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// touched 汇总：ledger 聚合行必须排除（真库上曾报出 bytes=181 GB）
+// ─────────────────────────────────────────────────────────────────────────────
+test("汇总：ledger 条目不算进 files/bytes/changed（size 是内容指纹，不是字节数）", () => {
+  // 真库上看到的那组数：92 条 ledger，size 是 ~2e9 的 FNV 指纹，累加就是 181 GB。
+  const FINGERPRINT = 179999999999;
+  const sessions = {
+    "hanako::desktop::::a.jsonl": { type: "desktop", size: 1000 },
+    "__ledger__hanako::memory::2026-10-24": { type: "ledger", size: FINGERPRINT },
+    "__ledger__hanako::utility::2026-10-24": { type: "ledger", size: FINGERPRINT },
+  };
+  const touched = new Set([
+    "hanako::desktop::::a.jsonl",
+    "__ledger__hanako::memory::2026-10-24",
+    "__ledger__hanako::utility::2026-10-24",
+  ]);
+
+  const out = summarizeTouched(sessions, touched);
+  assert.equal(out.bytes, 1000, "只等于那个真会话的 1000，不是 1000 + 2×179999999999");
+  assert.equal(out.files, 1, "files 只数非 ledger 的键");
+  assert.equal(out.changed, 1);
+});
+
+test("汇总：92 条 ledger 全部排除，changed 不被架空", () => {
+  // 复现现场形状：一个真改过的会话 + 92 条每轮都重建的 ledger 行。
+  const sessions = { "real::desktop::::x.jsonl": { type: "desktop", size: 21.91 * 1048576 } };
+  const touched = new Set(["real::desktop::::x.jsonl"]);
+  for (let i = 0; i < 92; i++) {
+    const k = `__ledger__hanako::memory::2026-10-${String(i + 1).padStart(2, "0")}`;
+    sessions[k] = { type: "ledger", size: 179999999999 };
+    touched.add(k);
+  }
+  const out = summarizeTouched(sessions, touched);
+  assert.equal(out.files, 1, "93 个键里只有 1 个是会话文件");
+  assert.equal(out.changed, 1, "changed 恒等于 92 的毛病没再出现");
+  assert.ok(out.bytes < 1e9, "bytes 不再出现 GB 级，实际：" + out.bytes);
+});
+
+test("汇总：已消失的 ledger 键同样排除（sessions 里查不到 rec 也不能漏判）", () => {
+  // scanLedger 开头会 delete 旧 ledger 键再 touched.add：那些 key 在 sessions 里是 undefined。
+  const sessions = { "a::desktop::::a.jsonl": { type: "desktop", size: 500 } };
+  const touched = new Set(["a::desktop::::a.jsonl", "__ledger__hanako::memory::2026-10-23"]);
+  const out = summarizeTouched(sessions, touched);
+  assert.equal(out.files, 1, "只剩 exists 的那个键");
+  assert.equal(out.changed, 1);
+  assert.equal(out.bytes, 500);
+
+  // 纯按 rec 判会漏，所以补了 key 前缀兜底
+  assert.equal(isLedgerKey("__ledger__x::memory::d", undefined), true);
+  assert.equal(isLedgerKey("x::desktop::::f.jsonl", undefined), false);
+  assert.equal(isLedgerKey("whatever", { type: "ledger" }), true);
+});
+
+test("汇总：被移除的会话文件算进 files，不算 changed/bytes", () => {
+  const sessions = {}; // 文件消失了，缓存行也被摘了
+  const out = summarizeTouched(sessions, new Set(["gone::desktop::::g.jsonl"]));
+  assert.deepEqual(out, { files: 1, bytes: 0, changed: 0 });
+});
+
+test("汇总：空 touched / 空 sessions 都给零", () => {
+  assert.deepEqual(summarizeTouched({}, new Set()), { files: 0, bytes: 0, changed: 0 });
+  assert.deepEqual(summarizeTouched(undefined, undefined), { files: 0, bytes: 0, changed: 0 });
+  assert.deepEqual(summarizeTouched(null, null), { files: 0, bytes: 0, changed: 0 });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ import { diagnosePartitions } from "./services/ds-token-source.js";
 import { createJsonJournalStore } from "./services/json-journal-store.js";
 import { loadLedger } from "./services/ledger-source.js";
 import { openArchiveStore } from "./services/archive-store.js";
-import { openScanLogStore, SLOW_SCAN_MS, SCAN_LOG_RETAIN_DAYS } from "./services/scan-log-store.js";
+import { openScanLogStore, summarizeTouched, SLOW_SCAN_MS, SCAN_LOG_RETAIN_DAYS } from "./services/scan-log-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 import { hitRatePercentText } from "./services/hit-rate.js";
 import { cachedFxRate } from "./services/fx-rate.js";
@@ -114,12 +114,13 @@ export default class TokenTrackerPlugin {
      *
      * touched 的来源：scanAll / scanOneSession 把本轮动过的键挂在 shared 上（见那两处的注释），
      * 这里读完就清。不改扫描函数的签名，也不为了拿这几个数去遍历全量会话。
-     * files/bytes/changed 的定义：
-     *   files   = 本轮动过的缓存键数（含被移除/被摘掉的）
-     *   changed = 其中在缓存里仍有记录的（被重解析过、留下新行的）
-     *   bytes   = 这些键对应会话文件的字节数之和
-     * 全量重扫时 files 会等于会话总数、changed 也接近它（content 没变也会重写成新行），这是实情，
-     * 不粉饰——「全扫很贵」正是这个表要让人看见的事。
+     *
+     * files/bytes/changed 的口径（实现在 summarizeTouched，那边有为什么排除 ledger 的完整说明）：
+     *   files   = 本轮动过的**会话文件**数（不含 ledger 聚合行）
+     *   changed = 其中缓存里仍有记录的（被重解析过、留下新行的）
+     *   bytes   = 这些会话文件的字节数之和（不含 ledger）
+     * ledger 的重建不算进这三项：它没有文件，每轮都重建，混进来会让「这一轮到底动了几份
+     * 会话」这个最重要的信号消失 —— 而且它的 size 是内容指纹（量级 2e9），累加过一次 181 GB。
      *
      * logAll 读的是内存里的 shared.scanLogAll（onload 播一次、settings.write 后刷新），
      * 不在扫描路径上碰磁盘：这个函数每轮都跑，为读一个布尔值去 stat + parse 一份 JSON 不划算。
@@ -129,21 +130,13 @@ export default class TokenTrackerPlugin {
       const touched = shared._lastScanTouched;
       shared._lastScanTouched = null;
       if (!store || !touched) return;
-      const sessions = shared.data?.sessions;
-      let bytes = 0;
-      let changed = 0;
-      for (const k of touched) {
-        const rec = sessions?.[k];
-        if (!rec) continue;
-        changed += 1;
-        bytes += Number(rec.size) || 0;
-      }
+      const { files, bytes, changed } = summarizeTouched(shared.data?.sessions, touched);
       const d = process.cpuUsage(cpu0);
       try {
         store.record({
           at: t0, kind, ms: Date.now() - t0,
           cpuUser: d.user, cpuSys: d.system,
-          files: touched.size, bytes, changed,
+          files, bytes, changed,
         }, { logAll: shared.scanLogAll === true });
       } catch (e) {
         // 记账失败绝不能影响扫描结果

@@ -61,6 +61,42 @@ const SELECT_WINDOW_SQL = "SELECT at, kind, ms FROM scan_log WHERE at >= ?";
 
 const KINDS = ["full", "incr", "session"];
 
+// 这一轮 scanned 的键里，哪些是「会话文件」？
+//
+// ledger 聚合行必须排除，这是踩过的坑：那些 __ledger__<agent>::<kind>::<day> 条目在缓存里
+// 没有文件属性可用，size 存的是内容指纹（ledgerFingerprint 的 FNV-1a 32 位哈希），
+// 量级在 2e9，几十条一累加就是上百 GB —— 在真库上真的报出过 181 GB。
+// 而且 scanLedger 每轮都重建它们，混进来会让 changed 恒等于 ledger 条数，
+// 把「这一轮到底动了几份会话」这个最重要的信号直接淹掉。
+//
+// 除了 rec.type，还要按 key 前缀判：scanLedger 开头会先把旧 ledger 键 delete + touched.add，
+// 那些 key 在 sessions 里已经查不到了（rec 为 undefined），只看 type 会漏。
+export function isLedgerKey(key, rec) {
+  return rec?.type === "ledger" || String(key).startsWith("__ledger__");
+}
+
+/**
+ * 把 touched 汇总成 scan_log 的三列。口径：
+ *   files   = 本轮动过的**会话文件**数（含已经消失的），不含 ledger 聚合行
+ *   changed = 其中缓存里仍有记录的（被重解析过、留下新行的）
+ *   bytes   = 这些会话文件的字节数之和（只算 changed 那些，消失的拿不到大小）
+ * 被移除的会话文件算进 files 不算进 changed/bytes：它真的动过（消失了），但没有大小可言。
+ */
+export function summarizeTouched(sessions, touched) {
+  let files = 0;
+  let bytes = 0;
+  let changed = 0;
+  for (const k of touched || []) {
+    const rec = sessions?.[k];
+    if (isLedgerKey(k, rec)) continue;
+    files += 1;
+    if (!rec) continue;
+    changed += 1;
+    bytes += Number(rec.size) || 0;
+  }
+  return { files, bytes, changed };
+}
+
 function clampInt(v, fallback, max) {
   const n = Number(v);
   if (!Number.isFinite(n) || n <= 0) return fallback;
@@ -315,6 +351,6 @@ export function openScanLogStore({ file, log = () => {}, DatabaseSync = null, no
 }
 
 export default {
-  createSqliteScanLogStore, openScanLogStore, percentile,
+  createSqliteScanLogStore, openScanLogStore, percentile, summarizeTouched, isLedgerKey,
   SLOW_SCAN_MS, SCAN_LOG_RETAIN_DAYS, SCAN_LOG_FLUSH_ROWS, SCAN_LOG_FLUSH_MS,
 };
