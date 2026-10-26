@@ -65,23 +65,69 @@ export default class TokenTrackerPlugin {
     }
     // scan(force=false): 增量（靠 mtime），供定时器用
     // fullScan():        全量，供首次加载和刷新按钮用
+    // scanSession({agentId, sessionId}): 只扫事件涉及的那一个会话文件
     // 扫描完成时 emit 到 bus（P1：v2 App / 其他插件可订阅 token-tracker.updated）
-    shared.scan = (force) => {
-      if (shared.scanPromise) {
-        if (force && !shared.scanForce) return shared.scanPromise.then(() => shared.scan(true));
-        return shared.scanPromise;
-      }
-      shared.scanning = true;
-      shared.scanForce = !!force;
-      shared.scanPromise = scanAll(shared, log, force).then(() => {
+    //
+    // 所有扫描请求串行排队，不并发。
+    // 以前是「扫描中再来就合并成一次」：全量扫描顺手把什么都捞了所以看不出问题，
+    // 换成单会话扫描之后，合并就等于把后来的那个会话丢掉。
+    // 现在改成：扫描中收到的请求记进待扫集合，当前这轮结束后逐个补扫；
+    // 补扫期间新来的继续进集合，直到清空。同一个会话在集合里只留一份。
+    const pending = { sessions: new Map(), full: null };
+    let scanning = null;
+
+    async function drainScans() {
+      while (pending.full || pending.sessions.size) {
+        if (pending.full) {
+          const force = pending.full.force;
+          pending.full = null;
+          // 全量/增量扫描整目录读过一遍，排着的单会话请求一并满足，不必再跑
+          pending.sessions.clear();
+          await scanAll(shared, log, force);
+          shared.emitUpdated?.();
+          continue;
+        }
+        const [key, query] = pending.sessions.entries().next().value;
+        pending.sessions.delete(key);
+        // 认不出目标（反查不到 / 命中不唯一 / 文件已不在）：退回增量全扫，宁可慢不能漏
+        if (!scanOneSession(shared, log, query)) { pending.full = { force: false }; continue; }
         shared.emitUpdated?.();
-      }).finally(() => {
+      }
+    }
+
+    function enqueueScans() {
+      if (scanning) return scanning;
+      shared.scanning = true;
+      // 先赋值再开跑：drainScans 内部再用 enqueueScans 时会直接拿到同一个 promise，
+      // 而清空后的收尾必须在赋值之后，否则会被后来的 `scanning = <promise>` 覆盖。
+      const run = Promise.resolve().then(drainScans).finally(() => {
+        scanning = null;
         shared.scanning = false;
         shared.scanPromise = null;
+        // 清空后的最后一探：队列在「while 判空」与「收尾」之间又进了东西时，
+        // 那时 scanning 还是旧的，enqueueScans 只会把请求放进集合而没人去跑。
+        // 返回这一轮，让调用方的 await 一直等到真的扫完。
+        if (pending.full || pending.sessions.size) return enqueueScans();
+        return null;
       });
-      return shared.scanPromise;
+      scanning = run;
+      shared.scanPromise = run;
+      return run;
+    }
+
+    shared.scan = (force) => {
+      // 队列里已经排着一轮全量扫描时，后来者只可能把它抬成强制，不会插队
+      if (!pending.full) pending.full = { force: !!force };
+      else if (force) pending.full.force = true;
+      return enqueueScans();
     };
     shared.fullScan = () => shared.scan(true);
+    shared.scanSession = (query) => {
+      // 没有 sessionId 就没法定位，直接走增量全扫
+      if (!query?.sessionId) return shared.scan(false);
+      pending.sessions.set(`${query.agentId || ""}::${query.sessionId}`, query);
+      return enqueueScans();
+    };
 
     // 缓存有效时走增量扫描，仅首次/版本升级时全量（后台执行，不阻塞启动）
     // 介质优先按行存进 SQLite（一次只写变化的行）；拿不到驱动就用追加式 JSON 日志，
@@ -1033,6 +1079,88 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null, log = nu
   // ── 消失的文件：这里只记账，汇总在 sweepVanishedSessions 里做一次 ──
   _scanDirs.push({ dir, present: presentFiles(dir, files) });
   return changed;
+}
+
+/**
+ * 从 sessionId 反查到会话文件。
+ *
+ * 不能直接拼路径：会话文件叫 2026-10-23T15-29-18-705Z_01a16961-....jsonl，
+ * 而 attribution.sessionId 可能只是其中一段 UUID。所以只能拿缓存里每条 record 自带的
+ * filePath 对文件名做匹配。
+ *
+ * 会话不一定落在 <agentId>/sessions/ 下（bridge、phone、subagent-sessions、activity、
+ * workflow-sessions 都有），所以匹配不限定目录。
+ *
+ * @returns {{filePath: string, agentId: string, type: string, channelName: string|null}|null}
+ *          命中不唯一时返回 null（宁可全扫也不能猜错一个去写错键）
+ */
+function resolveSessionTarget(cache, query) {
+  const sessionId = query?.sessionId;
+  if (!sessionId || typeof sessionId !== "string") return null;
+  const sessions = cache?.sessions;
+  if (!sessions) return null;
+  const wantAgent = query.agentId || null;
+  let hit = null;
+  for (const rec of Object.values(sessions)) {
+    const fp = rec?.filePath;
+    if (!fp) continue;
+    // agentId 只用来缩小范围，不当作硬条件：反查不到就放全，宁可多比几个也別漏
+    if (wantAgent && rec.agent && rec.agent !== wantAgent) continue;
+    if (!path.basename(fp).includes(sessionId)) continue;
+    if (hit) return null; // 不唯一
+    hit = rec;
+  }
+  if (!hit) return null;
+  return { filePath: hit.filePath, agentId: hit.agent, type: hit.type, channelName: hit.channelName ?? null };
+}
+
+/**
+ * 只扫一个会话文件。命中且真的看过（或确认没变）返回 true；
+ * 任何不确定的情况返回 false，让调用方退回增量全扫。
+ */
+function scanOneSession(shared, log, query) {
+  const cache = shared.data;
+  if (!cache?.sessions) return false;
+  const target = resolveSessionTarget(cache, query);
+  if (!target) return false;
+
+  const fn = path.basename(target.filePath);
+  if (!fn.endsWith(".jsonl") || fn.includes(".repair.jsonl")) return false;
+  // 键的拼法与 scanDir 必须一致，否则会凭空多出一条重复会话
+  const key = `${target.agentId}::${target.type}::${target.channelName || ""}::${fn}`;
+  const prev = cache.sessions[key];
+  // 缓存里那行的 filePath 与反查到的不是同一个文件：形状不对，不猜
+  if (prev && prev.filePath && prev.filePath !== target.filePath) return false;
+
+  const touched = new Set();
+  let changed = false;
+  try {
+    changed = scanSessionFile(target.filePath, fn, key, target.agentId, target.type, target.channelName, cache, prev, touched, log);
+  } catch (e) {
+    log?.warn?.("[token-tracker] 单会话扫描失败，退回全量：", e?.code || "", e?.message || e);
+    return false;
+  }
+
+  if (changed) {
+    cache.lastScan = new Date().toISOString();
+    // 日图、预测、速度榜都是从全量会话算出来的，单会话扫完必须重算一遍聚合。
+    const dailyGlobal = buildDailyGlobal(cache);
+    cache.prediction = computePrediction(cache, dailyGlobal);
+    cache._speedStats = buildSpeedStats(cache);
+    if (shared.persist) shared.persist.markDirty();
+    else saveCache(shared.cachePath, cache, log);
+  }
+  shared.ready = true;
+
+  // turns 表跟着内存走：touched 里就是这个会话的键，不同步的话明细视图会缺数据
+  if (shared.turnsStore && touched.size) {
+    try {
+      shared.turnsStore.apply(cache, { all: false, keys: [...touched] });
+    } catch (e) {
+      log?.warn?.("[token-tracker] turns 表同步失败：", e.code || "", e.message);
+    }
+  }
+  return true;
 }
 
 // 本轮扫描看到了哪些目录、哪些文件。只在 scanAll 期间有效，由 scanAll 重置与消费。
