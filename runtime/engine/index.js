@@ -756,264 +756,278 @@ async function scanAll(shared, log, force) {
 // 本轮扫描看到了哪些目录、哪些文件。只在 scanAll 期间有效，由 scanAll 重置与消费。
 let _scanDirs = [];
 
-function scanDir(dir, agent, type, channel, cache, old, touched = null, log = null) {
-  let changed = false;
+/**
+ * 处理单个会话文件：stat → 比 mtime → 整份解析 → 写进 cache.sessions。
+ * 目录扫描（scanDir）与单会话扫描共用这一份，解析逻辑只有这里一处。
+ *
+ * @param {string} fp 会话文件绝对路径
+ * @param {string} fn 文件名（缓存键的末段，也是标题来源）
+ * @param {string} key 缓存键 agent::type::channel::fileName
+ * @param {object|null} prev 缓存里这一行上次的结果（mtime 相同就跳过）
+ * @param {Set<string>|null} touched 本轮动过的键（turns 表按它增量同步）
+ * @returns {boolean} 这一行有没有变化（含「读失败所以把旧行摘掉」）
+ */
+function scanSessionFile(fp, fn, key, agent, type, channel, cache, prev, touched = null, log = null) {
+  let stat;
+  try { stat = fs.statSync(fp); } catch { return false; }
+
+  // 文件未变化则跳过
+  if (prev && prev.mtime === stat.mtimeMs) return false;
+
   let conv = null;
+  const data = { agent, type, channelName: channel||null,  filePath: fp, mtime: stat.mtimeMs, size: stat.size, fileName: fn, firstTime: null, lastTime: null, msgCount: 0, assistantCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, models: {}, providers: {}, conversations: [], mediaGen: {} };
+
+  try {
+    var currentProvider = null;
+    var _lastModel = null;
+    var _skipped = 0;
+    var _prevEvTs = NaN; // 上一条消息事件时间，用于计算本次 LLM 调用耗时
+    for (const line of readTextFile(fp).split("\n").filter(Boolean)) {
+      let p;
+      try { p = JSON.parse(line); } catch { _skipped++; continue; }
+      if (_skipped > 0 && !(data._skipReported)) {
+        // 调用方拿不到 scanDir，这里最早结束在 scanAll（data 走 changed 路径拿到）
+        data._skipReported = true;
+      }
+      if (p.type === "model_change" && p.provider) {
+        currentProvider = p.provider;
+        _lastModel = null;
+        continue;
+      }
+      if (p.type === "custom" && p.customType === "hana-deferred-result" && p.data) {
+        var _hd = p.data;
+        if (_hd.taskId && _hd.status === "success") {
+          var _mk = _hd.type === "video-generation" ? "video" : "image";
+          for (var _tk in data.mediaGen) {
+            var _mg = data.mediaGen[_tk];
+            if (_mg._taskIds && _mg._taskIds[_hd.taskId]) {
+              _mg.successCount = (_mg.successCount || 0) + 1;
+              break;
+            }
+          }
+        }
+        continue;
+      }
+      if (p.type !== "message" || !p.message) continue;
+      const m = p.message;
+      const ts = p.timestamp || m.timestamp || "";
+      if (!data.firstTime) data.firstTime = ts;
+      data.lastTime = ts;
+      var _evTs = ts ? new Date(ts).getTime() : NaN;
+      data.msgCount++;
+      // 对话拆分
+      if (m.role === "user") {
+        if (conv) data.conversations.push(conv);
+        // 不存对话正文与工具参数：用量统计只需要下面这几个数字（正文本来就在会话文件里，
+        // 且界面上没有任何地方读它）。
+        conv = { time: ts, model: null, provider: null, totalTokens: 0, msgCount: 0, inTokens: 0, outTokens: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
+      }
+      if (m.role === "assistant" && conv) {
+        const _f = m.stopReason === "error" || m.isError === true || !!m.errorMessage;
+        if (!_f) {
+          conv.msgCount++;
+          if (!conv.model) { conv.model = m.model; conv.provider = m.provider; }
+          if (m.usage) {
+            var _tot = m.usage.totalTokens || ((m.usage.input||0)+(m.usage.output||0));
+            conv.totalTokens += _tot;
+            // 输入 = 未命中缓存的输入 + 命中缓存的输入；加上输出正好等于总数（逐条实测成立）
+            conv.inTokens += tokVal(m.usage.input) + tokVal(m.usage.cacheRead);
+            conv.outTokens += tokVal(m.usage.output);
+            // 缓存拆分另存一份：inTokens 把命中与未命中并成了一个数，考古看不出「这一笔为什么贵」。
+            // 命中缓存的输入单价低一个量级（本机价格表：$0.0028/M 对 $0.14/M），拆开才有意义。
+            conv.cacheRead += tokVal(m.usage.cacheRead);
+            conv.cacheWrite += tokVal(m.usage.cacheWrite);
+            // 推理 token 通常已含在 output 里，单独记一份用于看思考占比，不改动 output 口径。
+            conv.reasoning += tokVal(m.usage.reasoning);
+          }
+        }
+        if (Array.isArray(m.content)) {
+          for (var _i=0; _i<m.content.length; _i++) {
+            var _it = m.content[_i];
+            if (!_it) continue;
+            if (_it.type === "toolCall") {
+              if (_it.name === "image-gen_generate-image" || _it.name === "image-gen_generate-video") {
+                var _mKind = _it.name === "image-gen_generate-video" ? "video" : "image";
+                var _mModel = _it.arguments?.model || "";
+                var _mProv = _it.arguments?.provider || "";
+                if (!_mModel) _mModel = _mKind === "video" ? "default-video" : "default-image";
+                if (!_mProv) _mProv = "default";
+                var _mKey = _mProv + "/" + _mModel;
+                if (!data.mediaGen[_mKey]) data.mediaGen[_mKey] = { provider: _mProv, model: _mModel, kind: _mKind, callCount: 0, successCount: 0, _taskIds: {}, _callIds: {} };
+                data.mediaGen[_mKey].callCount++;
+                if (_it.id) data.mediaGen[_mKey]._callIds[_it.id] = true;
+              }
+            }
+          }
+        }
+      }
+      if (m.role === "toolResult" && m.toolName && m.toolName.startsWith("image-gen_") && m.details?.mediaGeneration) {
+        var _mg2 = m.details.mediaGeneration;
+        var _tcid = m.toolCallId;
+        if (_mg2.tasks && Array.isArray(_mg2.tasks)) {
+          for (var _ti = 0; _ti < _mg2.tasks.length; _ti++) {
+            var _tid = _mg2.tasks[_ti]?.taskId;
+            if (!_tid) continue;
+            for (var _mk2 in data.mediaGen) {
+              if (_tcid && data.mediaGen[_mk2]._callIds[_tcid]) {
+                data.mediaGen[_mk2]._taskIds[_tid] = true;
+              }
+            }
+          }
+        }
+      }
+      // 失败请求（stopReason=error / isError / errorMessage）不产生有效调用，不计入统计
+      const _failedMsg = m.role === "assistant" && m.usage && (m.stopReason === "error" || m.isError === true || !!m.errorMessage);
+      if (m.role === "assistant" && m.usage && !_failedMsg) {
+        const msgProvider = m.provider || currentProvider;
+        const u = m.usage;
+        const inp = tokVal(u.input), out = tokVal(u.output), cr = u.cacheRead||0, cw = u.cacheWrite||0;
+        const rsn = tokVal(u.reasoning) || 0;
+        const tot = u.totalTokens ?? (inp + out);
+        const model = m.model || "unknown";
+        data.assistantCount++; data.input += inp; data.output += out; data.cacheRead += cr; data.cacheWrite += cw; data.totalTokens += tot; data.cost += u.cost?.total || 0;
+        // ── tok/s：本次调用耗时 = 本消息时间 − 上一条消息时间（含网络与排队，生成速度下限）──
+        if (conv && !isNaN(_evTs) && !isNaN(_prevEvTs) && _evTs > _prevEvTs) {
+          var _durMs = _evTs - _prevEvTs;
+          if (_durMs >= 100 && _durMs < 600000) {
+            var _tps = Math.round(out / (_durMs / 1000));
+            conv.speedOut = (conv.speedOut || 0) + out;
+            conv.speedDur = (conv.speedDur || 0) + _durMs;
+            if (_tps > (conv.speedMax || 0)) conv.speedMax = _tps;
+            // 采样只留会话级一份：轮次级那份是同一批数据的副本，读取端本来也只当成兑底用。
+            pushSpeedSample(data, _evTs, _durMs, out, rsn, msgProvider ? msgProvider + "/" + model : model);
+          }
+        }
+        // 模型变了但没有 model_change 事件 → 不知道供应商，不归属
+        if (_lastModel !== null && _lastModel !== model) currentProvider = null;
+        _lastModel = model;
+        // 按天统计 — 存在会话自身上，不往 cache 里累加
+        const d = new Date(ts); const day = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
+        if (day) {
+          if (!data.dailyBreakdown) data.dailyBreakdown = {};
+          if (!data.dailyBreakdown[day]) data.dailyBreakdown[day] = { totalTokens:0, desktop:0, channel:0, bridge:0, background:0, sub:0, ledger:0, input:0, output:0, cacheRead:0, cacheWrite:0, assistantCount:0, models:{} };
+          data.dailyBreakdown[day].totalTokens += tot;
+          data.dailyBreakdown[day].input += inp;
+          data.dailyBreakdown[day].output += out;
+          data.dailyBreakdown[day].cacheRead += cr;
+          data.dailyBreakdown[day].cacheWrite += cw;
+          data.dailyBreakdown[day].assistantCount += 1;
+          if (type === "desktop") data.dailyBreakdown[day].desktop += tot;
+          else if (type === "bridge") data.dailyBreakdown[day].bridge += tot;
+          else if (type === "background") data.dailyBreakdown[day].background += tot;
+          else if (type === "sub") data.dailyBreakdown[day].sub += tot;
+          else if (type === "ledger") data.dailyBreakdown[day].ledger += tot;
+          else data.dailyBreakdown[day].channel += tot;
+          // 按 model 精确统计
+          if (!data.dailyBreakdown[day].models[model]) data.dailyBreakdown[day].models[model] = { input:0, output:0, cacheRead:0, cacheWrite:0, totalTokens:0, assistantCount:0 };
+          data.dailyBreakdown[day].models[model].input += inp;
+          data.dailyBreakdown[day].models[model].output += out;
+          data.dailyBreakdown[day].models[model].cacheRead += cr;
+          data.dailyBreakdown[day].models[model].cacheWrite += cw;
+          data.dailyBreakdown[day].models[model].totalTokens += tot;
+          data.dailyBreakdown[day].models[model].assistantCount += 1;
+          // 按供应商/模型统计
+          if (msgProvider) {
+            const pk = msgProvider + "/" + model;
+            if (!data.dailyBreakdown[day].providerTotals) data.dailyBreakdown[day].providerTotals = {};
+            if (!data.dailyBreakdown[day].providerTotals[pk]) data.dailyBreakdown[day].providerTotals[pk] = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, assistantCount: 0 };
+            data.dailyBreakdown[day].providerTotals[pk].totalTokens += tot;
+            data.dailyBreakdown[day].providerTotals[pk].input += inp;
+            data.dailyBreakdown[day].providerTotals[pk].output += out;
+            data.dailyBreakdown[day].providerTotals[pk].cacheRead += cr;
+            data.dailyBreakdown[day].providerTotals[pk].cacheWrite += cw;
+            data.dailyBreakdown[day].providerTotals[pk].assistantCount += 1;
+          }
+          // 按小时统计 — 用于今日维度
+          const hour = String(d.getHours()).padStart(2,"0");
+          if (!data.hourlyBreakdown) data.hourlyBreakdown = {};
+          if (!data.hourlyBreakdown[day]) data.hourlyBreakdown[day] = {};
+          if (!data.hourlyBreakdown[day][hour]) data.hourlyBreakdown[day][hour] = { totalTokens:0, desktop:0, channel:0, bridge:0, background:0, sub:0, ledger:0, cacheRead:0, cacheWrite:0 };
+          data.hourlyBreakdown[day][hour].totalTokens += tot;
+          data.hourlyBreakdown[day][hour].cacheRead += cr;
+          data.hourlyBreakdown[day][hour].cacheWrite += cw;
+          if (type === "desktop") data.hourlyBreakdown[day][hour].desktop += tot;
+          else if (type === "bridge") data.hourlyBreakdown[day][hour].bridge += tot;
+          else if (type === "background") data.hourlyBreakdown[day][hour].background += tot;
+          else if (type === "sub") data.hourlyBreakdown[day][hour].sub += tot;
+          else if (type === "ledger") data.hourlyBreakdown[day][hour].ledger += tot;
+          else data.hourlyBreakdown[day][hour].channel += tot;
+          if (!data.hourlyBreakdown[day][hour].models) data.hourlyBreakdown[day][hour].models = {};
+          if (!data.hourlyBreakdown[day][hour].models[model]) data.hourlyBreakdown[day][hour].models[model] = { input:0, output:0, cacheRead:0, cacheWrite:0, totalTokens:0, assistantCount:0, desktop:0, channel:0 };
+          data.hourlyBreakdown[day][hour].models[model].input += inp;
+          data.hourlyBreakdown[day][hour].models[model].output += out;
+          data.hourlyBreakdown[day][hour].models[model].cacheRead += cr;
+          data.hourlyBreakdown[day][hour].models[model].cacheWrite += cw;
+          data.hourlyBreakdown[day][hour].models[model].totalTokens += tot;
+          data.hourlyBreakdown[day][hour].models[model].assistantCount += 1;
+          if (type === "desktop") data.hourlyBreakdown[day][hour].models[model].desktop += tot;
+          else if (type === "bridge") data.hourlyBreakdown[day][hour].models[model].bridge += tot;
+          else if (type === "background") data.hourlyBreakdown[day][hour].models[model].background += tot;
+          else if (type === "sub") data.hourlyBreakdown[day][hour].models[model].sub += tot;
+          else if (type === "ledger") data.hourlyBreakdown[day][hour].models[model].ledger += tot;
+          else data.hourlyBreakdown[day][hour].models[model].channel += tot;
+          if (msgProvider) {
+            const pk = msgProvider + "/" + model;
+            if (!data.hourlyBreakdown[day][hour].providerTotals) data.hourlyBreakdown[day][hour].providerTotals = {};
+            // 初值必须把下面会累加的每一个字段都写上：漏一个就是 undefined += 数 = NaN，
+            // 而 NaN 过了 JSON 就是 null，看起来只是“没数据”，实际是坏值。
+            // bridge/background/sub/ledger 四个字段以前就是漏的。
+            if (!data.hourlyBreakdown[day][hour].providerTotals[pk]) data.hourlyBreakdown[day][hour].providerTotals[pk] = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, desktop: 0, channel: 0, bridge: 0, background: 0, sub: 0, ledger: 0, assistantCount: 0 };
+            data.hourlyBreakdown[day][hour].providerTotals[pk].totalTokens += tot;
+            data.hourlyBreakdown[day][hour].providerTotals[pk].input += inp;
+            data.hourlyBreakdown[day][hour].providerTotals[pk].output += out;
+            data.hourlyBreakdown[day][hour].providerTotals[pk].cacheRead += cr;
+            data.hourlyBreakdown[day][hour].providerTotals[pk].cacheWrite += cw;
+            data.hourlyBreakdown[day][hour].providerTotals[pk].assistantCount += 1;
+            if (type === "desktop") data.hourlyBreakdown[day][hour].providerTotals[pk].desktop += tot;
+            else if (type === "bridge") data.hourlyBreakdown[day][hour].providerTotals[pk].bridge += tot;
+            else if (type === "background") data.hourlyBreakdown[day][hour].providerTotals[pk].background += tot;
+            else if (type === "sub") data.hourlyBreakdown[day][hour].providerTotals[pk].sub += tot;
+            else if (type === "ledger") data.hourlyBreakdown[day][hour].providerTotals[pk].ledger += tot;
+            else data.hourlyBreakdown[day][hour].providerTotals[pk].channel += tot;
+          }
+        }
+        if (!data.models[model]) data.models[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0 };
+        data.models[model].input += inp; data.models[model].output += out; data.models[model].cacheRead += cr; data.models[model].cacheWrite += cw; data.models[model].count++;
+        if (msgProvider) {
+          const pk = msgProvider + "/" + model;
+          if (!data.providers[pk]) data.providers[pk] = { provider: msgProvider, model, totalTokens: 0, count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+          data.providers[pk].totalTokens += tot;
+          data.providers[pk].count++;
+          data.providers[pk].input += inp;
+          data.providers[pk].output += out;
+          data.providers[pk].cacheRead += cr;
+          data.providers[pk].cacheWrite += cw;
+        }
+      }
+      _prevEvTs = _evTs;
+    }
+  } catch (e) {
+    // 读失败（Windows 上宿主正在写这个文件时 readTextFile 会报 EPERM/EBUSY）：
+    // 不能把半截结果连同当前 mtime 写进缓存。下一轮 mtime 没变就会被当成“没变化”跳过，
+    // 这个会话从此永久少算，而且全程没有任何信号。这里直接丢掉这个 key，下轮重试。
+    log?.warn?.(`scan: 读取失败，本轮跳过（下轮重试）：${fn} — ${e?.message || e}`);
+    if (cache.sessions[key]) { delete cache.sessions[key]; touched?.add(key); return true; }
+    return false;
+  }
+  if (conv) { data.conversations.push(conv); conv = null; }
+  data.title = (fn.match(/^(\d{4}-\d{2}-\d{2})/)||[])[1] || "unknown";
+  if (_skipped > 0) data.skippedLines = _skipped;
+  cache.sessions[key] = data;
+  touched?.add(key);
+  return true;
+}
+
+function scanDir(dir, agent, type, channel, cache, old, touched = null, log = null) {
   let files = [];
   try { files = fs.readdirSync(dir).filter(n => n.endsWith(".jsonl") && !n.includes(".repair.jsonl")); }
   catch { return false; }
 
+  let changed = false;
   for (const fn of files) {
     const fp = path.join(dir, fn);
     const key = `${agent}::${type}::${channel||""}::${fn}`;
-    let stat;
-    try { stat = fs.statSync(fp); } catch { continue; }
-
-    // 文件未变化则跳过
-    const prev = old?.sessions?.[key];
-    if (prev && prev.mtime === stat.mtimeMs) continue;
-
-    const data = { agent, type, channelName: channel||null,  filePath: fp, mtime: stat.mtimeMs, size: stat.size, fileName: fn, firstTime: null, lastTime: null, msgCount: 0, assistantCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, models: {}, providers: {}, conversations: [], mediaGen: {} };
-
-    try {
-      var currentProvider = null;
-      var _lastModel = null;
-      var _skipped = 0;
-      var _prevEvTs = NaN; // 上一条消息事件时间，用于计算本次 LLM 调用耗时
-      for (const line of readTextFile(fp).split("\n").filter(Boolean)) {
-        let p;
-        try { p = JSON.parse(line); } catch { _skipped++; continue; }
-        if (_skipped > 0 && !(data._skipReported)) {
-          // 调用方拿不到 scanDir，这里最早结束在 scanAll（data 走 changed 路径拿到）
-          data._skipReported = true;
-        }
-        if (p.type === "model_change" && p.provider) {
-          currentProvider = p.provider;
-          _lastModel = null;
-          continue;
-        }
-        if (p.type === "custom" && p.customType === "hana-deferred-result" && p.data) {
-          var _hd = p.data;
-          if (_hd.taskId && _hd.status === "success") {
-            var _mk = _hd.type === "video-generation" ? "video" : "image";
-            for (var _tk in data.mediaGen) {
-              var _mg = data.mediaGen[_tk];
-              if (_mg._taskIds && _mg._taskIds[_hd.taskId]) {
-                _mg.successCount = (_mg.successCount || 0) + 1;
-                break;
-              }
-            }
-          }
-          continue;
-        }
-        if (p.type !== "message" || !p.message) continue;
-        const m = p.message;
-        const ts = p.timestamp || m.timestamp || "";
-        if (!data.firstTime) data.firstTime = ts;
-        data.lastTime = ts;
-        var _evTs = ts ? new Date(ts).getTime() : NaN;
-        data.msgCount++;
-        // 对话拆分
-        if (m.role === "user") {
-          if (conv) data.conversations.push(conv);
-          // 不存对话正文与工具参数：用量统计只需要下面这几个数字（正文本来就在会话文件里，
-          // 且界面上没有任何地方读它）。
-          conv = { time: ts, model: null, provider: null, totalTokens: 0, msgCount: 0, inTokens: 0, outTokens: 0, cacheRead: 0, cacheWrite: 0, reasoning: 0 };
-        }
-        if (m.role === "assistant" && conv) {
-          const _f = m.stopReason === "error" || m.isError === true || !!m.errorMessage;
-          if (!_f) {
-            conv.msgCount++;
-            if (!conv.model) { conv.model = m.model; conv.provider = m.provider; }
-            if (m.usage) {
-              var _tot = m.usage.totalTokens || ((m.usage.input||0)+(m.usage.output||0));
-              conv.totalTokens += _tot;
-              // 输入 = 未命中缓存的输入 + 命中缓存的输入；加上输出正好等于总数（逐条实测成立）
-              conv.inTokens += tokVal(m.usage.input) + tokVal(m.usage.cacheRead);
-              conv.outTokens += tokVal(m.usage.output);
-              // 缓存拆分另存一份：inTokens 把命中与未命中并成了一个数，考古看不出「这一笔为什么贵」。
-              // 命中缓存的输入单价低一个量级（本机价格表：$0.0028/M 对 $0.14/M），拆开才有意义。
-              conv.cacheRead += tokVal(m.usage.cacheRead);
-              conv.cacheWrite += tokVal(m.usage.cacheWrite);
-              // 推理 token 通常已含在 output 里，单独记一份用于看思考占比，不改动 output 口径。
-              conv.reasoning += tokVal(m.usage.reasoning);
-            }
-          }
-          if (Array.isArray(m.content)) {
-            for (var _i=0; _i<m.content.length; _i++) {
-              var _it = m.content[_i];
-              if (!_it) continue;
-              if (_it.type === "toolCall") {
-                if (_it.name === "image-gen_generate-image" || _it.name === "image-gen_generate-video") {
-                  var _mKind = _it.name === "image-gen_generate-video" ? "video" : "image";
-                  var _mModel = _it.arguments?.model || "";
-                  var _mProv = _it.arguments?.provider || "";
-                  if (!_mModel) _mModel = _mKind === "video" ? "default-video" : "default-image";
-                  if (!_mProv) _mProv = "default";
-                  var _mKey = _mProv + "/" + _mModel;
-                  if (!data.mediaGen[_mKey]) data.mediaGen[_mKey] = { provider: _mProv, model: _mModel, kind: _mKind, callCount: 0, successCount: 0, _taskIds: {}, _callIds: {} };
-                  data.mediaGen[_mKey].callCount++;
-                  if (_it.id) data.mediaGen[_mKey]._callIds[_it.id] = true;
-                }
-              }
-            }
-          }
-        }
-        if (m.role === "toolResult" && m.toolName && m.toolName.startsWith("image-gen_") && m.details?.mediaGeneration) {
-          var _mg2 = m.details.mediaGeneration;
-          var _tcid = m.toolCallId;
-          if (_mg2.tasks && Array.isArray(_mg2.tasks)) {
-            for (var _ti = 0; _ti < _mg2.tasks.length; _ti++) {
-              var _tid = _mg2.tasks[_ti]?.taskId;
-              if (!_tid) continue;
-              for (var _mk2 in data.mediaGen) {
-                if (_tcid && data.mediaGen[_mk2]._callIds[_tcid]) {
-                  data.mediaGen[_mk2]._taskIds[_tid] = true;
-                }
-              }
-            }
-          }
-        }
-        // 失败请求（stopReason=error / isError / errorMessage）不产生有效调用，不计入统计
-        const _failedMsg = m.role === "assistant" && m.usage && (m.stopReason === "error" || m.isError === true || !!m.errorMessage);
-        if (m.role === "assistant" && m.usage && !_failedMsg) {
-          const msgProvider = m.provider || currentProvider;
-          const u = m.usage;
-          const inp = tokVal(u.input), out = tokVal(u.output), cr = u.cacheRead||0, cw = u.cacheWrite||0;
-          const rsn = tokVal(u.reasoning) || 0;
-          const tot = u.totalTokens ?? (inp + out);
-          const model = m.model || "unknown";
-          data.assistantCount++; data.input += inp; data.output += out; data.cacheRead += cr; data.cacheWrite += cw; data.totalTokens += tot; data.cost += u.cost?.total || 0;
-          // ── tok/s：本次调用耗时 = 本消息时间 − 上一条消息时间（含网络与排队，生成速度下限）──
-          if (conv && !isNaN(_evTs) && !isNaN(_prevEvTs) && _evTs > _prevEvTs) {
-            var _durMs = _evTs - _prevEvTs;
-            if (_durMs >= 100 && _durMs < 600000) {
-              var _tps = Math.round(out / (_durMs / 1000));
-              conv.speedOut = (conv.speedOut || 0) + out;
-              conv.speedDur = (conv.speedDur || 0) + _durMs;
-              if (_tps > (conv.speedMax || 0)) conv.speedMax = _tps;
-              // 采样只留会话级一份：轮次级那份是同一批数据的副本，读取端本来也只当成兑底用。
-              pushSpeedSample(data, _evTs, _durMs, out, rsn, msgProvider ? msgProvider + "/" + model : model);
-            }
-          }
-          // 模型变了但没有 model_change 事件 → 不知道供应商，不归属
-          if (_lastModel !== null && _lastModel !== model) currentProvider = null;
-          _lastModel = model;
-          // 按天统计 — 存在会话自身上，不往 cache 里累加
-          const d = new Date(ts); const day = d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0") + "-" + String(d.getDate()).padStart(2,"0");
-          if (day) {
-            if (!data.dailyBreakdown) data.dailyBreakdown = {};
-            if (!data.dailyBreakdown[day]) data.dailyBreakdown[day] = { totalTokens:0, desktop:0, channel:0, bridge:0, background:0, sub:0, ledger:0, input:0, output:0, cacheRead:0, cacheWrite:0, assistantCount:0, models:{} };
-            data.dailyBreakdown[day].totalTokens += tot;
-            data.dailyBreakdown[day].input += inp;
-            data.dailyBreakdown[day].output += out;
-            data.dailyBreakdown[day].cacheRead += cr;
-            data.dailyBreakdown[day].cacheWrite += cw;
-            data.dailyBreakdown[day].assistantCount += 1;
-            if (type === "desktop") data.dailyBreakdown[day].desktop += tot;
-            else if (type === "bridge") data.dailyBreakdown[day].bridge += tot;
-            else if (type === "background") data.dailyBreakdown[day].background += tot;
-            else if (type === "sub") data.dailyBreakdown[day].sub += tot;
-            else if (type === "ledger") data.dailyBreakdown[day].ledger += tot;
-            else data.dailyBreakdown[day].channel += tot;
-            // 按 model 精确统计
-            if (!data.dailyBreakdown[day].models[model]) data.dailyBreakdown[day].models[model] = { input:0, output:0, cacheRead:0, cacheWrite:0, totalTokens:0, assistantCount:0 };
-            data.dailyBreakdown[day].models[model].input += inp;
-            data.dailyBreakdown[day].models[model].output += out;
-            data.dailyBreakdown[day].models[model].cacheRead += cr;
-            data.dailyBreakdown[day].models[model].cacheWrite += cw;
-            data.dailyBreakdown[day].models[model].totalTokens += tot;
-            data.dailyBreakdown[day].models[model].assistantCount += 1;
-            // 按供应商/模型统计
-            if (msgProvider) {
-              const pk = msgProvider + "/" + model;
-              if (!data.dailyBreakdown[day].providerTotals) data.dailyBreakdown[day].providerTotals = {};
-              if (!data.dailyBreakdown[day].providerTotals[pk]) data.dailyBreakdown[day].providerTotals[pk] = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, assistantCount: 0 };
-              data.dailyBreakdown[day].providerTotals[pk].totalTokens += tot;
-              data.dailyBreakdown[day].providerTotals[pk].input += inp;
-              data.dailyBreakdown[day].providerTotals[pk].output += out;
-              data.dailyBreakdown[day].providerTotals[pk].cacheRead += cr;
-              data.dailyBreakdown[day].providerTotals[pk].cacheWrite += cw;
-              data.dailyBreakdown[day].providerTotals[pk].assistantCount += 1;
-            }
-            // 按小时统计 — 用于今日维度
-            const hour = String(d.getHours()).padStart(2,"0");
-            if (!data.hourlyBreakdown) data.hourlyBreakdown = {};
-            if (!data.hourlyBreakdown[day]) data.hourlyBreakdown[day] = {};
-            if (!data.hourlyBreakdown[day][hour]) data.hourlyBreakdown[day][hour] = { totalTokens:0, desktop:0, channel:0, bridge:0, background:0, sub:0, ledger:0, cacheRead:0, cacheWrite:0 };
-            data.hourlyBreakdown[day][hour].totalTokens += tot;
-            data.hourlyBreakdown[day][hour].cacheRead += cr;
-            data.hourlyBreakdown[day][hour].cacheWrite += cw;
-            if (type === "desktop") data.hourlyBreakdown[day][hour].desktop += tot;
-            else if (type === "bridge") data.hourlyBreakdown[day][hour].bridge += tot;
-            else if (type === "background") data.hourlyBreakdown[day][hour].background += tot;
-            else if (type === "sub") data.hourlyBreakdown[day][hour].sub += tot;
-            else if (type === "ledger") data.hourlyBreakdown[day][hour].ledger += tot;
-            else data.hourlyBreakdown[day][hour].channel += tot;
-            if (!data.hourlyBreakdown[day][hour].models) data.hourlyBreakdown[day][hour].models = {};
-            if (!data.hourlyBreakdown[day][hour].models[model]) data.hourlyBreakdown[day][hour].models[model] = { input:0, output:0, cacheRead:0, cacheWrite:0, totalTokens:0, assistantCount:0, desktop:0, channel:0 };
-            data.hourlyBreakdown[day][hour].models[model].input += inp;
-            data.hourlyBreakdown[day][hour].models[model].output += out;
-            data.hourlyBreakdown[day][hour].models[model].cacheRead += cr;
-            data.hourlyBreakdown[day][hour].models[model].cacheWrite += cw;
-            data.hourlyBreakdown[day][hour].models[model].totalTokens += tot;
-            data.hourlyBreakdown[day][hour].models[model].assistantCount += 1;
-            if (type === "desktop") data.hourlyBreakdown[day][hour].models[model].desktop += tot;
-            else if (type === "bridge") data.hourlyBreakdown[day][hour].models[model].bridge += tot;
-            else if (type === "background") data.hourlyBreakdown[day][hour].models[model].background += tot;
-            else if (type === "sub") data.hourlyBreakdown[day][hour].models[model].sub += tot;
-            else if (type === "ledger") data.hourlyBreakdown[day][hour].models[model].ledger += tot;
-            else data.hourlyBreakdown[day][hour].models[model].channel += tot;
-            if (msgProvider) {
-              const pk = msgProvider + "/" + model;
-              if (!data.hourlyBreakdown[day][hour].providerTotals) data.hourlyBreakdown[day][hour].providerTotals = {};
-              // 初值必须把下面会累加的每一个字段都写上：漏一个就是 undefined += 数 = NaN，
-              // 而 NaN 过了 JSON 就是 null，看起来只是“没数据”，实际是坏值。
-              // bridge/background/sub/ledger 四个字段以前就是漏的。
-              if (!data.hourlyBreakdown[day][hour].providerTotals[pk]) data.hourlyBreakdown[day][hour].providerTotals[pk] = { totalTokens: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, desktop: 0, channel: 0, bridge: 0, background: 0, sub: 0, ledger: 0, assistantCount: 0 };
-              data.hourlyBreakdown[day][hour].providerTotals[pk].totalTokens += tot;
-              data.hourlyBreakdown[day][hour].providerTotals[pk].input += inp;
-              data.hourlyBreakdown[day][hour].providerTotals[pk].output += out;
-              data.hourlyBreakdown[day][hour].providerTotals[pk].cacheRead += cr;
-              data.hourlyBreakdown[day][hour].providerTotals[pk].cacheWrite += cw;
-              data.hourlyBreakdown[day][hour].providerTotals[pk].assistantCount += 1;
-              if (type === "desktop") data.hourlyBreakdown[day][hour].providerTotals[pk].desktop += tot;
-              else if (type === "bridge") data.hourlyBreakdown[day][hour].providerTotals[pk].bridge += tot;
-              else if (type === "background") data.hourlyBreakdown[day][hour].providerTotals[pk].background += tot;
-              else if (type === "sub") data.hourlyBreakdown[day][hour].providerTotals[pk].sub += tot;
-              else if (type === "ledger") data.hourlyBreakdown[day][hour].providerTotals[pk].ledger += tot;
-              else data.hourlyBreakdown[day][hour].providerTotals[pk].channel += tot;
-            }
-          }
-          if (!data.models[model]) data.models[model] = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, count: 0 };
-          data.models[model].input += inp; data.models[model].output += out; data.models[model].cacheRead += cr; data.models[model].cacheWrite += cw; data.models[model].count++;
-          if (msgProvider) {
-            const pk = msgProvider + "/" + model;
-            if (!data.providers[pk]) data.providers[pk] = { provider: msgProvider, model, totalTokens: 0, count: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
-            data.providers[pk].totalTokens += tot;
-            data.providers[pk].count++;
-            data.providers[pk].input += inp;
-            data.providers[pk].output += out;
-            data.providers[pk].cacheRead += cr;
-            data.providers[pk].cacheWrite += cw;
-          }
-        }
-        _prevEvTs = _evTs;
-      }
-    } catch (e) {
-      // 读失败（Windows 上宿主正在写这个文件时 readTextFile 会报 EPERM/EBUSY）：
-      // 不能把半截结果连同当前 mtime 写进缓存。下一轮 mtime 没变就会被当成“没变化”跳过，
-      // 这个会话从此永久少算，而且全程没有任何信号。这里直接丢掉这个 key，下轮重试。
-      log?.warn?.(`scan: 读取失败，本轮跳过（下轮重试）：${fn} — ${e?.message || e}`);
-      if (cache.sessions[key]) { delete cache.sessions[key]; touched?.add(key); changed = true; }
-      continue;
-    }
-    if (conv) { data.conversations.push(conv); conv = null; }
-    data.title = (fn.match(/^(\d{4}-\d{2}-\d{2})/)||[])[1] || "unknown";
-    if (_skipped > 0) data.skippedLines = _skipped;
-    cache.sessions[key] = data;
-    touched?.add(key);
-    changed = true;
+    if (scanSessionFile(fp, fn, key, agent, type, channel, cache, old?.sessions?.[key], touched, log)) changed = true;
   }
 
   // ── 消失的文件：这里只记账，汇总在 sweepVanishedSessions 里做一次 ──
