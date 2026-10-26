@@ -14,6 +14,7 @@ import { diagnosePartitions } from "./services/ds-token-source.js";
 import { createJsonJournalStore } from "./services/json-journal-store.js";
 import { loadLedger } from "./services/ledger-source.js";
 import { openArchiveStore } from "./services/archive-store.js";
+import { openScanLogStore, SLOW_SCAN_MS, SCAN_LOG_RETAIN_DAYS } from "./services/scan-log-store.js";
 import { writeFileAtomic, renameToBackup } from "./services/jsonl-log.js";
 import { hitRatePercentText } from "./services/hit-rate.js";
 import { cachedFxRate } from "./services/fx-rate.js";
@@ -83,15 +84,70 @@ export default class TokenTrackerPlugin {
           pending.full = null;
           // 全量/增量扫描整目录读过一遍，排着的单会话请求一并满足，不必再跑
           pending.sessions.clear();
+          // 记账只在外面包一层：scanAll 内部逻辑一个字没动。
+          // 采集开销 = cpuUsage + Date.now 各两次，另有 touched 的一趟遍历（见 recordScan）。
+          const cpu0 = process.cpuUsage();
+          const t0 = Date.now();
+          shared._lastScanTouched = null;
           await scanAll(shared, log, force);
+          recordScan(force ? "full" : "incr", t0, cpu0);
           shared.emitUpdated?.();
           continue;
         }
         const [key, query] = pending.sessions.entries().next().value;
         pending.sessions.delete(key);
         // 认不出目标（反查不到 / 命中不唯一 / 文件已不在）：退回增量全扫，宁可慢不能漏
-        if (!scanOneSession(shared, log, query)) { pending.full = { force: false }; continue; }
+        const cpu0 = process.cpuUsage();
+        const t0 = Date.now();
+        shared._lastScanTouched = null;
+        const ok = scanOneSession(shared, log, query);
+        // 只有真的扫了那一个会话才记 session：退回全扫的那次会在下一圈记成 incr，记两行只会把
+        // 「单会话路径怎么老是不命中」这个信号埋进噪声里。
+        if (ok) recordScan("session", t0, cpu0);
+        if (!ok) { pending.full = { force: false }; continue; }
         shared.emitUpdated?.();
+      }
+    }
+
+    /**
+     * 把这一轮扫描的耗时/CPU/文件数写进 scan_log（详见 services/scan-log-store.js）。
+     *
+     * touched 的来源：scanAll / scanOneSession 把本轮动过的键挂在 shared 上（见那两处的注释），
+     * 这里读完就清。不改扫描函数的签名，也不为了拿这几个数去遍历全量会话。
+     * files/bytes/changed 的定义：
+     *   files   = 本轮动过的缓存键数（含被移除/被摘掉的）
+     *   changed = 其中在缓存里仍有记录的（被重解析过、留下新行的）
+     *   bytes   = 这些键对应会话文件的字节数之和
+     * 全量重扫时 files 会等于会话总数、changed 也接近它（content 没变也会重写成新行），这是实情，
+     * 不粉饰——「全扫很贵」正是这个表要让人看见的事。
+     *
+     * logAll 读的是内存里的 shared.scanLogAll（onload 播一次、settings.write 后刷新），
+     * 不在扫描路径上碰磁盘：这个函数每轮都跑，为读一个布尔值去 stat + parse 一份 JSON 不划算。
+     */
+    function recordScan(kind, t0, cpu0) {
+      const store = shared.scanLogStore;
+      const touched = shared._lastScanTouched;
+      shared._lastScanTouched = null;
+      if (!store || !touched) return;
+      const sessions = shared.data?.sessions;
+      let bytes = 0;
+      let changed = 0;
+      for (const k of touched) {
+        const rec = sessions?.[k];
+        if (!rec) continue;
+        changed += 1;
+        bytes += Number(rec.size) || 0;
+      }
+      const d = process.cpuUsage(cpu0);
+      try {
+        store.record({
+          at: t0, kind, ms: Date.now() - t0,
+          cpuUser: d.user, cpuSys: d.system,
+          files: touched.size, bytes, changed,
+        }, { logAll: shared.scanLogAll === true });
+      } catch (e) {
+        // 记账失败绝不能影响扫描结果
+        log.warn("[token-tracker] scan_log 记录失败：", e?.message || e);
       }
     }
 
@@ -158,6 +214,18 @@ export default class TokenTrackerPlugin {
     }
     shared.turnsStore = turnsStore;
     this.register(() => { try { turnsStore?.close?.(); } catch {} });
+
+    // 扫描诊断账本：往同一个 cache.sqlite 里加一张 scan_log 表（独立连接，不动已有表）。
+    // 打开失败就彻底关掉——记不上只是少了可观测性，不能因此挡扫描。
+    // 卸载时必须先 flush：缓冲区里可能还攼着几十条慢扫描，一个攒批窗口就这么丢掉不划算。
+    const scanLogStore = usingSqlite
+      ? openScanLogStore({ file: sqliteFile, log, DatabaseSync })
+      : null;
+    shared.scanLogStore = scanLogStore;
+    // 扫描路径上只读一个内存布尔：settings.read() 每次要 stat + parse 两份 JSON，
+    // 放进每一轮扫描里只为取一个开关不合算。onload 播一次，settings.write 后刷新。
+    shared.scanLogAll = settings.read().scanLogAll === true;
+    this.register(() => { try { scanLogStore?.close(); } catch {} });
     let old = store.load();
     if (!old && usingSqlite) {
       old = loadCache(cachePath, log);
@@ -532,6 +600,34 @@ export default class TokenTrackerPlugin {
       return out;
     });
 
+    // 扫描诊断：最近几轮扫描到底花了多久、多少 CPU、动了几个文件。
+    // 参数 { limit = 50, days = 7 }，上限 limit ≤ 500 / days ≤ 30，夹紧在 store.query 里做。
+    // 返回的 settings 里带 slowScanMs / logAll / retainDays：看数字的人必须先知道闸门在哪，
+    // 否则“只有三条记录”会被误读成“只扫了三次”。
+    regHandler("token-tracker.diagnostics", async (payload) => {
+      const p = payload && typeof payload === "object" ? payload : {};
+      const store = shared.scanLogStore;
+      const logAll = settings.read().scanLogAll === true;
+      if (!store) {
+        return {
+          recent: [],
+          summary: {
+            count: 0, avgMs: 0, p95Ms: 0, maxMs: 0,
+            byKind: { full: { count: 0, avgMs: 0 }, incr: { count: 0, avgMs: 0 }, session: { count: 0, avgMs: 0 } },
+          },
+          window: { days: SCAN_LOG_RETAIN_DAYS, since: null, until: Date.now() },
+          settings: { slowScanMs: SLOW_SCAN_MS, logAll, retainDays: SCAN_LOG_RETAIN_DAYS },
+          available: false,
+        };
+      }
+      try {
+        return { ...store.query({ limit: p.limit, days: p.days, logAll }), available: true };
+      } catch (e) {
+        log.warn("[token-tracker] 扫描诊断查询失败：", e?.code || "", e?.message || e);
+        return { error: "扫描诊断暂时读不了：" + (e?.message || e), available: false };
+      }
+    });
+
     regHandler("token-tracker.settings.read", () => settings.read());
     regHandler("token-tracker.settings.write", (payload) => {
       const result = settings.write(payload);
@@ -539,6 +635,8 @@ export default class TokenTrackerPlugin {
       interval = result.scanInterval * 1000;
       timer = setInterval(() => shared.scan(false).catch(e => log.warn(e.message)), interval);
       timer.unref?.();
+      // 扫描诊断的开关键在内存里留一份（见 recordScan 的注释）
+      shared.scanLogAll = result.scanLogAll === true;
       shared.emitUpdated?.();
       return result;
     });
@@ -773,6 +871,9 @@ async function scanAll(shared, log, force) {
   }
   shared.data = cache;
   shared.ready = true;
+  // 本轮动过的键挂到 shared 上给 drainScans 记账用（读完就清）。
+  // 不改成返回值：那要动三处调用点，而 scanAll 的返回值在历史上一直没人看。
+  shared._lastScanTouched = touched;
 
   // ── turns 表在扫描时同步，不等落盘攒批 ──
   // turns 是明细的查询源，必须跟 shared.data 同一时刻。表如果只在落盘时写，就永远比内存旧一个
@@ -1167,6 +1268,10 @@ function scanOneSession(shared, log, query) {
       log?.warn?.("[token-tracker] turns 表同步失败：", e.code || "", e.message);
     }
   }
+  // 本轮动过的键挂到 shared 上给 drainScans 记账用（读完就清）。
+  // 与 scanAll 同一套约定：不为了拿 files/bytes 去改签名、也不去遍历全量会话。
+  // 确认「没变」时这一点是空集合：files=0 也是真实答案，如实记下。
+  shared._lastScanTouched = touched;
   return true;
 }
 

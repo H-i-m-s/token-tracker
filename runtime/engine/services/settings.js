@@ -68,11 +68,20 @@ export function createSettingsService({ dataDir, config, log }) {
     }
     return { scanInterval: saved.scanInterval ?? config?.get('scanInterval') ?? 60,
       highUsageThreshold: saved.highUsageThreshold ?? config?.get('highUsageThreshold') ?? 30000,
+      // 扫描诊断的开关：默认只记慢扫描（见 services/scan-log-store.js 的 SLOW_SCAN_MS）。
+      // 盘上存的不是布尔（手改坏了、或是老版本留下的别的类型）一律按 false：宁可少记，不能把闸门放开。
+      scanLogAll: saved.scanLogAll === true,
       display: normalizeDisplay(saved.display), balanceApis };
   }
   function write(patch) {
     if (!patch || typeof patch !== 'object' || Array.isArray(patch)) throw invalid('设置必须是对象');
     const next = { ...load() };
+    // 布尔项：不进下面那个数值区间循环（它不是数，混进去会被 Number.isFinite 判成越界）。
+    // 校验写死「必须是真正的布尔」：传 'false' / 0 / null 都拒，免得把「字符串 false」当成开。
+    if (patch.scanLogAll !== undefined) {
+      if (typeof patch.scanLogAll !== 'boolean') throw invalid('scanLogAll 必须是布尔值');
+      next.scanLogAll = patch.scanLogAll;
+    }
     for (const [key, min, max] of [['scanInterval', 10, 86400], ['highUsageThreshold', 0, 1e12]]) {
       if (patch[key] !== undefined) {
         if (!Number.isFinite(patch[key]) || patch[key] < min || patch[key] > max) throw invalid(`${key} 超出范围`);
