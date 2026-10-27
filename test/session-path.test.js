@@ -233,6 +233,110 @@ test("路径备忘：冷启动时取回 null（第一条用量退回全扫是可
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 路径分隔符：真正让 session 命中率恒为 0 的就是这一条
+//
+// 缓存行的 filePath 是 scanDir 用 path.join 拼的（Windows 上反斜杠），
+// 宿主 context 事件给的 payload.sessionPath 是正斜杠（C:/Users/...）。
+// 两者直接 !== 比较永远为真，于是那条「形状不对，不猜」的自检把每次正常请求都拒了。
+// ─────────────────────────────────────────────────────────────────────────────
+const SLASH_FN = "2026-10-23T15-29-18-705Z_01a16961-7b71-78fb-ab9e-e2d9ea4949aa.jsonl";
+const SLASH_DIR = path.join(home, "agents", "hanako", "sessions");
+
+function bootEngine(dataDir) {
+  const disposers = [];
+  const engine = new Engine();
+  engine.ctx = {
+    dataDir,
+    config: { get: () => undefined },
+    log,
+    bus: { async request() { return { agents: [] }; }, subscribe: () => () => {}, handle: () => () => {}, emit() {} },
+  };
+  engine.register = (fn) => disposers.push(fn);
+  return { engine, disposers };
+}
+
+const contentOf = (total) => [
+  JSON.stringify({ type: "message", timestamp: "2026-10-23T10:00:00.000Z", message: { role: "user", content: "问" } }),
+  JSON.stringify({ type: "message", timestamp: "2026-10-23T10:00:05.000Z", message: { role: "assistant", model: "m", provider: "p", usage: { input: total - 10, output: 10, totalTokens: total } } }),
+].join("\n") + "\n";
+
+test("路径分隔符：缓存行是反斜杠、查询是正斜杠，scanOneSession 必须命中", async () => {
+  fs.mkdirSync(SLASH_DIR, { recursive: true });
+  const realPath = path.join(SLASH_DIR, SLASH_FN);
+  fs.writeFileSync(realPath, contentOf(110));
+
+  const { engine, disposers } = bootEngine(fs.mkdtempSync(path.join(os.tmpdir(), "tt-slash-data-")));
+  await engine.onload();
+  const shared = engine.ctx._tokenCache;
+  await shared.scan(false); // 全量铺缓存，filePath 是 path.join 的形状
+
+  try {
+    const key = `hanako::desktop::::${SLASH_FN}`;
+    assert.ok(shared.data.sessions[key], "首轮应扫到");
+    const cachedPath = shared.data.sessions[key].filePath;
+
+    // 改文件，用宿主那种正斜杠形式的路径发单会话扫描
+    fs.writeFileSync(realPath, contentOf(777));
+    const hostStylePath = realPath.split(path.sep).join("/");
+    assert.notEqual(hostStylePath, cachedPath, "两种格式的字符串本身确实不相等（这就是旧 bug 的成因）");
+
+    await shared.scanSession({ agentId: "hanako", sessionId: "sess_0mvo0foho_f4954a9d2c8325bf97d0", filePath: hostStylePath });
+
+    assert.equal(shared.data.sessions[key].totalTokens, 777, "正斜杠路径也必须命中并重新解析");
+    // 写回缓存的路径统一成反斜杠（与 scanDir 一致），不会一次正一次反来回抖
+    assert.equal(shared.data.sessions[key].filePath, path.normalize(hostStylePath), "缓存里的路径格式与 scanDir 一致");
+  } finally {
+    for (const fn of disposers.reverse()) { try { fn(); } catch {} }
+  }
+});
+
+test("路径分隔符：自检的本意不能丢 —— 缓存行指向别的目录时必须拒掉", async () => {
+  const archived = path.join(SLASH_DIR, "archived");
+  fs.mkdirSync(archived, { recursive: true });
+  const liveFile = path.join(SLASH_DIR, SLASH_FN);
+  const archFile = path.join(archived, SLASH_FN); // 同名，不同目录
+  fs.writeFileSync(liveFile, contentOf(110));
+  fs.writeFileSync(archFile, contentOf(220));
+
+  const { engine, disposers } = bootEngine(fs.mkdtempSync(path.join(os.tmpdir(), "tt-arch-data-")));
+  await engine.onload();
+  const shared = engine.ctx._tokenCache;
+  await shared.scan(false);
+
+  try {
+    const key = `hanako::desktop::::${SLASH_FN}`;
+    assert.ok(shared.data.sessions[key], "首轮应扫到");
+
+    // 直接把缓存行改指向 archived 那份，然后用 live 的路径请求。
+    // 分隔符归一之后两边仍然不同目 —— 自检必须拦住，不能因为“都是 desktop + 同名”就放过去。
+    shared.data.sessions[key].filePath = path.normalize(archFile);
+    const liveTotal = shared.data.sessions[key].totalTokens;
+
+    // 先确认 resolveSessionTarget 拿到的是路径对应得上的目标（它本身不负责做这层比对）
+    const { resolveSessionTarget: resolve } = await import("../runtime/engine/index.js");
+    const t = resolve(shared.data, { filePath: liveFile.split(path.sep).join("/") });
+    assert.ok(t, "路径能分类，target 应当存在");
+    assert.equal(path.normalize(t.filePath), path.normalize(liveFile), "target 指向 live 那份");
+    assert.notEqual(path.normalize(t.filePath), path.normalize(shared.data.sessions[key].filePath),
+      "归一后仍然对不上（自检应当在此处报 false）");
+
+    // 走完整链路：这一轮会因自检为 false 退回全扫，但缓存不能被写坏
+    fs.writeFileSync(liveFile, contentOf(999));
+    await shared.scanSession({ agentId: "hanako", sessionId: "sess_x", filePath: liveFile.split(path.sep).join("/") });
+    assert.ok(Number.isFinite(shared.data.sessions[key].totalTokens), "缓存行仍然是完整可用的");
+    assert.notEqual(liveTotal, undefined);
+  } finally {
+    for (const fn of disposers.reverse()) { try { fn(); } catch {} }
+  }
+});
+
+test("路径分隔符：path.normalize 后的格式与 scanDir 的 path.join 完全一致", async () => {
+  const joined = path.join(home, "agents", "hanako", "sessions", SLASH_FN);
+  const slashy = joined.split(path.sep).join("/");
+  assert.equal(path.normalize(slashy), joined, "归一后应当与 scanDir 产出的字符串逐字相同");
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 端到端：真实路径进来之后，scanOneSession 必须命中并记成 session
 // ─────────────────────────────────────────────────────────────────────────────
 test("端到端：带 filePath 的 scanSession 走单会话路径，不退回全扫", async () => {

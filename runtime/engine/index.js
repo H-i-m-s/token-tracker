@@ -1264,14 +1264,19 @@ export function resolveSessionTarget(cache, query) {
   if (!sessions) return null;
 
   // 一）真实文件路径：最高优先级，也最便宜（不遍历全量会话）
-  const fp = query?.filePath;
-  if (typeof fp === "string" && fp) {
+  const rawFp = query?.filePath;
+  if (typeof rawFp === "string" && rawFp) {
+    // 归一在最前面：宿主给的是正斜杠（C:/Users/...），scanDir 写进缓存的是反斜杠。
+    // 不做这一步，下面那行 row.filePath === fp 永远为假，「用缓存行元信息」这个最准的分支
+    // 会静默失效，默默退回路径分类（同一个文件在 sessions/ 与 archived/ 里都有时会选错行）。
+    const fp = path.normalize(rawFp);
     const cls = classifySessionPath(fp);
     if (!cls) return null; // 推不出来就认输，别猜
     // 键的拼法与 scanDir / scanSessionFile 一致，所以这是一次直接命中
     const key = `${cls.agentId}::${cls.type}::${cls.channelName || ""}::${path.basename(fp)}`;
     const row = sessions[key];
-    if (row && row.type !== "ledger" && row.filePath === fp) {
+    // 两边都过 normalize：缓存里可能还留着上一版写过的正斜杠路径
+    if (row && row.type !== "ledger" && row.filePath && path.normalize(row.filePath) === fp) {
       return { filePath: fp, agentId: row.agent, type: row.type, channelName: row.channelName ?? null };
     }
     return { filePath: fp, agentId: cls.agentId, type: cls.type, channelName: cls.channelName };
@@ -1312,16 +1317,30 @@ function scanOneSession(shared, log, query) {
 
   const fn = path.basename(target.filePath);
   if (!fn.endsWith(".jsonl") || fn.includes(".repair.jsonl")) return false;
+  // 路径归一必须在最前面。
+  //
+  // 两边路径只差分隔符：缓存那一行的 filePath 是 scanDir 用 path.join 拼的（反斜杠），
+  // 而宿主 context 事件给的 payload.sessionPath 是正斜杠（C:/Users/...）。直接 !== 比，
+  // 在 Windows 上永远为真 —— 自检本意是防「同名文件出现在 sessions/ 和 archived/ 里」，
+  // 结果把正常的路径格式差异也拦了，单会话扫描命中率恒为 0。
+  //
+  // 不用大小写不敏感比较去糊：Windows 文件系统不区分大小写，但那是另一回事，
+  // 而小写化会让这份判断在 Linux 上失真，也没必要。
+  //
+  // 归一放在这里还有个副作用，是好事：下面 stat 用的、写进 cache.sessions[key].filePath 的，
+  // 都是这一份归一后的路径，缓存里的路径格式从此只有一种（与 scanDir 的 path.join 一致）。
+  const filePath = path.normalize(target.filePath);
   // 键的拼法与 scanDir 必须一致，否则会凭空多出一条重复会话
   const key = `${target.agentId}::${target.type}::${target.channelName || ""}::${fn}`;
   const prev = cache.sessions[key];
-  // 缓存里那行的 filePath 与反查到的不是同一个文件：形状不对，不猜
-  if (prev && prev.filePath && prev.filePath !== target.filePath) return false;
+  // 缓存里那行的 filePath 与反查到的不是同一个文件：形状不对，不猜。
+  // 两边都过 normalize：缓存里可能还留着旧格式（上一版写过的正斜杠），同样要认。
+  if (prev && prev.filePath && path.normalize(prev.filePath) !== filePath) return false;
 
   const touched = new Set();
   let changed = false;
   try {
-    changed = scanSessionFile(target.filePath, fn, key, target.agentId, target.type, target.channelName, cache, prev, touched, log);
+    changed = scanSessionFile(filePath, fn, key, target.agentId, target.type, target.channelName, cache, prev, touched, log);
   } catch (e) {
     log?.warn?.("[token-tracker] 单会话扫描失败，退回全量：", e?.code || "", e?.message || e);
     return false;
