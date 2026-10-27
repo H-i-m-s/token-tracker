@@ -1176,6 +1176,66 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null, log = nu
 }
 
 /**
+ * 从会话文件路径反推它是哪一类会话（agent / type / channelName）。
+ *
+ * 规则必须与 scanAll 里那八处 scanDir 调用一一对应，否则「单会话扫描」写进去的键
+ * 会和 scanAll 按目录写进去的键长得不一样，同一个文件就凭空多出一行重复会话。
+ *
+ * 关键陷阱：不能按段数猜。
+ *   sessions/archived/x.jsonl      → desktop, null   （两段之后还有个 archived）
+ *   subagent-sessions/x.jsonl      → sub, null       （也是两段）
+ *   subagent-sessions/<sub>/x.jsonl → sub, sub       （三段）
+ *   phone/sessions/<sub>/x.jsonl   → channel, ...    （四段）
+ *   sessions/bridge/<sub>/x.jsonl  → bridge, sub     （也是四段）
+ * 所以一律先看第一段目录名，再在那一支里核段数。
+ *
+ * @param {string} fp 会话文件绝对路径（通常是宿主给的真实 .jsonl 路径）
+ * @param {string} root agents 根目录（默认就是本机的那一个；测试可传自己的）
+ * @returns {{agentId: string, type: string, channelName: string|null}|null}
+ */
+export function classifySessionPath(fp, root = AGENTS) {
+  if (typeof fp !== "string" || !fp) return null;
+  const base = path.basename(fp);
+  if (!base.endsWith(".jsonl") || base.includes(".repair.jsonl")) return null;
+  let rel;
+  try { rel = path.relative(root, fp); } catch { return null; }
+  // 不在 agents/ 下（空、或跑到了外面）：不猜
+  if (!rel || rel.startsWith("..") || path.isAbsolute(rel)) return null;
+  const seg = rel.split(/[\\/]/);
+  // agents/<agentId>/<dir...>/<file>.jsonl 至少三段
+  if (seg.length < 3) return null;
+  const agentId = seg[0];
+  const rest = seg.slice(1);
+  const dir = rest[0];
+
+  if (dir === "sessions") {
+    if (rest.length === 2) return { agentId, type: "desktop", channelName: null };
+    if (rest.length === 3 && rest[1] === "archived") return { agentId, type: "desktop", channelName: null };
+    if (rest.length === 4 && rest[1] === "bridge") return { agentId, type: "bridge", channelName: rest[2] };
+    return null;
+  }
+  if (dir === "phone") {
+    // phone/sessions/<sub>/<file>：channel 名要看子目录名，去掉末尾那段 id（与 scanDir 一致）
+    if (rest.length === 4 && rest[1] === "sessions") {
+      return { agentId, type: "channel", channelName: rest[2].replace(/-[^-]+$/, "") };
+    }
+    return null;
+  }
+  if (dir === "activity") {
+    return rest.length === 2 ? { agentId, type: "background", channelName: null } : null;
+  }
+  if (dir === "subagent-sessions") {
+    if (rest.length === 2) return { agentId, type: "sub", channelName: null };
+    if (rest.length === 3) return { agentId, type: "sub", channelName: rest[1] };
+    return null;
+  }
+  if (dir === "workflow-sessions") {
+    return rest.length === 2 ? { agentId, type: "background", channelName: null } : null;
+  }
+  return null;
+}
+
+/**
  * 从 sessionId 反查到会话文件。
  *
  * 不能直接拼路径：会话文件叫 2026-10-23T15-29-18-705Z_01a16961-....jsonl，
@@ -1187,14 +1247,39 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null, log = nu
  * 先在该 agent 里找，找不到再放全找。宁可多比几遍，也不要因为 attribution 的 agentId
  * 不准（子代理会报父代理的 id 之类）就白退回全扫。
  *
+ * ── filePath 分支（优先级最高）──
+ * 宿主的 attribution.sessionId 长这样：sess_0mvo0foho_f4954a9d2c8325bf97d0，
+ * 而会话文件名里装的是 01a16961-7b71-78fb-... 这种 UUID，两者毫无交集 ——
+ * 这就是「单会话扫描从来不命中、75/75 全是 incr」的真正原因。
+ * 而 context 事件里带着宿主的真实 .jsonl 绝对路径，那就直接用它：
+ * 先按分类结果去缓存里 O(1) 查那一行（键的拼法与 scanDir 一致，见 classifySessionPath），
+ * 命中就用行里的元信息（最准，那本来就是 scanAll 按目录写的）；
+ * 没命中（新会话第一次出现）就用分类结果。分类不出来就返回 null 退回全扫。
+ *
  * @returns {{filePath: string, agentId: string, type: string, channelName: string|null}|null}
  *          命中不唯一时返回 null（宁可全扫也不能猜错一个去写错键）
  */
-function resolveSessionTarget(cache, query) {
-  const sessionId = query?.sessionId;
-  if (!sessionId || typeof sessionId !== "string") return null;
+export function resolveSessionTarget(cache, query) {
   const sessions = cache?.sessions;
   if (!sessions) return null;
+
+  // 一）真实文件路径：最高优先级，也最便宜（不遍历全量会话）
+  const fp = query?.filePath;
+  if (typeof fp === "string" && fp) {
+    const cls = classifySessionPath(fp);
+    if (!cls) return null; // 推不出来就认输，别猜
+    // 键的拼法与 scanDir / scanSessionFile 一致，所以这是一次直接命中
+    const key = `${cls.agentId}::${cls.type}::${cls.channelName || ""}::${path.basename(fp)}`;
+    const row = sessions[key];
+    if (row && row.type !== "ledger" && row.filePath === fp) {
+      return { filePath: fp, agentId: row.agent, type: row.type, channelName: row.channelName ?? null };
+    }
+    return { filePath: fp, agentId: cls.agentId, type: cls.type, channelName: cls.channelName };
+  }
+
+  // 二）sessionId 兜底：老路径，原样保留
+  const sessionId = query?.sessionId;
+  if (!sessionId || typeof sessionId !== "string") return null;
   const wantAgent = query.agentId || null;
 
   const pick = (onlyAgent) => {

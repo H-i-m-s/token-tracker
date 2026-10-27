@@ -3,6 +3,7 @@ import path from 'node:path';
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
 import { migrateLegacy } from './migration.mjs';
+import { noteSessionPath, recallSessionPath, agentFromSessionPath } from './session-path-hint.mjs';
 
 const config = JSON.parse(fs.readFileSync(process.argv[2], 'utf8'));
 if (!path.isAbsolute(config.homeDir) || !path.isAbsolute(config.dataDir) || !/^[a-f0-9]{64}$/.test(config.secret)) throw new Error('Invalid runtime configuration');
@@ -112,6 +113,10 @@ async function request(method, payload = {}) {
 }
 
 const seenUsage = new Set();
+// agentId -> 真实 .jsonl 绝对路径。存/取/反查都在 session-path-hint.mjs（那边有为什么需要它的完整说明，
+// 以及为什么不能让这个 Map 装假值）。这里只管持有它。
+const lastSessionPath = new Map();
+
 function acceptUsage(entry) {
   if (!entry?.requestId || !entry.usage) return;
   if (seenUsage.has(entry.requestId)) return;
@@ -120,16 +125,19 @@ function acceptUsage(entry) {
   const u = entry.usage;
   const total = v => typeof v === 'number' ? v : Number(v?.totalTokens) || 0;
   const id = entry.attribution?.agentId || 'unknown';
-  const session = entry.attribution?.sessionId || entry.requestId;
   const event = { type: 'token_usage', modelId: entry.model?.modelId, modelProvider: entry.model?.provider,
     usage: { input: total(u.input), output: total(u.output), totalTokens: u.totalTokens || total(u.input) + total(u.output), cacheRead: u.cache?.readTokens || 0, reasoningTokens: u.output?.reasoningTokens || 0, cost: u.costTotal ?? u.cost?.total ?? 0 } };
-  for (const fn of subscribers) fn(event, path.join(config.homeDir, 'agents', id, 'sessions', session));
-  // 只扫这一个会话：attribution.sessionId 不一定等于文件名，引擎会先从缓存里反查 filePath，
-  // 反查不到就自己退回增量全扫。不命中的情况宁可慢也不能漏。
+  // 曾经这里传的是 path.join(homeDir, 'agents', id, 'sessions', session)，拼出来是
+  // sessions/sess_xxx —— 磁盘上从来没有这个文件。那个假路径除了让下游误以为「有路径」之外
+  // 没有任何好处（引擎拿它去 stat 必然失败）。现在没有真路径就老实传 null。
+  const realPath = recallSessionPath(lastSessionPath, id);
+  for (const fn of subscribers) fn(event, realPath);
+  // 只扫这一个会话。filePath 优先（真实 .jsonl 路径，引擎一次分类就能定位），
+  // sessionId 作为保留参数：引擎那边仍把它当兜底反查线索。
   const cache = engine.ctx._tokenCache;
   const scanSession = cache?.scanSession;
   const wait = typeof scanSession === 'function'
-    ? scanSession({ agentId: entry.attribution?.agentId || null, sessionId: entry.attribution?.sessionId || null })
+    ? scanSession({ agentId: entry.attribution?.agentId || null, sessionId: entry.attribution?.sessionId || null, filePath: realPath })
     : cache?.scan?.(false);
   wait?.catch?.(() => {});
 }
@@ -147,6 +155,9 @@ const server = http.createServer(async (req, res) => {
     if (input.method === 'usage') { acceptUsage(input.payload); reply({ value: { accepted: true } }); return; }
     if (input.method === 'context') {
       const payload = input.payload || {};
+      // 真实 .jsonl 路径就在这里，先记下来：随后的 token_usage 靠它定位文件
+      // （attribution.sessionId 与文件名毫无交集，见 noteSessionPath 的注释）。
+      noteSessionPath(lastSessionPath, agentFromSessionPath(payload.sessionPath), payload.sessionPath);
       for (const fn of subscribers) fn({ type: 'context_usage', tokens: payload.tokens, contextWindow: payload.contextWindow }, payload.sessionPath);
       reply({ value: { accepted: true } }); return;
     }
