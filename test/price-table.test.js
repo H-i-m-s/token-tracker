@@ -392,8 +392,13 @@ test("DeepSeek 分时：工作日高峰双倍，其余时段与周末按平峰",
 });
 
 test("美元来源的模型级价按基准汇率换算，人民币来源的保持原值", () => {
-  const gpt = DEFAULT_PRICE_TABLE["gpt-5.6-sol"];
-  assert.ok(Math.abs(gpt.input - 4 * DEFAULT_PRICE_RATE) < 0.01);
-  assert.ok(Math.abs(gpt.output - 20 * DEFAULT_PRICE_RATE) < 0.01);
+  // 用 grok-4.7 验换算：gpt-5.6-sol、grok-4.6 这些已经被 SSS 的实付价覆盖成人民币原值，
+  // 拿它们当例子只会测到“人民币表赢了”，测不到换算本身。
+  const grok = DEFAULT_PRICE_TABLE["grok-4.7"];
+  assert.ok(Math.abs(grok.input - 2 * DEFAULT_PRICE_RATE) < 0.01);
+  assert.ok(Math.abs(grok.output - 6 * DEFAULT_PRICE_RATE) < 0.01);
   assert.equal(DEFAULT_PRICE_TABLE["glm-5.3-flash"].input, 0.8, "人民币原价不该被乘汇率");
+  // 人民币表放最后，所以同名的美元条目会被整条盖掉 —— 实付价优先。
+  assert.equal(DEFAULT_PRICE_TABLE["gpt-5.6-sol"].input, 1.15);
+  assert.equal(DEFAULT_PRICE_TABLE["claude-fable-5"].output, 6.5);
 });
