@@ -829,7 +829,18 @@ export class PriceCard {
         input.dataset.field = spec.key;
         input.addEventListener("input", () => this.staleValues.set(item.key, this.readRow(cells)));
         input.addEventListener("blur", () => void this.commitRow(item, cells));
-        input.addEventListener("keydown", (e) => { if (e.key === "Enter") input.blur(); });
+        // Tab 自己算去哪一格，不用浏览器的默认顺序。
+        //
+        // 默认顺序按 DOM 走，而行首那个勾选框排在四个价格框前面，所以从第四格按 Tab
+        // 落到的是下一行的勾选框（肉眼几乎看不见），看上去就是「切不过去」。
+        // 这里直接按「行内向右、最后一格落到下一行第一格」走，Shift+Tab 反向；
+        // 跨到一个新格子就整格全选，接着按数字就能直接覆盖旧值。
+        input.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") { input.blur(); return; }
+          if (e.key !== "Tab") return;
+          e.preventDefault();
+          this.moveCell(input, e.shiftKey ? -1 : 1);
+        });
         cells[spec.key] = input;
       }
     }
@@ -984,6 +995,21 @@ export class PriceCard {
     return out;
   }
 
+  // Tab 在价格格之间走一步。dir 为 +1 向右、-1 向左。
+  //
+  // 目标从整个列表里按 DOM 顺序取，而不是只看当前这一行：跨到下一行（或者回头跨到
+  // 上一行最后一格）才能自然接上。按 extra.any 收起成摘要的行没有格子，它们自然不会
+  // 出现在名单里，Tab 会直接跳过去 —— 这正是想要的，那些行本来就没东西可填。
+  moveCell(from, dir) {
+    const all = [...this.bodyEl.querySelectorAll("[data-field]")];
+    const i = all.indexOf(from);
+    if (i < 0) return;
+    const next = all[i + dir];
+    if (!next) return;                 // 头尾：停在原地，不把焦点甩到页面其它地方
+    next.focus({ preventScroll: true });
+    next.select();                     // 进来就全选，接着敲数字直接覆盖
+  }
+
   /** 按完整键找清单里那一项（批量套用要拿它的扩展字段）。 */
   itemByKey(key) {
     for (const g of this.data?.groups || []) {
@@ -1108,7 +1134,10 @@ export class PriceCard {
           `.tts-price__row [data-key="${CSS.escape(focusKey)}"][data-field="${CSS.escape(focusField)}"]`,
         );
         // preventScroll：重画已经保持住滚动位置，强制 focus 再滚一次会让整页跳。
-        if (back) back.focus({ preventScroll: true });
+        // select() 必须跟着：重画换的是新节点，光标与选区都没了。
+        // 不补这一下，Tab 过来时明明是全选，下一次落盘一重画就变回「光标停在开头」，
+        // 再输入就变成往旧值前面插字。
+        if (back) { back.focus({ preventScroll: true }); back.select(); }
       }
       for (const [key, values] of editing) {
         const row = this.bodyEl.querySelector(`.tts-price__row [data-key="${CSS.escape(key)}"]`)?.closest(".tts-price__row");
