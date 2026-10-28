@@ -17,6 +17,9 @@ import { createDateField, closeOpenDate } from "./custom-date.mjs";
 import { createViewGestures } from "./view-track.mjs";
 import { drawSparkline, drawRing, drawUsageChart, fmtTokensShort } from "./charts.mjs";
 import { upgradeTitles, closeHoverTip } from "./hover-tip.mjs";
+// 展开收起与价格卡同一套曲线（300ms 开、240ms 收，尊重 reduced-motion），
+// 两处动效节奏一致，用户不会觉得这是两个东西。
+import { expandFromZero, collapseToZero } from "./collapse-anim.mjs";
 
 const PAGE_SIZE = 50;
 const POLL_INTERVAL_MS = 5000;
@@ -1370,21 +1373,41 @@ export class WorkspaceApp {
       h("div", { className: "tt-diag-payload-hd" },
         h("span", { className: "tt-diag-label" }, "整份看板载荷"),
         d.payload ? h("span", { className: "tt-diag-value" }, fmtBytes(d.payload.totalBytes)) : null,
-        // 收起后只留总量：量过这件事和那个数字都还在，只是不再占半屏。
+        // 展开/收起就地操作 DOM，不走 renderDiagnostics：那一整块重建会把正在播的过渡直接掐掉。
+        // 状态仍记在实例上，所以之后任何一次重建都回到同一个开合态。
         d.payload ? h("button", {
           type: "button", className: "tt-btn ghost",
-          onClick: () => { this.diagBytesOpen = !this.diagBytesOpen; this.renderDiagnostics(); },
+          onClick: (ev) => this.togglePayloadBytes(ev.currentTarget),
         }, this.diagBytesOpen ? "收起" : "展开") : null,
-        h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: true, open: true }) }, d.payload ? "重量一次" : "量一次"),
+        h("button", {
+          type: "button", className: "tt-btn ghost tt-diag-payload-go",
+          onClick: () => this.loadDiagnostics({ bytes: true, open: true }),
+        }, d.payload ? "重量一次" : "量一次"),
       ),
       d.payload
-        ? (this.diagBytesOpen
-          ? h("div", { className: "tt-diag-bars" }, ...this.buildPayloadBars(d.payload))
-          : null)
+        ? h("div", { className: "tt-diag-payload-bd", style: this.diagBytesOpen ? "" : "display:none" },
+          h("div", { className: "tt-diag-bars" }, ...this.buildPayloadBars(d.payload)),
+          h("div", { className: "tt-diag-foot" }, "analytics.xxx 是 analytics 内部的细分，不另计；百分比都是占整份的比例。"),
+        )
         : h("div", { className: "tt-diag-note" }, "量这一下会把整份看板重算一遍（几十毫秒），所以不跟着面板常驻。"),
-      d.payload && this.diagBytesOpen ? h("div", { className: "tt-diag-foot" }, "analytics.xxx 是 analytics 内部的细分，不另计；百分比都是占整份的比例。") : null,
     ));
     return box;
+  }
+
+  // 载荷明细的开合。拿按钮当锚点往上找那块明细，不依赖 id，重建后照样能用。
+  togglePayloadBytes(btn) {
+    const bd = btn.closest(".tt-diag-payload")?.querySelector(".tt-diag-payload-bd");
+    if (!bd) return;
+    this.diagBytesOpen = !this.diagBytesOpen;
+    btn.textContent = this.diagBytesOpen ? "收起" : "展开";
+    if (this.diagBytesOpen) {
+      // 先让它在自然态参与布局，再从这里展开；带着 display:none 量高度只会得到 0。
+      bd.style.display = "";
+      expandFromZero(bd);
+    } else {
+      // 播完再藏：中途 display:none 会把过渡直接掐掉。
+      collapseToZero(bd, { onGone: () => { bd.style.display = "none"; } });
+    }
   }
 
   buildPayloadBars(payload) {

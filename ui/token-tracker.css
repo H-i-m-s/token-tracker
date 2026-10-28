@@ -1990,7 +1990,12 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 
 .tt-diag-payload { margin-top: 8px; }
 .tt-diag-payload-hd { display: flex; align-items: baseline; gap: 8px; padding-bottom: 4px; }
-.tt-diag-payload-hd .tt-diag-value { margin-left: auto; }
+/* 数字和展开钮紧跟在标签后面，它们说的是同一件事；只有动作（量一次 / 重量一次）被推到最右。
+   以前 .tt-diag-value 带 margin-left:auto，数字被甩到最右和「重量一次」挤成一团，反而看不出它属于谁。 */
+.tt-diag-payload-go { margin-left: auto; }
+/* 载荷明细整块做展开收起，动效走 collapse-anim.mjs（与价格卡同一套曲线）。
+   默认收着，JS 在展开时才让它参与布局。 */
+.tt-diag-payload-bd { overflow: hidden; }
 .tt-diag-bars { display: flex; flex-direction: column; gap: 2px; }
 .tt-diag-bar { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .tt-diag-bar-name { flex: 0 0 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px; color: var(--tt-t3); }
