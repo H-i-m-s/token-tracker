@@ -27,6 +27,7 @@ import { fetchFxRate, setFxRateForTests } from "../services/fx-rate.js";
 
 // 价格算术在 lib/price-core.mjs，两个进程共用；引擎这边只负责读价与算钱。
 import { calcCost, loadPriceTable } from "../services/price-table.js";
+import { modelLeaf } from "../../../lib/price-core.mjs";
 
 
 const HOME = resolveHanaHome();
@@ -1259,9 +1260,14 @@ function build(cache, range = "all", filters = {}, fxRate = null, turnsStore = n
         if (filterProvider.length && !filterProvider.includes(provModels[mn])) continue;
         const prov = provModels[mn];
         if (!prov) continue;
-        // 回退一级：供应商级没登记时按模型名查。同一条价常被多个供应商共用
-        // （自建中转、聚合网关、官方），见 lib/price-core.mjs 里模型级默认价那段说明。
-        const price = prices[prov + "/" + mn] || prices[mn];
+        // 回退两级：供应商级没登记时按模型名查，模型名还带路由前缀时再剥到叶子。
+        // 同一条价常被多个供应商共用（自建中转、聚合网关、官方），见 lib/price-core.mjs
+        // 里模型级默认价那段说明。
+        //
+        // 剥叶子这一步不能省：中转把自家路由写进模型 id（zcode/GLM-5.3-Flash），
+        // 默认价是按型号立的键，不剥的话看板会把这些量算成「未定价」，
+        // 而设置页里同一款型号明明显示着价。
+        const price = prices[prov + "/" + mn] || prices[mn] || prices[modelLeaf(mn)];
         // 价格表本身就是人民币，直接乘除即可，不需要按币种再换算。
         //
         // 分时定价的模型必须按小时结算：dailyBreakdown 只有当天合计，
