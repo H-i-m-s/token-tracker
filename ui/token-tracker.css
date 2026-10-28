@@ -1990,9 +1990,9 @@ tr[data-turn-row] > td:first-child { white-space: nowrap; }
 
 .tt-diag-payload { margin-top: 8px; }
 .tt-diag-payload-hd { display: flex; align-items: baseline; gap: 8px; padding-bottom: 4px; }
-/* 数字和展开钮紧跟在标签后面，它们说的是同一件事；只有动作（量一次 / 重量一次）被推到最右。
-   以前 .tt-diag-value 带 margin-left:auto，数字被甩到最右和「重量一次」挤成一团，反而看不出它属于谁。 */
-.tt-diag-payload-go { margin-left: auto; }
+/* 这一行整行左对齐：标签、总字节数、展开钮、动作钮依次紧跟在「整份看板载荷」右侧。
+   以前 .tt-diag-value 带 margin-left:auto，把数字甩到最右，和按钮挤在一起反而不知属于谁；
+   推最右的做法在这行不成立——它说的是同一件事（这个看板有多大），不是一个右对齐的数据列。 */
 /* 载荷明细整块做展开收起，动效走 collapse-anim.mjs（与价格卡同一套曲线）。
    默认收着，JS 在展开时才让它参与布局。 */
 .tt-diag-payload-bd { overflow: hidden; }

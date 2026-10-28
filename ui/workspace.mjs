@@ -1380,7 +1380,7 @@ export class WorkspaceApp {
           onClick: (ev) => this.togglePayloadBytes(ev.currentTarget),
         }, this.diagBytesOpen ? "收起" : "展开") : null,
         h("button", {
-          type: "button", className: "tt-btn ghost tt-diag-payload-go",
+          type: "button", className: "tt-btn ghost",
           onClick: () => this.loadDiagnostics({ bytes: true, open: true }),
         }, d.payload ? "重量一次" : "量一次"),
       ),
