@@ -1311,6 +1311,15 @@ export class WorkspaceApp {
     mod.scrollTop = keepScroll;
     // 载荷条的每一条都是被截断的键名，全文只能在 title 里看。
     upgradeTitles(el);
+    // 体检是数据表，字要能选。只给**装文字的叶子**挂 data-tt-select：手势层在 pointerdown
+    // 时看到这个标记就把选中权交回浏览器，按住一拉是选字而不是拖走画布。
+    //
+    // 不整块挂（.tt-diag-bd 上挂一把也行，别的模块就这么干的）：那样这块面板内部任何地方
+    // 都拖不动了，包括行与行之间那些空白。标题里的值、后缀、说明文字、柱状图的名字与字节
+    // 都在名单里，剩下的空隙仍然归看板拖动。
+    for (const node of el.querySelectorAll(
+      ".tt-diag-label, .tt-diag-value, .tt-diag-sub, .tt-diag-bar-name, .tt-diag-bar-bytes, .tt-diag-note, .tt-diag-foot",
+    )) node.setAttribute("data-tt-select", "");
   }
 
   // bytes=true 时后端会把整份看板重算一遍再拆字节，所以那一下就单独点，不跟着这一页一起做。
