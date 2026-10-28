@@ -128,6 +128,9 @@ export class WorkspaceApp {
     this.diagData = null;
     this.diagError = "";
     this.diagLoading = false;
+    // 量过之后那把明细是否展开。量一次是主动动作，量完就给结果；之后它应该能收起来——
+    // 不然每次进这一页都顶着几十行柱状图，而那个数字早就不新鲜了。
+    this.diagBytesOpen = false;
   }
 
   async init() {
@@ -1308,8 +1311,11 @@ export class WorkspaceApp {
   }
 
   // bytes=true 时后端会把整份看板重算一遍再拆字节，所以那一下就单独点，不跟着这一页一起做。
-  async loadDiagnostics({ bytes = false } = {}) {
+  // open=true 只给「量一次 / 重量一次」用：那是主动要看结果的动作，量完就该露出来。
+  // 左上角那个「刷新」不能带 open，否则收起状态会被一次普通刷新又打开。
+  async loadDiagnostics({ bytes = false, open = false } = {}) {
     this.diagLoading = true;
+    if (open) this.diagBytesOpen = true;
     this.renderDiagnostics();
     try {
       this.diagData = await this.api.getDiagnostics({ bytes, mock: this.mock });
@@ -1364,12 +1370,19 @@ export class WorkspaceApp {
       h("div", { className: "tt-diag-payload-hd" },
         h("span", { className: "tt-diag-label" }, "整份看板载荷"),
         d.payload ? h("span", { className: "tt-diag-value" }, fmtBytes(d.payload.totalBytes)) : null,
-        h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: true }) }, d.payload ? "重量一次" : "量一次"),
+        // 收起后只留总量：量过这件事和那个数字都还在，只是不再占半屏。
+        d.payload ? h("button", {
+          type: "button", className: "tt-btn ghost",
+          onClick: () => { this.diagBytesOpen = !this.diagBytesOpen; this.renderDiagnostics(); },
+        }, this.diagBytesOpen ? "收起" : "展开") : null,
+        h("button", { type: "button", className: "tt-btn ghost", onClick: () => this.loadDiagnostics({ bytes: true, open: true }) }, d.payload ? "重量一次" : "量一次"),
       ),
       d.payload
-        ? h("div", { className: "tt-diag-bars" }, ...this.buildPayloadBars(d.payload))
+        ? (this.diagBytesOpen
+          ? h("div", { className: "tt-diag-bars" }, ...this.buildPayloadBars(d.payload))
+          : null)
         : h("div", { className: "tt-diag-note" }, "量这一下会把整份看板重算一遍（几十毫秒），所以不跟着面板常驻。"),
-      d.payload ? h("div", { className: "tt-diag-foot" }, "analytics.xxx 是 analytics 内部的细分，不另计；百分比都是占整份的比例。") : null,
+      d.payload && this.diagBytesOpen ? h("div", { className: "tt-diag-foot" }, "analytics.xxx 是 analytics 内部的细分，不另计；百分比都是占整份的比例。") : null,
     ));
     return box;
   }
