@@ -399,7 +399,12 @@ export class WorkspaceApp {
     // 不在视口里的那几块：inert 挡交互、aria-hidden 挡读屏。
     // 不这么做的话四块内容都在 DOM 里且都算可见，读屏会把四份内容一起念出来。
     for (const section of this.mainEl.querySelectorAll(".tt-track > section")) {
-      const active = section.id === `${view}-module`;
+      // 余额/明细/实时三块的卡片外面套了一层滚动壳（.tt-module-scroll），轨道的直接子节点
+      // 因此是那层壳本身，它没有 id；当前视图的 id 落在它的子节点上。
+      // 只比 section.id 会把**正在看的这一块**判成「不在视口里」，于是它整块 inert +
+      // aria-hidden：inert 的子树不参与命中测试，滚轮、滚动条拖拽、点击、选字一起失效，
+      // 而 scrollTop 仍能被程序写（滚动容器本身没坏）——看起来就是「滚不动」。
+      const active = section.id === `${view}-module` || !!section.querySelector(`#${view}-module`);
       section.toggleAttribute("inert", !active);
       section.setAttribute("aria-hidden", String(!active));
     }
