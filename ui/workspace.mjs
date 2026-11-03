@@ -303,7 +303,24 @@ export class WorkspaceApp {
     // 首帧先带 tt-no-anim 把位置摆好，免得打开时从第 0 块滑过来。
     this.trackEl = h("div", { className: "tt-track tt-no-anim" });
     for (const id of ["overview", "balance", "details", "realtime"]) {
-      this.trackEl.append(h("section", { id: `${id}-module`, className: "tt-module", role: "tabpanel", "aria-labelledby": `tab-${id}` }));
+      // 数据大屏那一块由 analytics 把 className 整体换成 tt-board，它自己就是滚动层，
+      // 卡片在内部的 .tt-kpi / .tt-board-panel 上，天生分好层，不需要壳。
+      //
+      // 另三块的卡片就是 section 自己：滚动条永远画在滚动容器自己的 padding box 内侧，
+      // 只要容器同时是卡片，拇指就一定压在卡片上。所以这三块加一层壳专门负责滚，
+      // 壳不画背景，padding-right 让出的 10px 透出页面底色，拇指正好落在那里。
+      //
+      // 内层卡片带 data-tt-select：它现在不是 .tt-track 的直接子元素，
+      // 手势层会把它当普通区域接管，结果是拖字选不中、点击被吞。标上 select 之后，
+      // 这块里的指针事件全部交回浏览器，代价是这三块不再兼作「拖动换页」的落脚面。
+      const inner = h("section", {
+        id: `${id}-module`,
+        className: "tt-module",
+        role: "tabpanel",
+        "aria-labelledby": `tab-${id}`,
+        "data-tt-select": "",
+      });
+      this.trackEl.append(id === "overview" ? inner : h("section", { className: "tt-module-scroll" }, inner));
     }
     this.mainEl.append(this.trackEl);
     // 拖拽切换：判定全在 view-track.mjs 的纯函数里（那边有单测），
@@ -911,7 +928,7 @@ export class WorkspaceApp {
     if (!el) return;
     // 概览整块由 analytics 重建：正悬停的元素反正要被换掉，先收掉它的浮层。
     closeHoverTip(el);
-    const keepScroll = preserveScroll ? el.scrollTop : 0;
+    const keepScroll = preserveScroll ? this.scrollBox(el).scrollTop : 0;
     renderAnalytics(el, this.dashboard, this.state.get(), patch => this.state.patch(patch));
     // KPI 卡的字号不写死：每次重画后按各卡实测内框重算一遍（看板与卡片共用一份）。
     installKpiFit(el);
@@ -919,7 +936,13 @@ export class WorkspaceApp {
     // 统一换成自绘浮层。扫在这里而不是留给 analytics：那边一帧里会重画很多次，
     // 而且它不仅被看板调、也被卡片调，只在一个地方扫就不会漏。
     upgradeTitles(el);
-    if (preserveScroll) el.scrollTop = keepScroll;
+    if (preserveScroll) this.scrollBox(el).scrollTop = keepScroll;
+  }
+
+  // 滚动发生在外壳上（.tt-module-scroll），而具体视图拿到的只是内层卡片。
+  // 要读 / 写滚动位置就得往外找那一层；数据大屏没有外壳（自己就是滚动层），closest 回空时用自己。
+  scrollBox(el) {
+    return el?.closest?.(".tt-module-scroll") || el;
   }
 
   metricEl(label, value, unit = "") {
@@ -1091,7 +1114,7 @@ export class WorkspaceApp {
     const excludedLedger = Math.max(0, Number(this.dashboard?.summary?.excludedLedgerTokens) || 0);
     const maxTokens = Math.max(...pageRows.map((r) => r.totalTokens || 0), 1);
 
-    const keepScroll = preserveScroll ? el.scrollTop : 0;
+    const keepScroll = preserveScroll ? this.scrollBox(el).scrollTop : 0;
     el.innerHTML = "";
     el.append(
       h("div", { className: "tt-module-hd", "data-tt-select": "" },
@@ -1117,7 +1140,7 @@ export class WorkspaceApp {
         this.renderDetailsPagination(total, page, totalPages),
       ),
     );
-    if (preserveScroll) el.scrollTop = keepScroll;
+    if (preserveScroll) this.scrollBox(el).scrollTop = keepScroll;
 
     // 原生 select 留着当状态源，换成自绘下拉（幂等）；改完排序/门槛都回到第 1 页。
     enhanceSelects(this.container);
@@ -1296,7 +1319,7 @@ export class WorkspaceApp {
       el = h("section", { id: "realtime-diag" });
       mod.appendChild(el);
     }
-    const keepScroll = mod.scrollTop;
+    const keepScroll = this.scrollBox(mod).scrollTop;
     // 这块要整体重建：先只收掉挂在这里的那一个浮层（实时监控那一块也在这页上，不连带收掉）。
     closeHoverTip(el);
     el.innerHTML = "";
@@ -1308,7 +1331,7 @@ export class WorkspaceApp {
       ),
       this.buildDiagnostics(),
     );
-    mod.scrollTop = keepScroll;
+    this.scrollBox(mod).scrollTop = keepScroll;
     // 载荷条的每一条都是被截断的键名，全文只能在 title 里看。
     upgradeTitles(el);
     // 体检是数据表，字要能选。只给**装文字的叶子**挂 data-tt-select：手势层在 pointerdown
@@ -1648,7 +1671,7 @@ export class WorkspaceApp {
     const cpShow = rt.contextPercent > 100 ? "99+" : Math.round(rt.contextPercent).toString();
     const ttftShow = rt.ttft > 0 ? (rt.ttft / 1000).toFixed(1) + " s" : "—";
 
-    const keepScroll = el.scrollTop;   // 这一页底部还挂着体检块，重建别把人拽回顶部
+    const keepScroll = this.scrollBox(el).scrollTop;   // 这一页底部还挂着体检块，重建别把人拽回顶部
     const diag = el.querySelector("#realtime-diag");   // 体检不是实时数据：重建时把它排到最后就好
     // 这块每 5 秒重画一次，里面正悬停的元素马上要被换掉：先收掉浮层。
     closeHoverTip(el);
@@ -1688,7 +1711,7 @@ export class WorkspaceApp {
       ),
     );
     if (diag) el.appendChild(diag);
-    el.scrollTop = keepScroll;
+    this.scrollBox(el).scrollTop = keepScroll;
 
     const ringContainer = el.querySelector("#realtime-ring");
     if (ringContainer) {
