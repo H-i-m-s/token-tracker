@@ -893,7 +893,15 @@ html[data-tt-appearance="system"] { --tt-heat: var(--tt-blue); }
 html[data-tt-appearance] body { background: var(--tt-bg); }
 .tt-dashboard-app, .tt-nav { font-variant-numeric: tabular-nums; }
 /* 滚动条间隙：见下方 .tt-board 的注释。值只在这一处定，看板大屏与窄屏共用。 */
-.tt-app.tt-dashboard-app { --tt-page-inset: 18px; --tt-scroll-gap: 10px; height: 100%; height: 100dvh; overflow: hidden; background: var(--tt-bg); padding: var(--tt-page-inset); gap: 10px; }
+/* 滚动条配色写在根上，靠继承铺给所有滚动容器。
+
+   只写 scrollbar-width: thin 是不够的：Chromium 会保留系统那套原生外观（上下箭头、
+   浅灰槽），深色底上特别脏。一旦同时给了 scrollbar-color，它才改走简化样式（无箭头、
+   圆角滑块、颜色可控）。
+
+   这也正是之前只有数据大屏好看的原因：大屏里那层 .tt-board 自己写了配色，
+   而消费明细 / 余额 / 实时这三块直接落在 .tt-module 上，只有 thin、没有 color。 */
+.tt-app.tt-dashboard-app { --tt-page-inset: 18px; --tt-scroll-gap: 10px; height: 100%; height: 100dvh; overflow: hidden; background: var(--tt-bg); padding: var(--tt-page-inset); gap: 10px; scrollbar-color: var(--tt-b2) transparent; }
 .tt-dashboard-app .tt-chrome { padding: 0; border: 0; background: transparent; display: flex; justify-content: space-between; align-items: flex-start; gap: 20px; flex: 0 0 auto; }
 .tt-board-heading { flex-shrink: 0; }
 .tt-board-heading h1 { font-size: 25px; font-weight: 750; letter-spacing: -.025em; line-height: 1.25; color: var(--tt-t1); }
