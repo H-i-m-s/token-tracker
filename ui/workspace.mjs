@@ -1,4 +1,6 @@
 import { applyAppearance } from "./appearance.mjs";
+import { applyPinnedTheme } from "./theme.mjs";
+import { refreshSkins } from "./theme-catalog.mjs";
 import { applyBoardLayout } from "./board-layout.mjs";
 import { renderAnalytics } from "./analytics.mjs";
 import { installKpiFit } from "./kpi-fit.mjs";
@@ -8,7 +10,7 @@ import { saveDetailsCSV } from "./csv-export.mjs";
 import { bootstrap } from "./bootstrap.mjs";
 import { VALID_VIEWS } from "./app-state.mjs";
 import { AppApi } from "./app-api.mjs";
-import { h, RANGES, THEME_OPTIONS, fmt, formatDateTime, createPills, createUnitRow, createCurrencyRow, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
+import { h, RANGES, fmt, formatDateTime, createPills, createUnitRow, createCurrencyRow, createThemeRow, installDetailsDismiss, selectOptions, timeAgo } from "./components.mjs";
 import { enhanceSelects, closeOpenSelect } from "./custom-select.mjs";
 import { getUnitSystem, setUnitSystem, unitsFromSnapshot } from "./units.mjs";
 import { getCurrency, setCurrency, setFxRate, getFxRate, currencyFromSnapshot } from "./currency.mjs";
@@ -149,6 +151,13 @@ export class WorkspaceApp {
     await this.loadInputStatusPrefs();
     await this.initialLoad();
     this.startPolling();
+    // 衣橱皮肤清单是异步的：先按内置清单画一版，拿回来再补上那一组。
+    // 不阻塞首屏 —— 主题下拉晚半秒多出一组，比整个看板等它强。
+    refreshSkins(this.api).then((snapshot) => {
+      if (this.disposed || !snapshot.themes.length) return;
+      this.chromeKey = "";
+      this.renderBoardControls();
+    }).catch(() => {});
   }
 
   dispose() {
@@ -801,7 +810,12 @@ export class WorkspaceApp {
     closeHoverTip(this.appearanceControls);
     if (!this.boardControls) return;
     const state = this.state.get();
-    const appearance = applyAppearance(state.appearance);
+    // 主题取值可能是本卡三档，也可能是指名的主机主题/衣橱皮肤（见 theme-catalog.mjs）。
+    // 指名时明暗由那张主题自己声明，不再由宿主当前明暗决定。
+    const look = applyAppearance(state.appearance);
+    const appearance = look.appearance;
+    // 指名主题的表是异步挂的：取不到就保持现状，不在界面上宣称已生效。
+    applyPinnedTheme(look.pin ? look.preference : "").catch(() => {});
     const isDark = appearance === "dark" || (appearance === "system" && document.documentElement.classList.contains("hana-dark"));
     // 这份菜单会被重建（主题/输入栏开关一变就重来）：把上一次的展开状态记下来，重画完再撑开，
     // 免得拨一下开关菜单自己就收了。
@@ -822,10 +836,10 @@ export class WorkspaceApp {
     };
     const settings = h("details", { className: "tt-display-settings" }, h("summary", { title: "显示设置" }, "显示设置"),
       h("div", { className: "tt-display-menu", role: "group", "aria-label": "看板显示设置" },
-        ...THEME_OPTIONS.map(({ key, label }) =>
-          h("button", { type: "button", "aria-pressed": String(appearance === key), onClick: () => this.state.patch({ appearance: key }) }, label)),
+        // 主题从三颗按压按钮换成下拉：与下面两行同一个结构，且能列出宿主主题与衣橱皮肤。
+        createThemeRow({ value: state.appearance, onChange: (next) => this.state.patch({ appearance: next }) }),
         h("div", { className: "tt-display-sep" }),
-        // 单位制是全局口径，跟主题同属「画成什么样」，所以紧跟在主题三档之后。
+        // 单位制是全局口径，跟主题同属「画成什么样」，所以紧跟在主题后面。
         // 货币紧跟其后：两行同一个结构（左标签、下拉整行）。
         createUnitRow((key) => this.applyUnits(key)),
         createCurrencyRow((key) => this.applyCurrency(key)),

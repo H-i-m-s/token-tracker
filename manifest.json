@@ -14,6 +14,7 @@
     "app/sessions.read",
     "app/input.status",
     "app/ui.open-external",
+    "app/services.call",
     "app/hooks.provider-before-request",
     "app/hooks.observe"
   ],

@@ -1,4 +1,5 @@
 import { applyAppearance } from "./appearance.mjs";
+import { applyPinnedTheme } from "./theme.mjs";
 import { saveDetailsCSV } from "./csv-export.mjs";
 import { decodeRows } from "./details-view.mjs";
 import { bootstrap } from "./bootstrap.mjs";
@@ -188,7 +189,9 @@ export class NavigationApp {
   }
 
   renderFilters() {
-    applyAppearance(this.state.get().appearance);
+    // 功能面板也跟着同一份外观取值：指名了主题就把那张表挂上，否则面板与看板会两个色。
+    const look = applyAppearance(this.state.get().appearance);
+    applyPinnedTheme(look.pin ? look.preference : "").catch(() => {});
     const s = this.state.get();
     this.filterSection.innerHTML = "";
     this.filterSection.append(

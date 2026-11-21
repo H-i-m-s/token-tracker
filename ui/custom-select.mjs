@@ -109,7 +109,7 @@ export function mountSelect(select, options = {}) {
   // 否则最后划过的那项会一直亮着（和 hover 同一套底色，看起来就是“没收干净”）。
   function clearActive() {
     activeIndex = -1;
-    for (const node of panel.children) node.classList.remove("active");
+    for (const node of itemEls) node.classList.remove("active");
   }
 
   function renderLabel() {
@@ -128,24 +128,47 @@ export function mountSelect(select, options = {}) {
     if (options.clearable) clearBtn.hidden = isEmpty;
   }
 
+  // 面板里的「可选项」节点。分组标题（optgroup 的 label）也画进面板，
+  // 但它们不是选项：高亮、键盘上下、取值都只认这一串，否则上下键会停在标题上。
+  let itemEls = [];
+
   function buildOptions() {
-    panel.replaceChildren(
-      ...nodes().map((o, i) => {
-        const opt = doc.createElement("div");
-        opt.className = "tt-select-option";
-        opt.setAttribute("role", "option");
-        opt.setAttribute("aria-selected", String(multiple ? isOn(o.value) : o.value === select.value));
-        opt.dataset.value = o.value;
-        opt.textContent = o.textContent;
-        opt.addEventListener("click", (e) => { e.stopPropagation(); pick(o.value, e); });
-        opt.addEventListener("pointerenter", () => setActive(i, false));
-        return opt;
-      }),
-    );
+    const frag = doc.createDocumentFragment();
+    itemEls = [];
+    const addOption = (o) => {
+      const index = itemEls.length;
+      const opt = doc.createElement("div");
+      opt.className = "tt-select-option";
+      opt.setAttribute("role", "option");
+      opt.setAttribute("aria-selected", String(multiple ? isOn(o.value) : o.value === select.value));
+      opt.dataset.value = o.value;
+      opt.textContent = o.textContent;
+      opt.addEventListener("click", (e) => { e.stopPropagation(); pick(o.value, e); });
+      opt.addEventListener("pointerenter", () => setActive(index, false));
+      itemEls.push(opt);
+      frag.appendChild(opt);
+    };
+    // 分组是 optgroup 带来的：主题下拉要靠它把「本卡外观 / 跟随宿主 / 宿主主题 / 衣橱皮肤」分开，
+    // 否则十几个名字排成一串，看不出哪些是同一家人。
+    for (const child of Array.from(select.children)) {
+      if (child.tagName === "OPTGROUP") {
+        if (child.label) {
+          const head = doc.createElement("div");
+          head.className = "tt-select-group";
+          head.setAttribute("aria-hidden", "true");
+          head.textContent = child.label;
+          frag.appendChild(head);
+        }
+        for (const o of Array.from(child.children)) if (o.tagName === "OPTION") addOption(o);
+      } else if (child.tagName === "OPTION") {
+        addOption(child);
+      }
+    }
+    panel.replaceChildren(frag);
   }
 
   function setActive(i, scroll) {
-    const list = Array.from(panel.children);
+    const list = itemEls;
     if (!list.length) return;
     activeIndex = (i + list.length) % list.length;
     list.forEach((n, idx) => n.classList.toggle("active", idx === activeIndex));
@@ -290,7 +313,7 @@ export function mountSelect(select, options = {}) {
       case "Enter": {
         e.preventDefault();
         if (!open) { openPanel(); break; }
-        const target = panel.children[activeIndex];
+        const target = itemEls[activeIndex];
         if (target) pick(target.dataset.value, e);
         break;
       }
@@ -299,7 +322,7 @@ export function mountSelect(select, options = {}) {
         if (!open) { openPanel(); break; }
         // 多选时空格也用来加/减一项（跟文件管理器里的习惯一致），不关面板
         if (multiple) {
-          const target = panel.children[activeIndex];
+          const target = itemEls[activeIndex];
           if (target) pick(target.dataset.value, e);
           break;
         }
@@ -340,3 +363,4 @@ export function enhanceSelects(root = document) {
   const scope = root && typeof root.querySelectorAll === "function" ? root : document;
   scope.querySelectorAll("select:not([data-tt-native-select])").forEach((sel) => mountSelect(sel));
 }
+

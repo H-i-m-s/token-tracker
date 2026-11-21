@@ -1760,6 +1760,17 @@ html[data-tt-appearance="system"].hana-dark .tt-agent-panel {
   background-clip: padding-box;
 }
 
+.tt-select-group {
+  /* 分组标题：不可选，也不能被上下键停住（见 custom-select 里的 itemEls）。 */
+  padding: 8px 12px 4px;
+  font: 10px var(--font-sans);
+  letter-spacing: .04em;
+  color: var(--tt-t3);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .tt-select-option {
   position: relative;
   padding: 7px 12px 7px 24px;

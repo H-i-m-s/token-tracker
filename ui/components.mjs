@@ -4,6 +4,7 @@
 // 收敛成：四个滚动窗口 + 本月 + 全部历史；自定义日期由看板的日期选择负责。
 import { scaleText, UNIT_SYSTEMS, setUnitSystem, getUnitSystem } from "./units.mjs";
 import { CURRENCIES, normalizeCurrency, setCurrency, getCurrency } from "./currency.mjs";
+import { themeSelectGroups, skinSnapshot } from "./theme-catalog.mjs";
 
 export const RANGES = [
   { key: "today", label: "今日" },
@@ -16,12 +17,7 @@ export const RANGES = [
 
 export const PROVIDERS = ["DeepSeek", "GLM", "MiniMax", "商汤", "火山方舟", "OpenCode Go"];
 
-// 主题三档。看板的显示设置与卡片的显示设置都读这一份，同一件事不再各自写一张词表（同 RANGES）。
-export const THEME_OPTIONS = [
-  { key: "dark", label: "深黑" },
-  { key: "light", label: "浅色" },
-  { key: "system", label: "Hana 原生" },
-];
+// 主题那一行在 createThemeRow，词表在 theme-catalog.mjs（看板与卡片都读那一份）。
 
 export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
@@ -204,6 +200,39 @@ export function createCurrencyRow(onPick) {
     options: CURRENCIES, value: getCurrency(), className: "tt-currencies",
     onPick: (key) => { setCurrency(key); onPick?.(key); },
   });
+}
+
+export function createThemeRow({ value = "", onChange } = {}) {
+  // 结构沿用旁边两行（数字单位 / 货币单位）：左标签、下拉整行。
+  // 首项就是「自动」（跟宿主走），下面按组列宿主内置主题与衣橱皮肤。
+  const { lead, groups } = themeSelectGroups(value);
+  // 空值等同于自动：旧版本没存过这项时就是空值，下拉得停在第一项上，
+  // 而不是一个空字符串选中的怪异状态。
+  const current = String(value || lead.value);
+  const options = [
+    h("option", { value: lead.value, selected: lead.value === current ? "" : undefined }, lead.label),
+    ...groups.map((group) => h(
+      "optgroup",
+      { label: group.label },
+      group.items.map((item) => h("option", { value: item.value, selected: item.value === current ? "" : undefined }, item.label)),
+    )),
+  ];
+
+  // 皮肤没取到时把原因挂在 title 上：能看到「为什么这里少一组」，而不是以为衣橱没有皮肤。
+  const skins = skinSnapshot();
+  const hint = skins.status === "error" ? `衣橱皮肤没取到：${skins.error}` : "主题";
+  const select = h(
+    "select",
+    { className: "tt-unit-select tt-themes", "aria-label": "主题", title: hint },
+    options,
+  );
+  select.addEventListener("change", () => onChange?.(select.value));
+  return h(
+    "div",
+    { className: "tt-inputstatus-row tt-unit-row" },
+    h("span", { className: "tt-inputstatus-label" }, "主题"),
+    select,
+  );
 }
 
 export function renderPills(items, activeKey, onChange, extraClass = "") {

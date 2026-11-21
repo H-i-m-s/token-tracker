@@ -1,9 +1,10 @@
 import { WorkspaceApp } from './workspace.mjs';
 import { bootstrap } from './bootstrap.mjs';
 import { applyAppearance } from './appearance.mjs';
+import { applyPinnedTheme } from './theme.mjs';
 import { renderAnalytics } from './analytics.mjs';
 import { installKpiFit } from './kpi-fit.mjs';
-import { h, RANGES, THEME_OPTIONS, createUnitRow, createCurrencyRow, selectOptions, installDetailsDismiss } from './components.mjs';
+import { h, RANGES, createUnitRow, createCurrencyRow, createThemeRow, selectOptions, installDetailsDismiss } from './components.mjs';
 import { asList, selectionKey } from './selection.mjs';
 import { enhanceSelects } from './custom-select.mjs';
 import { closeAllPickers } from './custom-pickers.mjs';
@@ -86,7 +87,9 @@ export class CardApp extends WorkspaceApp {
     closeHoverTip(this.filterBar);
     if (!this.tabBar) return;
     const state = this.state.get(), { tabs, active } = cardSelection(state);
-    const appearance = applyAppearance(state.appearance || 'system');
+    // 与看板同一套取值（theme-catalog.mjs）：本卡两档 / 跟随宿主 / 指名的主机主题或衣橱皮肤。
+    const look = applyAppearance(state.appearance || 'system');
+    applyPinnedTheme(look.pin ? look.preference : '').catch(() => {});
     // 页签整排会被换掉：先记下焦点原本落在哪个页签上，重画完再还回去，免得点一下就掉到 body。
     const focusedTab = this.tabBar.contains(document.activeElement) ? document.activeElement.dataset.view : null;
     this.tabBar.replaceChildren(...tabs.map(id => {
@@ -107,8 +110,8 @@ export class CardApp extends WorkspaceApp {
     // 与看板显示设置同构：先主题三档（按压行），一条分隔线，再是一行一个胶囊开关的功能清单。
     // 之前这里是原生复选框：能不能勾、满没满，全靠浏览器给的默认样子说话，和看板是两套语言。
     this.menu.replaceChildren(
-      ...THEME_OPTIONS.map(({ key, label }) =>
-        h('button', { type: 'button', 'aria-pressed': String(appearance === key), title: `卡片配色：${label}`, onClick: () => this.state.patch({ appearance: key }) }, label)),
+      // 主题那一行：与看板同一份组件、同一张词表（旧写法是两颗卡自己的按压按钮）。
+      createThemeRow({ value: state.appearance || 'system', onChange: (next) => this.state.patch({ appearance: next }) }),
       h('div', { className: 'tt-display-sep' }),
       // 与看板同一行同一个口子（写法、落盘、重画都在基类里）。
       createUnitRow(key => this.applyUnits(key)),

@@ -573,10 +573,31 @@ export function apply(ctx, { clientFactory = options => new LocalClient(options)
     return jsonResponse(c, okResponse({ update }));
   }
 
-  let unregisterRoutes = null;
-  try {
+  // 衣橱皮肤清单（跨 App 服务）：宿主只给「按 id 取一张表」，不给「一共有哪些」，
+  // 主题下拉要能列出衣橱皮肤，只能问衣橱自己要。
+  // 取不到（未装/未授权/超时）不报 500：返回空清单 + 原因，界面据此少一组但不乱说。
+  async function handleThemes(c) {
+    if (!ctx?.bus || typeof ctx.bus.request !== "function") {
+      return jsonResponse(c, { ok: true, themes: [], current: null, error: "当前宿主没有 bus，取不到衣橱皮肤" });
+    }
+    try {
+      const res = await ctx.bus.request("app:skin-wardrobe/list-themes");
+      if (!res || res.ok !== true) {
+        return jsonResponse(c, { ok: true, themes: [], current: null, error: String((res && res.error) || "衣橱没有返回清单") });
+      }
+      return jsonResponse(c, okResponse({
+        themes: Array.isArray(res.themes) ? res.themes : [],
+        current: res.current ?? null,
+      }));
+    } catch (error) {
+      return jsonResponse(c, { ok: true, themes: [], current: null, error: String((error && error.message) || error) });
+    }
+  }
+
+  let unregisterRoutes = null;  try {
     unregisterRoutes = ctx.routes.register((app) => {
       app.get("/spike", (c) => textResponse(c, `${APP_ID} spike route ok`));
+      app.get("/themes", handleThemes);
       app.get("/snapshot", handleSnapshot);
       app.get("/update-check", handleUpdateCheck);
       app.post("/update-check", handleUpdateDismiss);

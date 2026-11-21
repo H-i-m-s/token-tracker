@@ -28,6 +28,12 @@ export const SHARED_KEYS = [
 ];
 export const VALID_VIEWS = ["overview", "balance", "details", "realtime"];
 export const VALID_APPEARANCES = ["dark", "light", "system", ""];
+// 指名主题写成 theme:<id>（见 ui/theme-catalog.mjs）。这里只挡形状，
+// id 是否真实存在交给清单与宿主：存了个不存在的 id，也不该把整项偏好丢掉。
+const PINNED_APPEARANCE = /^theme:[A-Za-z0-9._-]+$/;
+export function isValidAppearance(value) {
+  return VALID_APPEARANCES.includes(value) || PINNED_APPEARANCE.test(String(value ?? ""));
+}
 // 时间窗的合法值就取 RANGES（时间范围只此一份口径，不另抄一张表）。
 export const VALID_RANGES = RANGES.map((r) => r.key);
 
@@ -60,7 +66,7 @@ function pickShared(src) {
 function sanitizeShared(src) {
   const out = pickShared(src);
   if (out.view !== undefined && !VALID_VIEWS.includes(out.view)) delete out.view;
-  if (out.appearance !== undefined && !VALID_APPEARANCES.includes(out.appearance)) delete out.appearance;
+  if (out.appearance !== undefined && !isValidAppearance(out.appearance)) delete out.appearance;
   if (out.cardActive !== undefined && typeof out.cardActive !== "string") delete out.cardActive;
   if (out.cardTabs !== undefined && !Array.isArray(out.cardTabs)) delete out.cardTabs;
   if (out.range !== undefined && !VALID_RANGES.includes(out.range)) delete out.range;
