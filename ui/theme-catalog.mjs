@@ -93,8 +93,8 @@ export function appearanceHintOf(value) {
 }
 
 // 下拉里那一串（纯数据，不碰 DOM）：组件按它渲染，测试也测它。
-// 首项就是「自动」，不再单独开一个「跟随宿主」分组——一列里只那一项，分组只多一层壳。
-// 剩下的只有两类：宿主内置主题、衣橱皮肤。
+// 「自动」不单独挂在外面，就当「宿主内置主题」那组的第一项——它本来也是宿主那一侧的取值。
+// 剩下就两类：宿主内置主题（含自动）、衣橱皮肤。
 // 已选值不在清单里时（旧版本的 dark/light、皮肤还没拉回来、或已卸掉）单列一组「当前」：
 // 不单列的话下拉会跳回第一项，看上去像主题被人换掉了。
 export function themeSelectGroups(value = "") {
@@ -106,9 +106,8 @@ export function themeSelectGroups(value = "") {
     ? [{ value: selected, label: labelOfLeftover(selected) }]
     : [];
   return {
-    lead: FOLLOW_THEME,
     groups: [
-      { label: "宿主内置主题", items: builtin },
+      { label: "宿主内置主题", items: [FOLLOW_THEME, ...builtin] },
       { label: "衣橱皮肤", items: skinItems },
       { label: "当前", items: orphan },
     ].filter((group) => group.items.length > 0),

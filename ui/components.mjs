@@ -205,18 +205,15 @@ export function createCurrencyRow(onPick) {
 export function createThemeRow({ value = "", onChange } = {}) {
   // 结构沿用旁边两行（数字单位 / 货币单位）：左标签、下拉整行。
   // 首项就是「自动」（跟宿主走），下面按组列宿主内置主题与衣橱皮肤。
-  const { lead, groups } = themeSelectGroups(value);
+  const { groups } = themeSelectGroups(value);
   // 空值等同于自动：旧版本没存过这项时就是空值，下拉得停在第一项上，
   // 而不是一个空字符串选中的怪异状态。
-  const current = String(value || lead.value);
-  const options = [
-    h("option", { value: lead.value, selected: lead.value === current ? "" : undefined }, lead.label),
-    ...groups.map((group) => h(
-      "optgroup",
-      { label: group.label },
-      group.items.map((item) => h("option", { value: item.value, selected: item.value === current ? "" : undefined }, item.label)),
-    )),
-  ];
+  const current = String(value || FOLLOW_THEME.value);
+  const options = groups.map((group) => h(
+    "optgroup",
+    { label: group.label },
+    group.items.map((item) => h("option", { value: item.value, selected: item.value === current ? "" : undefined }, item.label)),
+  ));
 
   // 皮肤没取到时把原因挂在 title 上：能看到「为什么这里少一组」，而不是以为衣橱没有皮肤。
   const skins = skinSnapshot();

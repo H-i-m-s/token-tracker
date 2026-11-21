@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   isPinned, pinValue, pinnedThemeId, appearanceHintOf, HOST_THEMES,
-  refreshSkins, skinSnapshot, themeSelectGroups,
+  refreshSkins, skinSnapshot, themeSelectGroups, FOLLOW_THEME,
 } from '../ui/theme-catalog.mjs';
 import { applyAppearance } from '../ui/appearance.mjs';
 import { isValidAppearance } from '../ui/app-state.mjs';
@@ -82,12 +82,14 @@ test('皮肤取到后进清单，明暗也跟着它走', async () => {
   assert.equal(appearanceHintOf('theme:hana-x'), 'light');
 });
 
-test('主题下拉：首项是自动，下面只有宿主主题与衣橱皮肤两组', () => {
-  const { lead, groups } = themeSelectGroups('dark');
-  assert.deepEqual(lead, { value: 'system', label: '自动' });
+test('主题下拉：自动在「宿主内置主题」组的第一项，衣橱皮肤单独一组', () => {
+  assert.deepEqual(FOLLOW_THEME, { value: 'system', label: '自动' });
+  const { groups } = themeSelectGroups('dark');
   assert.deepEqual(groups.map((g) => g.label), ['宿主内置主题', '衣橱皮肤', '当前']);
   const hostGroup = groups.find((g) => g.label === '宿主内置主题');
-  assert.equal(hostGroup.items.length, HOST_THEMES.length);
+  // 自动就在这一组的第一项，不是单独挂在分组外面。
+  assert.deepEqual(hostGroup.items[0], { value: 'system', label: '自动' });
+  assert.equal(hostGroup.items.length, HOST_THEMES.length + 1);
   assert.ok(hostGroup.items.some((i) => i.value === 'theme:midnight'));
   const skinGroup = groups.find((g) => g.label === '衣橱皮肤');
   assert.deepEqual(skinGroup.items.map((i) => i.value), ['theme:hana-x']);
@@ -122,3 +124,5 @@ function fakeDoc() {
   };
   return { documentElement, querySelector: () => null, querySelectorAll: () => [] };
 }
+
+
