@@ -481,6 +481,9 @@ body {
   flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
+  /* 跟其余滚动层一致：不写这两条就会落到宿主那套系统外观。 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--tt-b2) transparent;
   border: 1px solid var(--tt-b2);
   border-radius: var(--tt-radius-inner);
   background: var(--tt-card);
@@ -727,6 +730,11 @@ body {
   gap: 10px;
   padding: 12px;
   overflow-y: auto;
+  /* 全站每个滚动层都写了这两条，只漏了侧边栏：不写就落到宿主那套系统外观，
+     上下箭头 + 浅灰槽，深色底上格外扎眼。只写 scrollbar-width 也不行，
+     必须同时给 scrollbar-color 才会换成简化样式。 */
+  scrollbar-width: thin;
+  scrollbar-color: var(--tt-b2) transparent;
 }
 
 .tt-nav-section {
