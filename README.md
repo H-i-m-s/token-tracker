@@ -80,6 +80,7 @@ DeepSeek / GLM / MiniMax（含 TokenPlan）/ 商汤（IAM 登录 + 积分池）/
 - **首字响应时间（TTFT）**：请求即将发出（`provider/before-request`）到收到响应（`provider/after-response`）两个时间戳之差。两处都只取时间戳，不改请求、不读内容。
 - **不臆造**：不给推断出来的请求时间；宿主账本里的 `durationMs` 实测恒为 0，就不拿它当精确值。
 - **历史归档**：核心账本（usage-ledger）是 5000 条环形缓冲，满了会挤掉最旧的。App 把每条账本记录按 requestId 去重搬进独立归档，统计从归档构建，所以账本丢数据不影响历史。归档只追加，不整文件重写。
+- **会话分叉不重复计**：Hana 的 fork 会把父会话的历史**逐行复制**进新的 `.jsonl`（实测相邻两个 fork 文件 4727 行里 4708 行完全相同）。扫描器因此按每个 entry 的 `id` 做一次全局归属，同一个 id 只让一个文件认领，只算一遍（`engine/services/entry-owner.js`，归属关系落进 `cache.sqlite` 的 `entry_owner` 表）。不做这件事时，单日总量会被放大一个量级：2026-11-25 显示 6.24 B，去重后是 5.6 亿，与宿主账本按 requestId 去重的 5.77 亿对得上。
 
 ## 架构
 

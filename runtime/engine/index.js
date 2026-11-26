@@ -5,6 +5,8 @@ import { collectBalances } from "./services/balance.js";
 import { createSettingsService } from "./services/settings.js";
 import { loadSqliteDriver, createSqliteCacheStore } from "./services/cache-store.js";
 import { createSqliteTurnsStore } from "./services/turns-store.js";
+// 会话分叉会把父会话历史整行复制进新文件，同一个 entry 只能统计一次（见该文件顶部说明）。
+import { createEntryOwnerStore } from "./services/entry-owner.js";
 // 「Hana 里配了哪些模型」只能由引擎读（App 进程被限制在自己的 dataDir 内）。
 import { readShownModels } from "./services/shown-models.js";
 import { buildDetailsCSV } from "./services/details-csv.js";
@@ -23,7 +25,7 @@ import { presentFiles, sweepVanished } from "./services/scan-sweep.js";
 const HOME = resolveHanaHome();
 const AGENTS = path.join(HOME, "agents");
 const CACHE = "token-cache.json";
-const CACHE_VERSION = 25; // 25：轮次明细另立 turns 表（SQLite 行存储），本次全量重建正好把表填满；24：轮次记录补缓存拆分（cacheRead/cacheWrite/reasoning）；23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
+const CACHE_VERSION = 26; // 26：扫描时按 entry id 跨文件去重（会话分叉会把历史复制进新文件，以前同一批消息被算十几遍）。本次全量重建顺带填满 entry_owner 表；25：轮次明细另立 turns 表（SQLite 行存储）；24：轮次记录补缓存拆分（cacheRead/cacheWrite/reasoning）；23：轮次明细不再裁剪（22 那次全量重建赶在裁剪移除之前，旧行还带着 5 天窗口）
 const ARCHIVE = "usage-archive.json";
 const ARCHIVE_VERSION = 1;
 
@@ -207,6 +209,20 @@ export default class TokenTrackerPlugin {
     }
     shared.turnsStore = turnsStore;
     this.register(() => { try { turnsStore?.close?.(); } catch {} });
+
+    // 会话分叉去重：同一个 entry id 只让第一个遇到的文件认领（同一库文件、独立连接）。
+    let entryOwner = null;
+    if (usingSqlite) {
+      try {
+        entryOwner = createEntryOwnerStore({ DatabaseSync, file: sqliteFile, log });
+      } catch (e) {
+        // 去重层不可用时退回原来的按文件统计：数字会虚高，但其他功能不能一起倒。
+        log.warn("[token-tracker] entry_owner 不可用，本次按文件统计：", e.message);
+        entryOwner = null;
+      }
+    }
+    shared.entryOwner = entryOwner;
+    this.register(() => { try { entryOwner?.close?.(); } catch {} });
 
     // 扫描诊断账本：往同一个 cache.sqlite 里加一张 scan_log 表（独立连接，不动已有表）。
     // 打开失败就彻底关掉——记不上只是少了可观测性，不能因此挡扫描。
@@ -751,10 +767,21 @@ async function scanAll(shared, log, force) {
     ? shared.data
     : loadCache(shared.cachePath, log);
   const cache = old || { version: CACHE_VERSION, lastScan: null, sessions: {}, agentNames: {} };
+  // 会话分叉去重层。拿不到 node:sqlite 时为 null，退回原来的按文件统计。
+  const entryOwner = shared.entryOwner || null;
+  // 四类情况要全量重扫：外部强制 / 缓存版本变了 / 上轮全量重建没跑完 / 有会话文件消失过。
+  // 最后一类是因为消失的文件认领过的 entry id 还留在表里，别的文件里的同一批行会被永久跳过。
+  const stale = !!entryOwner && (entryOwner.isRebuilding() || cache._dedupeStale === true);
   // 版本不匹配 或 外部强制 → 全量重扫（忽略旧 mtime）
-  const full = force || cache.version !== CACHE_VERSION;
+  const full = force || cache.version !== CACHE_VERSION || stale;
   cache.version = CACHE_VERSION;
+  if (full) cache._dedupeStale = false;
   let changed = false;
+  // 全量重建换一张空集合，扫完一次性替换库里的表；增量则先把上轮的归属读回内存。
+  if (entryOwner) {
+    if (full) entryOwner.beginRebuild();
+    else entryOwner.ensureLoaded();
+  }
 
   // 优先使用 agent:list API 返回的 agent 名称
   if (shared.agentNames) {
@@ -792,15 +819,15 @@ async function scanAll(shared, log, force) {
   const yieldToLoop = () => new Promise((resolve) => setImmediate(resolve));
   for (const agent of dirs) {
     await yieldToLoop();
-    changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old, touched, log) || changed;
+    changed = scanDir(path.join(AGENTS, agent, "sessions"), agent, "desktop", null, cache, full ? null : old, touched, log, entryOwner) || changed;
     const arch = path.join(AGENTS, agent, "sessions", "archived");
-    if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old, touched, log) || changed;
+    if (fs.existsSync(arch)) changed = scanDir(arch, agent, "desktop", null, cache, full ? null : old, touched, log, entryOwner) || changed;
     const phone = path.join(AGENTS, agent, "phone", "sessions");
     if (fs.existsSync(phone)) {
       for (const sub of fs.readdirSync(phone)) {
         const sp = path.join(phone, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "channel", sub.replace(/-[^-]+$/, ""), cache, full ? null : old, touched, log) || changed;
+        changed = scanDir(sp, agent, "channel", sub.replace(/-[^-]+$/, ""), cache, full ? null : old, touched, log, entryOwner) || changed;
       }
     }
     // bridge 私聊会话
@@ -810,29 +837,29 @@ async function scanAll(shared, log, force) {
         if (sub === "bridge-sessions.json") continue;
         const sp = path.join(bridge, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "bridge", sub, cache, full ? null : old, touched, log) || changed;
+        changed = scanDir(sp, agent, "bridge", sub, cache, full ? null : old, touched, log, entryOwner) || changed;
       }
     }
     // 后台活动
     const activity = path.join(AGENTS, agent, "activity");
     if (fs.existsSync(activity)) {
-      changed = scanDir(activity, agent, "background", null, cache, full ? null : old, touched, log) || changed;
+      changed = scanDir(activity, agent, "background", null, cache, full ? null : old, touched, log, entryOwner) || changed;
     }
     // 子代理会话
     const subagent = path.join(AGENTS, agent, "subagent-sessions");
     if (fs.existsSync(subagent)) {
-      changed = scanDir(subagent, agent, "sub", null, cache, full ? null : old, touched, log) || changed;
+      changed = scanDir(subagent, agent, "sub", null, cache, full ? null : old, touched, log, entryOwner) || changed;
       for (const sub of fs.readdirSync(subagent)) {
         if (sub === "session-meta.json") continue;
         const sp = path.join(subagent, sub);
         if (!fs.statSync(sp).isDirectory()) continue;
-        changed = scanDir(sp, agent, "sub", sub, cache, full ? null : old, touched, log) || changed;
+        changed = scanDir(sp, agent, "sub", sub, cache, full ? null : old, touched, log, entryOwner) || changed;
       }
     }
     // workflow 任务会话（此前漏扫，导致 workflow 调用不计入统计）
     const wf = path.join(AGENTS, agent, "workflow-sessions");
     if (fs.existsSync(wf)) {
-      changed = scanDir(wf, agent, "background", null, cache, full ? null : old, touched, log) || changed;
+      changed = scanDir(wf, agent, "background", null, cache, full ? null : old, touched, log, entryOwner) || changed;
     }
   }
   // 文件已经不在了的会话：把缓存行一起摘掉（每个目录自己扫完时只记下“看到了什么”，
@@ -879,6 +906,15 @@ async function scanAll(shared, log, force) {
       log.warn("[token-tracker] turns 表同步失败：", e.code || "", e.message);
     }
   }
+  // 去重集合跟着扫描结果一起落地：全量时整表替换，增量时只追加这一轮新认领的 id。
+  if (entryOwner) {
+    try {
+      const n = full ? entryOwner.commitRebuild() : entryOwner.flushDelta();
+      if (full && n > 0) log.info("[token-tracker] entry_owner 重建 " + n + " 条");
+    } catch (e) {
+      log.warn("[token-tracker] entry_owner 落库失败：", e.code || "", e.message);
+    }
+  }
   // 全量重扫之后立刻落一次盘：会话 blob 仍然攒批（5 分钟），但全量重建后这一份是全新的，
   // 拖到下一次攒批窗口万一进程被硬杀就白扫了；成本仅一次。turns 表不靠它（见上）。
   if (changed && full && shared.persist) shared.persist.flushNow("全量重建");
@@ -905,14 +941,21 @@ let _scanDirs = [];
  * @param {string} key 缓存键 agent::type::channel::fileName
  * @param {object|null} prev 缓存里这一行上次的结果（mtime 相同就跳过）
  * @param {Set<string>|null} touched 本轮动过的键（turns 表按它增量同步）
+ * @param {Function|null} log
+ * @param {{claim: Function}|null} dedupe 会话分叉去重：同一个 entry id 只让一个文件认领
  * @returns {boolean} 这一行有没有变化（含「读失败所以把旧行摘掉」）
  */
-function scanSessionFile(fp, fn, key, agent, type, channel, cache, prev, touched = null, log = null) {
+function scanSessionFile(fp, fn, key, agent, type, channel, cache, prev, touched = null, log = null, dedupe = null) {
   let stat;
   try { stat = fs.statSync(fp); } catch { return false; }
 
   // 文件未变化则跳过
   if (prev && prev.mtime === stat.mtimeMs) return false;
+
+  // 重新解析之前，先退回这个文件上次认领的 entry。
+  // 不退的话，它自己的历史行会被当成「已被别的文件算过」而整行跳过，
+  // 文件越长重扫后算得越少（父会话追加一轮，总量反而从 600 变 700）。
+  dedupe?.releaseOwner?.(key);
 
   let conv = null;
   const data = { agent, type, channelName: channel||null,  filePath: fp, mtime: stat.mtimeMs, size: stat.size, fileName: fn, firstTime: null, lastTime: null, msgCount: 0, assistantCount: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: 0, models: {}, providers: {}, conversations: [], mediaGen: {} };
@@ -950,6 +993,12 @@ function scanSessionFile(fp, fn, key, agent, type, channel, cache, prev, touched
       }
       if (p.type !== "message" || !p.message) continue;
       const m = p.message;
+      // ── 会话分叉去重 ──
+      // Hana 的 fork 会把父会话的历史整行复制进新的 .jsonl（实测相邻两个 fork 文件
+      // 4727 行里 4708 行完全相同）。按文件累加就会把同一批消息算十几遍。
+      // 每个 entry 行都带着全局唯一的 id，复制过去原样保留，所以用它做归属判定：
+      // 已经归过别的文件的行整行跳过，msgCount / firstTime 也不重复计。
+      if (dedupe && typeof p.id === "string" && p.id && !dedupe.claim(p.id, key)) continue;
       const ts = p.timestamp || m.timestamp || "";
       if (!data.firstTime) data.firstTime = ts;
       data.lastTime = ts;
@@ -1158,7 +1207,7 @@ function scanSessionFile(fp, fn, key, agent, type, channel, cache, prev, touched
   return true;
 }
 
-function scanDir(dir, agent, type, channel, cache, old, touched = null, log = null) {
+function scanDir(dir, agent, type, channel, cache, old, touched = null, log = null, dedupe = null) {
   let files = [];
   try { files = fs.readdirSync(dir).filter(n => n.endsWith(".jsonl") && !n.includes(".repair.jsonl")); }
   catch { return false; }
@@ -1167,7 +1216,7 @@ function scanDir(dir, agent, type, channel, cache, old, touched = null, log = nu
   for (const fn of files) {
     const fp = path.join(dir, fn);
     const key = `${agent}::${type}::${channel||""}::${fn}`;
-    if (scanSessionFile(fp, fn, key, agent, type, channel, cache, old?.sessions?.[key], touched, log)) changed = true;
+    if (scanSessionFile(fp, fn, key, agent, type, channel, cache, old?.sessions?.[key], touched, log, dedupe)) changed = true;
   }
 
   // ── 消失的文件：这里只记账，汇总在 sweepVanishedSessions 里做一次 ──
@@ -1338,9 +1387,12 @@ function scanOneSession(shared, log, query) {
   if (prev && prev.filePath && path.normalize(prev.filePath) !== filePath) return false;
 
   const touched = new Set();
+  // 单会话扫描也要走去重：否则一个刚继续聊过的 fork 文件会把父会话的历史再算一遍。
+  const entryOwner = shared.entryOwner || null;
+  if (entryOwner) entryOwner.ensureLoaded();
   let changed = false;
   try {
-    changed = scanSessionFile(filePath, fn, key, target.agentId, target.type, target.channelName, cache, prev, touched, log);
+    changed = scanSessionFile(filePath, fn, key, target.agentId, target.type, target.channelName, cache, prev, touched, log, entryOwner);
   } catch (e) {
     log?.warn?.("[token-tracker] 单会话扫描失败，退回全量：", e?.code || "", e?.message || e);
     return false;
@@ -1365,6 +1417,10 @@ function scanOneSession(shared, log, query) {
       log?.warn?.("[token-tracker] turns 表同步失败：", e.code || "", e.message);
     }
   }
+  // 这一轮新认领的 entry id 跟着落地，否则进程重启后它们会被当成没算过
+  if (entryOwner) {
+    try { entryOwner.flushDelta(); } catch (e) { log?.warn?.("[token-tracker] entry_owner 落库失败：", e?.message || e); }
+  }
   // 本轮动过的键挂到 shared 上给 drainScans 记账用（读完就清）。
   // 与 scanAll 同一套约定：不为了拿 files/bytes 去改签名、也不去遍历全量会话。
   // 确认「没变」时这一点是空集合：files=0 也是真实答案，如实记下。
@@ -1381,6 +1437,9 @@ function scanOneSession(shared, log, query) {
 function sweepVanishedSessions(cache, touched) {
   const changed = sweepVanished(cache, touched, _scanDirs);
   _scanDirs = [];
+  // 有会话文件消失时，它认领过的 entry id 还留在 entry_owner 里：那些 id 在别的文件里的副本
+  // 会被永久跳过，总量少算。标一次脏，下一轮全量重建把它们重新归位。
+  if (changed) cache._dedupeStale = true;
   return changed;
 }
 
